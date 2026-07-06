@@ -13,6 +13,7 @@
     "interpret-sample": "tsx src/scripts/interpret-sample.ts",
     "regression": "tsx src/scripts/run-regression.ts",
     "explore": "tsx src/scripts/explore-demo.ts",
+    "real-login": "tsx src/scripts/real-login.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

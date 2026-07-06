@@ -53,11 +53,11 @@ class BrowserPool {
     if (!this.browser) throw new Error('browser not initialized')
     // 优先复用当前 browser 的新 context(共享进程,隔离存储)
     if (this.inUse.size < this.size) {
-      return this.browser.newContext()
+      return this.browser.newContext({ ignoreHTTPSErrors: true })
     }
     // 达到并发上限,排队等待
     await new Promise<void>(resolve => this.waiters.push(resolve))
-    return this.browser.newContext()
+    return this.browser.newContext({ ignoreHTTPSErrors: true })
   }
 }
 
