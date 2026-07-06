@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>登录</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 360px; margin: 60px auto; }
+    label { display: block; margin: 10px 0 4px; }
+    input { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { margin-top: 16px; padding: 10px 16px; width: 100%; }
+    #success-msg { color: #0a7; margin-top: 16px; font-weight: bold; }
+    #error-msg { color: #c33; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h2>后台登录</h2>
+  <form id="login-form">
+    <label>用户名 <input name="username" aria-label="用户名"></label>
+    <label>密码 <input type="password" name="password" aria-label="密码"></label>
+    <label>验证码 <input name="captcha" aria-label="验证码" value="ny5x"></label>
+    <button type="submit">登录</button>
+  </form>
+  <div id="success-msg" hidden>登录成功</div>
+  <div id="error-msg" hidden>请填写完整的用户名和密码</div>
+
+  <script>
+    const form = document.getElementById('login-form')
+    const success = document.getElementById('success-msg')
+    const error = document.getElementById('error-msg')
+    form.addEventListener('submit', (e) => {
+      e.preventDefault()
+      const u = form.username.value.trim()
+      const p = form.password.value.trim()
+      success.hidden = true
+      error.hidden = true
+      if (u && p) {
+        success.hidden = false
+      } else {
+        error.hidden = false
+      }
+    })
+  </script>
+</body>
+</html>

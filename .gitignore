@@ -141,3 +141,12 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# 参考仓库(各自带独立 .git,仅作外部参考,不纳入本仓库)
+/ai_uitest_agent/
+/open-multi-agent/
+
+# SQLite 运行时数据
+*.db
+*.db-shm
+*.db-wal

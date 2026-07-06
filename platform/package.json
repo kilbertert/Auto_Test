@@ -1,0 +1,39 @@
+{
+  "name": "uitest-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web UI 自动化测试平台 — P0 骨架(open-multi-agent + Playwright)",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "smoke": "tsx src/runner/smoke.ts",
+    "import": "tsx src/scripts/import-xlsx.ts",
+    "interpret-sample": "tsx src/scripts/interpret-sample.ts",
+    "regression": "tsx src/scripts/run-regression.ts",
+    "explore": "tsx src/scripts/explore-demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-multi-agent/core": "^1.9.0",
+    "adm-zip": "^0.5.18",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-orm": "^0.45.2",
+    "fast-xml-parser": "^5.9.3",
+    "playwright": "^1.50.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

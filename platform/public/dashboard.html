@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Web UI 自动化测试平台 · P0 看板</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background: #fafafa; }
+    h2 { margin-top: 0; }
+    button { padding: 8px 16px; margin-right: 8px; cursor: pointer; }
+    #status { margin: 12px 0; color: #555; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, monospace; background: #111; color: #eee; padding: 12px; height: 55vh; overflow: auto; border-radius: 6px; font-size: 13px; }
+    .ok { color: #6f6; } .err { color: #f88; } .dim { color: #999; }
+  </style>
+</head>
+<body>
+  <h2>Web UI 自动化测试平台 · P0 看板</h2>
+  <div>
+    <button id="start">开始 Agent Run(需 LLM key)</button>
+    <button id="smoke">Smoke Run(无 LLM)</button>
+  </div>
+  <div id="status">空闲</div>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log')
+    const statusEl = document.getElementById('status')
+    let ws = null
+
+    function append(text, cls) {
+      const d = document.createElement('div')
+      d.textContent = text
+      if (cls) d.className = cls
+      logEl.appendChild(d)
+      logEl.scrollTop = logEl.scrollHeight
+    }
+
+    function connect(runId) {
+      if (ws) ws.close()
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      ws = new WebSocket(`${proto}://${location.host}/ws?runId=${runId}`)
+      ws.onopen = () => append(`已连接 WS(runId=${runId.slice(0, 8)})`, 'dim')
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.type === 'run_start') append(`-- run ${m.runId.slice(0, 8)} 开始 --`, 'ok')
+        else if (m.type === 'tasks_ready') append(`任务就绪: ${m.tasks.map(t => t.title).join(' → ')}`)
+        else if (m.type === 'progress') {
+          const ev = m.event
+          append(`[${ev.type}] agent=${ev.agent ?? ''} task=${ev.task ?? ''}`)
+        } else if (m.type === 'trace') {
+          const ev = m.event
+          append(`  trace ${ev.type} ${ev.tool ?? ev.model ?? ''}`, 'dim')
+        } else if (m.type === 'stream') {
+          append(`  stream ${m.event.type} (${m.agent})`, 'dim')
+        } else if (m.type === 'smoke_step') {
+          append(`[smoke] ${m.text}`)
+        } else if (m.type === 'run_complete') {
+          if (m.error) append(`-- run 失败: ${m.error} --`, 'err')
+          else append('-- run 完成 --', 'ok')
+          statusEl.textContent = '空闲'
+        } else append(JSON.stringify(m))
+      }
+      ws.onclose = () => append('(ws 已关闭)', 'dim')
+    }
+
+    async function start(mode) {
+      statusEl.textContent = '运行中...'
+      try {
+        const r = await fetch('/api/v1/runs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        })
+        const data = await r.json()
+        if (!r.ok) {
+          append('错误: ' + (data.error ?? r.status), 'err')
+          statusEl.textContent = '错误'
+          return
+        }
+        connect(data.runId)
+      } catch (e) {
+        append('请求失败: ' + e, 'err')
+        statusEl.textContent = '错误'
+      }
+    }
+
+    document.getElementById('start').onclick = () => start('agent')
+    document.getElementById('smoke').onclick = () => start('smoke')
+  </script>
+</body>
+</html>
