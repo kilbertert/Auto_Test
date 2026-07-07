@@ -8,12 +8,15 @@ export interface BrowserSession {
 }
 
 /**
- * 浏览器上下文池:管理 N 个独立 BrowserContext(隔离 cookie/localStorage),
- * 与 maxConcurrency 对齐。修正 ai_uitest_agent "每种类型仅 1 实例"的缺陷。
+ * 浏览器池,两种模式:
+ * - CDP 模式(设置 BROWSER_CDP_URL):connectOverCDP 连接用户已登录的浏览器,
+ *   复用其登录态(绕过验证码/登录)。close() 不关闭用户浏览器,仅断开引用。
+ * - launch 模式(默认):chromium.launch 全新浏览器,按 size 并发新建 context。
  */
 class BrowserPool {
   private browser: Browser | null = null
-  private inUse = new Set<BrowserContext>()
+  private sharedContext: BrowserContext | null = null
+  private inUse = 0
   private waiters: Array<() => void> = []
   private readonly size: number
 
@@ -21,43 +24,56 @@ class BrowserPool {
     this.size = Math.max(1, size)
   }
 
+  get cdpUrl(): string | undefined {
+    return process.env.BROWSER_CDP_URL
+  }
+
   /** 幂等初始化。 */
   async init(): Promise<void> {
     if (this.browser) return
-    this.browser = await chromium.launch({ headless: config.browserHeadless })
+    const cdp = this.cdpUrl
+    if (cdp) {
+      this.browser = await chromium.connectOverCDP(cdp)
+      const ctxs = this.browser.contexts()
+      this.sharedContext = ctxs[0] ?? (await this.browser.newContext({ ignoreHTTPSErrors: true }))
+    } else {
+      this.browser = await chromium.launch({ headless: config.browserHeadless })
+    }
   }
 
   async acquire(runId: string): Promise<BrowserSession> {
     if (!this.browser) await this.init()
-    let ctx = await this.nextFreeContext()
-    this.inUse.add(ctx)
-    const page = await ctx.newPage()
-    return { runId, context: ctx, page }
+    if (this.inUse >= this.size) {
+      await new Promise<void>(resolve => this.waiters.push(resolve))
+    }
+    this.inUse++
+    const context = this.sharedContext
+      ? this.sharedContext
+      : await this.browser!.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+    return { runId, context, page }
   }
 
   release(session: BrowserSession): void {
     void session.page.close().catch(() => {})
-    this.inUse.delete(session.context)
+    // launch 模式:关闭临时 context;CDP 模式:保留 sharedContext(用户登录态)
+    if (!this.sharedContext) {
+      void session.context.close().catch(() => {})
+    }
+    this.inUse--
     const next = this.waiters.shift()
     if (next) next()
   }
 
   async close(): Promise<void> {
     if (this.browser) {
-      await this.browser.close().catch(() => {})
+      // CDP 模式不调用 close(),避免关闭用户的 Chrome;进程退出时连接自然断开
+      if (!this.cdpUrl) {
+        await this.browser.close().catch(() => {})
+      }
       this.browser = null
+      this.sharedContext = null
     }
-  }
-
-  private async nextFreeContext(): Promise<BrowserContext> {
-    if (!this.browser) throw new Error('browser not initialized')
-    // 优先复用当前 browser 的新 context(共享进程,隔离存储)
-    if (this.inUse.size < this.size) {
-      return this.browser.newContext({ ignoreHTTPSErrors: true })
-    }
-    // 达到并发上限,排队等待
-    await new Promise<void>(resolve => this.waiters.push(resolve))
-    return this.browser.newContext({ ignoreHTTPSErrors: true })
   }
 }
 
