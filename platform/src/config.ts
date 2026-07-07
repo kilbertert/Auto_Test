@@ -6,6 +6,11 @@ const EnvSchema = z.object({
   OMA_API_KEY: z.string().optional(),
   OMA_BASE_URL: z.string().optional(),
   OMA_MODEL: z.string().default('claude-sonnet-4-6'),
+  // 定位器专用模型(可选,用更强模型做 locator 解析;缺省回退 OMA_*)
+  OMA_LOCATOR_MODEL: z.string().optional(),
+  OMA_LOCATOR_PROVIDER: z.string().optional(),
+  OMA_LOCATOR_BASE_URL: z.string().optional(),
+  OMA_LOCATOR_API_KEY: z.string().optional(),
   PORT: z.coerce.number().default(3000),
   BROWSER_HEADLESS: z.string().default('true'),
   BROWSER_POOL_SIZE: z.coerce.number().default(2),

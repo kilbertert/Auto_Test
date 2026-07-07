@@ -23,11 +23,11 @@ export function resolveLocator(page: Page, loc: Locator): PwLocator {
       return page.locator(loc.value)
     case 'xpath':
       return page.locator('xpath=' + loc.value)
-    case 'role':
-      return page.getByRole(
-        loc.value as Parameters<Page['getByRole']>[0],
-        loc.name ? { name: loc.name } : undefined,
-      )
+    case 'role': {
+      // 兼容 role 在 value 字段(StepFun)或 role 字段(MiMo)的输出
+      const role = (loc.role ?? loc.value) as Parameters<Page['getByRole']>[0]
+      return page.getByRole(role, loc.name ? { name: loc.name } : undefined)
+    }
     case 'text':
       return page.getByText(loc.value)
     case 'ref':

@@ -177,10 +177,29 @@ export function makeBrowserTools(session: BrowserSession): ToolDefinition<any>[]
     },
   })
 
+  const selectCustom = defineTool({
+    name: 'browser_select_custom',
+    description: '自定义下拉框选择(非原生 <select>):点击触发器(trigger locator)→ 等待选项弹出 → 按文本点击选项(optionText)。用于"请选择店铺"等自定义下拉组件。',
+    inputSchema: z.object({ trigger: LocatorSchema, optionText: z.string(), timeout: z.number().optional() }),
+    execute: async ({ trigger, optionText, timeout }) => {
+      try {
+        const trig = resolveLocator(page, trigger as Locator)
+        await trig.click({ timeout: 10000 })
+        // 选项弹出后,按文本定位并点击(取第一个可见匹配)
+        const opt = page.getByText(optionText, { exact: false }).first()
+        await opt.waitFor({ state: 'visible', timeout: timeout ?? 8000 })
+        await opt.click({ timeout: 5000 })
+        return { data: JSON.stringify({ selected: true, optionText }) }
+      } catch (e) {
+        return { data: String((e as Error).message), isError: true }
+      }
+    },
+  })
+
   // 工具互斥锁(借鉴 AutoGenesis start_tool_execution):同一 page 不并发执行工具,
   // 防止 agent 并行调用或录制/重放状态混乱。
   let busy = false
-  const allTools = [navigate, click, typeTool, selectTool, assertTool, screenshot, snapshot, locate]
+  const allTools = [navigate, click, typeTool, selectTool, selectCustom, assertTool, screenshot, snapshot, locate]
   const guarded = allTools.map((t) => {
     const orig = t.execute
     return {

@@ -72,7 +72,9 @@ export async function runDeterministic(
           break
         case 'select':
           if (!rs.resolvedLocator) throw new Error('select 无 resolvedLocator(未录制)')
-          await byName.get('browser_select')!.execute({ locator: rs.resolvedLocator, value: rs.value ?? '' }, ctx)
+          await byName
+            .get('browser_select_custom')!
+            .execute({ trigger: rs.resolvedLocator, optionText: rs.value ?? '' }, ctx)
           break
         case 'clear':
           if (!rs.resolvedLocator) throw new Error('clear 无 resolvedLocator(未录制)')

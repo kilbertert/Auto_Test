@@ -75,7 +75,7 @@ async function executeAction(
         return true
       case 'select':
         if (!loc) return false
-        await byName.get('browser_select')!.execute({ locator: loc, value: value ?? '' }, ctx)
+        await byName.get('browser_select_custom')!.execute({ trigger: loc, optionText: value ?? '' }, ctx)
         return true
       case 'clear':
         if (!loc) return false
