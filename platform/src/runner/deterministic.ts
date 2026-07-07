@@ -48,8 +48,14 @@ export async function runDeterministic(
     'INSERT INTO assertion_result (run_case_id, assertion_id, pass, actual, error) VALUES (?,NULL,?,?,?)',
   )
 
-  // 起步:导航到已登录后台首页(CDP 共享 cookie → 已登录)
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
+  // 起步:导航到已登录后台首页(CDP 共享 cookie → 已登录);START_ON_CURRENT 则 goto 用户当前页
+  if (process.env.START_ON_CURRENT) {
+    const userPage = session.context.pages().find((p) => p !== page && p.url() && !p.url().startsWith('about:blank'))
+    const startUrl = userPage?.url()
+    if (startUrl) await page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+  } else {
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
+  }
 
   // ---- 步骤(零 AI:直接用 resolvedLocator)----
   for (let i = 0; i < tc.resolvedSteps.length; i++) {

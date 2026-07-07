@@ -140,15 +140,40 @@ export async function recordCase(
   const ctx = smokeContext()
   const { page } = session
 
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
-  await settle(page)
-  onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(起步:${LOGIN_URL})` })
+  // 起步:导航到已登录后台首页;或 START_ON_CURRENT 模式下 goto 用户当前标签页 URL
+  if (process.env.START_ON_CURRENT) {
+    const userPage = session.context.pages().find((p) => p !== page && p.url() && !p.url().startsWith('about:blank'))
+    const startUrl = userPage?.url()
+    if (startUrl) await page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(START_ON_CURRENT,起步:${startUrl ?? '当前页'})` })
+  } else {
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    await settle(page)
+    onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(起步:${LOGIN_URL})` })
+  }
 
   const resolvedSteps: ResolvedStep[] = []
   let stepsResolved = 0
 
   for (let i = 0; i < tc.structuredSteps.length; i++) {
     const step = tc.structuredSteps[i]
+    // START_ON_CURRENT:跳过"进入X页面"导航(用户已预导航到目标页)
+    if (
+      process.env.START_ON_CURRENT &&
+      step.action === 'navigate' &&
+      !/^https?:\/\//i.test((step.value ?? '').trim())
+    ) {
+      resolvedSteps.push({
+        action: 'wait',
+        resolvedLocator: null,
+        value: step.value,
+        targetDescription: step.targetDescription,
+        rawText: step.rawText,
+      })
+      stepsResolved++
+      onProgress?.({ type: 'record', text: `步骤${i + 1} 进入页面(START_ON_CURRENT,跳过)` })
+      continue
+    }
     const action = normalizeAction(step)
     // select = 点击选项文本(下拉框由前一步打开);value 空则走 AI 解析
     let resolvedLocator: Locator | null = null
