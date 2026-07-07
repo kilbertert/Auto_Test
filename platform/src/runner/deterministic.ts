@@ -71,10 +71,9 @@ export async function runDeterministic(
           await byName.get('browser_type')!.execute({ locator: rs.resolvedLocator, text: rs.value ?? '' }, ctx)
           break
         case 'select':
+          // select 录制为 click 选项文本(resolvedLocator = text 选项),直接 click
           if (!rs.resolvedLocator) throw new Error('select 无 resolvedLocator(未录制)')
-          await byName
-            .get('browser_select_custom')!
-            .execute({ trigger: rs.resolvedLocator, optionText: rs.value ?? '' }, ctx)
+          await byName.get('browser_click')!.execute({ locator: rs.resolvedLocator }, ctx)
           break
         case 'clear':
           if (!rs.resolvedLocator) throw new Error('clear 无 resolvedLocator(未录制)')

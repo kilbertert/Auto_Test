@@ -10,7 +10,8 @@ import type { Page } from 'playwright'
 import type { BrowserSession } from '../browser/pool.js'
 import { makeBrowserTools, smokeContext } from '../browser/tools.js'
 import type { ToolDefinition } from '@open-multi-agent/core'
-import { resolveAliasOrAi } from '../locator/resolve-alias.js'
+import { aiLocate } from '../locator/ai-locate.js'
+import { ensurePageObject, upsertAlias } from '../locator/page-object.js'
 import type { StructuredStep, StructuredAssertion, ResolvedStep, ResolvedAssertion } from '../interpreter/schemas.js'
 import type { Locator } from '../browser/locator.js'
 import { sqlite } from '../db/client.js'
@@ -43,7 +44,7 @@ function normalizeAction(step: StructuredStep): ResolvedStep['action'] {
   if (step.action === 'check') return 'click'
   if (step.action === 'clear') return 'clear'
   if (step.action === 'wait') return 'wait'
-  if (step.action === 'select') return 'select'
+  if (step.action === 'select') return 'click' // select = 点击选项(下拉框由前一步打开)
   if (step.action === 'type') return 'type'
   return 'click' // other/unknown → 尝试 click
 }
@@ -112,11 +113,13 @@ async function verifyAssert(
   }
 }
 
-/** AI 解析 locator:别名词典优先(命中免 AI),未命中走 AI + 自学习回写。 */
+/** AI 解析 locator:直连 aiLocate(MiMo),不读缓存别名(避免旧错误别名干扰);成功后更新别名。 */
 async function resolveLocator(page: Page, description: string): Promise<Locator | null> {
   if (!description) return null
   try {
-    const { locator } = await resolveAliasOrAi(page, description, page.url())
+    const { locator } = await aiLocate(page, description)
+    const pageObjectId = ensurePageObject(page.url())
+    upsertAlias(pageObjectId, description, JSON.stringify(locator), locator.type, 'auto-learned')
     return locator
   } catch {
     return null
@@ -147,9 +150,13 @@ export async function recordCase(
   for (let i = 0; i < tc.structuredSteps.length; i++) {
     const step = tc.structuredSteps[i]
     const action = normalizeAction(step)
-    // 显式 locator(css/role/...)直接用;alias/null 走 AI
-    let resolvedLocator: Locator | null =
-      step.locator && step.locator.type !== 'alias' ? step.locator : null
+    // select = 点击选项文本(下拉框由前一步打开);其他用显式 locator 或 AI
+    let resolvedLocator: Locator | null = null
+    if (step.action === 'select') {
+      resolvedLocator = { type: 'text', value: (step.value ?? '').trim() }
+    } else if (step.locator && step.locator.type !== 'alias') {
+      resolvedLocator = step.locator
+    }
 
     if (needsLocator(action)) {
       if (!resolvedLocator) {
