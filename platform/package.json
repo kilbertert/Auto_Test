@@ -15,6 +15,7 @@
     "explore": "tsx src/scripts/explore-demo.ts",
     "real-login": "tsx src/scripts/real-login.ts",
     "real-regression": "tsx src/scripts/real-regression.ts",
+    "record": "tsx src/scripts/record.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

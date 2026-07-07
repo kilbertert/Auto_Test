@@ -150,7 +150,26 @@ export function makeBrowserTools(session: BrowserSession): ToolDefinition<any>[]
     },
   })
 
-  return [navigate, click, typeTool, selectTool, assertTool, screenshot, snapshot, locate]
+  // 工具互斥锁(借鉴 AutoGenesis start_tool_execution):同一 page 不并发执行工具,
+  // 防止 agent 并行调用或录制/重放状态混乱。
+  let busy = false
+  const allTools = [navigate, click, typeTool, selectTool, assertTool, screenshot, snapshot, locate]
+  const guarded = allTools.map((t) => {
+    const orig = t.execute
+    return {
+      ...t,
+      execute: async (input: any, ctx: any) => {
+        if (busy) return { data: '另一个工具正在执行(并发被拒)', isError: true }
+        busy = true
+        try {
+          return await orig(input, ctx)
+        } finally {
+          busy = false
+        }
+      },
+    }
+  })
+  return guarded
 }
 
 /** smoke 模式直接调用工具 execute 时使用的最小 ToolUseContext。 */

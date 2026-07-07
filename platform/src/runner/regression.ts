@@ -1,15 +1,16 @@
 /**
- * 回归执行编排:从 DB 选结构化用例,逐条 DeterministicCaseRunner 执行(无 LLM 在环),
- * 落 run / run_case 记录,进度经 onProgress 回推。断言/步骤结果由 deterministic 落表。
+ * 确定性回归重放:从 DB 选 record_status='recorded' 的用例,读 resolved_steps,
+ * 用 DeterministicCaseRunner 零 AI 重放。落 run/run_case/run_step/assertion_result。
  */
 import { sqlite } from '../db/client.js'
 import { browserPool } from '../browser/pool.js'
-import { runDeterministic, type DeterministicCase } from './deterministic.js'
-import type { StructuredStep, StructuredAssertion } from '../interpreter/schemas.js'
+import { runDeterministic, type ReplayCase } from './deterministic.js'
+import type { ResolvedStep, ResolvedAssertion } from '../interpreter/schemas.js'
 
 export interface RegressionOptions {
   caseIds?: number[]
   limit?: number
+  modulePath?: string
 }
 
 export interface RegressionSummary {
@@ -25,13 +26,13 @@ interface CaseRow {
   id: number
   title: string | null
   module_path: string | null
-  structured_steps: string | null
-  structured_assertions: string | null
+  resolved_steps: string | null
+  resolved_assertions: string | null
 }
 
 type ProgressFn = (msg: { type: string; text: string }) => void
 
-/** 运行一次回归。runId 为外部逻辑 id(WS 通道);run 表用自增 id。 */
+/** 运行一次确定性回归重放(零 AI)。runId 为外部逻辑 id(WS 通道)。 */
 export async function runRegression(
   runId: string,
   opts: RegressionOptions = {},
@@ -40,27 +41,31 @@ export async function runRegression(
   const now = new Date().toISOString()
   const runIns = sqlite
     .prepare('INSERT INTO run (name, status, config, started_at) VALUES (?,?,?,?)')
-    .run('regression-' + runId.slice(0, 8), 'running', JSON.stringify(opts), now)
+    .run('replay-' + runId.slice(0, 8), 'running', JSON.stringify(opts), now)
   const runDbId = Number(runIns.lastInsertRowid)
 
   let cases: CaseRow[]
   if (opts.caseIds && opts.caseIds.length) {
-    const placeholders = opts.caseIds.map(() => '?').join(',')
+    const ph = opts.caseIds.map(() => '?').join(',')
     cases = sqlite
-      .prepare(
-        `SELECT id, title, module_path, structured_steps, structured_assertions FROM test_case WHERE id IN (${placeholders})`,
-      )
+      .prepare(`SELECT id, title, module_path, resolved_steps, resolved_assertions FROM test_case WHERE id IN (${ph})`)
       .all(...opts.caseIds) as CaseRow[]
   } else {
     const lim = opts.limit ?? 20
+    const where = ["record_status = 'recorded'", 'resolved_steps IS NOT NULL']
+    const params: Array<string | number> = []
+    if (opts.modulePath) {
+      where.push('module_path LIKE ?')
+      params.push(opts.modulePath + '%')
+    }
     cases = sqlite
       .prepare(
-        "SELECT id, title, module_path, structured_steps, structured_assertions FROM test_case WHERE structured_steps IS NOT NULL AND interpret_status='done' LIMIT ?",
+        `SELECT id, title, module_path, resolved_steps, resolved_assertions FROM test_case WHERE ${where.join(' AND ')} ORDER BY id LIMIT ?`,
       )
-      .all(lim) as CaseRow[]
+      .all(...params, lim) as CaseRow[]
   }
 
-  onProgress?.({ type: 'run_start', text: `回归 ${cases.length} 条用例` })
+  onProgress?.({ type: 'run_start', text: `重放 ${cases.length} 条已录制用例(零 AI)` })
   let passed = 0
   let failed = 0
   let skipped = 0
@@ -68,38 +73,30 @@ export async function runRegression(
   const insertRunCase = sqlite.prepare(
     'INSERT INTO run_case (run_id, case_id, status, started_at, agent_used) VALUES (?,?,?,?,?)',
   )
-  const updateRunCase = sqlite.prepare(
-    'UPDATE run_case SET status=?, ended_at=?, error=? WHERE id=?',
-  )
+  const updateRunCase = sqlite.prepare('UPDATE run_case SET status=?, ended_at=?, error=? WHERE id=?')
 
   for (const c of cases) {
-    if (!c.structured_steps) {
+    if (!c.resolved_steps) {
       skipped++
-      onProgress?.({ type: 'skip', text: `跳过 #${c.id} ${c.title ?? ''}(未结构化)` })
+      onProgress?.({ type: 'skip', text: `跳过 #${c.id} (未录制)` })
       continue
     }
-    let steps: StructuredStep[]
-    let asserts: StructuredAssertion[]
+    let steps: ResolvedStep[]
+    let asserts: ResolvedAssertion[]
     try {
-      steps = JSON.parse(c.structured_steps) as StructuredStep[]
-      asserts = c.structured_assertions ? (JSON.parse(c.structured_assertions) as StructuredAssertion[]) : []
+      steps = JSON.parse(c.resolved_steps) as ResolvedStep[]
+      asserts = c.resolved_assertions ? (JSON.parse(c.resolved_assertions) as ResolvedAssertion[]) : []
     } catch {
       skipped++
-      onProgress?.({ type: 'skip', text: `跳过 #${c.id} 结构化数据损坏` })
+      onProgress?.({ type: 'skip', text: `跳过 #${c.id} resolved 数据损坏` })
       continue
     }
-    const tc: DeterministicCase = {
-      id: c.id,
-      title: c.title ?? '',
-      modulePath: c.module_path ?? undefined,
-      structuredSteps: steps,
-      structuredAssertions: asserts,
-    }
+    const tc: ReplayCase = { id: c.id, title: c.title ?? '', resolvedSteps: steps, resolvedAssertions: asserts }
 
-    const rcIns = insertRunCase.run(runDbId, c.id, 'running', new Date().toISOString(), 'deterministic')
+    const rcIns = insertRunCase.run(runDbId, c.id, 'running', new Date().toISOString(), 'deterministic-replay')
     const runCaseId = Number(rcIns.lastInsertRowid)
 
-    onProgress?.({ type: 'case_start', text: `执行 #${c.id} ${tc.title}` })
+    onProgress?.({ type: 'case_start', text: `重放 #${c.id} ${tc.title}` })
     const session = await browserPool.acquire(runId + '-' + c.id)
     let verdict
     try {

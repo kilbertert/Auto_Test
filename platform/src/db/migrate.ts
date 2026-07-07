@@ -150,4 +150,11 @@ export function runMigrate(): void {
       expires_at_turn INTEGER
     );
   `)
+
+  // 幂等加列(已存在则跳过)— record→replay 架构:录制产物 + 状态
+  const cols = sqlite.prepare('PRAGMA table_info(test_case)').all() as Array<{ name: string }>
+  const has = (c: string) => cols.some((x) => x.name === c)
+  if (!has('resolved_steps')) sqlite.exec('ALTER TABLE test_case ADD COLUMN resolved_steps TEXT')
+  if (!has('resolved_assertions')) sqlite.exec('ALTER TABLE test_case ADD COLUMN resolved_assertions TEXT')
+  if (!has('record_status')) sqlite.exec("ALTER TABLE test_case ADD COLUMN record_status TEXT DEFAULT 'pending'")
 }

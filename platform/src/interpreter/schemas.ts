@@ -40,3 +40,27 @@ export const CaseInterpretationSchema = z.object({
 export type StructuredStep = z.infer<typeof StructuredStepSchema>
 export type StructuredAssertion = z.infer<typeof StructuredAssertionSchema>
 export type CaseInterpretation = z.infer<typeof CaseInterpretationSchema>
+
+/**
+ * 规范化后的可执行步骤(locator 已在录制时硬编码,重放时零 AI)。
+ * action 已规范化:SPA 的"进入X页面"→ click(点菜单),而非 navigate。
+ */
+export const ResolvedStepSchema = z.object({
+  action: z.enum(['navigate_url', 'click', 'type', 'select', 'clear', 'wait']),
+  resolvedLocator: LocatorSchema.nullable(),
+  value: z.string().optional(),
+  targetDescription: z.string(),
+  rawText: z.string(),
+})
+
+/** 规范化后的断言(locator 已硬编码,重放时 browser_assert 直接用)。 */
+export const ResolvedAssertionSchema = z.object({
+  kind: z.enum(['text', 'visible', 'hidden', 'url', 'title', 'count', 'value', 'enabled', 'checked']),
+  resolvedLocator: LocatorSchema.nullable(),
+  expected: z.string(),
+  target: z.string().optional(),
+  rawText: z.string(),
+})
+
+export type ResolvedStep = z.infer<typeof ResolvedStepSchema>
+export type ResolvedAssertion = z.infer<typeof ResolvedAssertionSchema>
