@@ -265,32 +265,32 @@ export interface BatchResult {
 
 /**
  * 批量结构化 test_case 表中的用例。
- * @param opts.limit      最多处理条数
+ * @param opts.limit        最多处理条数
  * @param opts.wherePending 仅处理 interpret_status='pending' 的用例
- * @param onProgress      进度回调(done=已处理数, total=总数, cur=当前条目)
+ * @param opts.modulePath   仅处理 module_path 以此开头的用例(模块过滤)
+ * @param onProgress        进度回调(done=已处理数, total=总数, cur=当前条目)
  * 串行执行以避免 LLM 限流。
  */
 export async function interpretBatch(
-  opts: { limit?: number; wherePending?: boolean },
+  opts: { limit?: number; wherePending?: boolean; modulePath?: string },
   onProgress?: (done: number, total: number, cur: { title: string; ok: boolean }) => void,
 ): Promise<BatchResult> {
-  // 查询待处理用例
-  let sql: string
-  if (opts.wherePending) {
-    sql = opts.limit
-      ? `SELECT id, module_path, title, raw_steps, raw_expected
-         FROM test_case WHERE interpret_status = 'pending' ORDER BY id LIMIT ?`
-      : `SELECT id, module_path, title, raw_steps, raw_expected
-         FROM test_case WHERE interpret_status = 'pending' ORDER BY id`
-  } else {
-    sql = opts.limit
-      ? `SELECT id, module_path, title, raw_steps, raw_expected
-         FROM test_case ORDER BY id LIMIT ?`
-      : `SELECT id, module_path, title, raw_steps, raw_expected
-         FROM test_case ORDER BY id`
+  // 查询待处理用例(可选模块过滤)
+  const where: string[] = []
+  const params: Array<string | number> = []
+  if (opts.wherePending) where.push("interpret_status = 'pending'")
+  if (opts.modulePath) {
+    where.push('module_path LIKE ?')
+    params.push(opts.modulePath + '%')
   }
-  const stmt = sqlite.prepare(sql)
-  const rows = (opts.limit ? stmt.all(opts.limit) : stmt.all()) as BatchRow[]
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
+  const limitSql = opts.limit ? 'LIMIT ?' : ''
+  if (opts.limit) params.push(opts.limit)
+  const rows = sqlite
+    .prepare(
+      `SELECT id, module_path, title, raw_steps, raw_expected FROM test_case ${whereSql} ORDER BY id ${limitSql}`,
+    )
+    .all(...params) as BatchRow[]
 
   let done = 0
   let failed = 0
