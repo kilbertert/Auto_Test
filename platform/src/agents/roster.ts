@@ -40,6 +40,29 @@ export function makeExecutor(browserTools: ToolDefinition<any>[]): AgentConfig {
   }
 }
 
+/** navigator:多级菜单导航 agent(录制时用,到达目标页后记录 URL,重放直达)。 */
+export function makeNavigator(browserTools: ToolDefinition<any>[]): AgentConfig {
+  return {
+    name: 'navigator',
+    model: config.OMA_MODEL,
+    provider: config.OMA_PROVIDER as SupportedProvider,
+    baseURL: config.OMA_BASE_URL,
+    apiKey: config.OMA_API_KEY,
+    systemPrompt: [
+      '你是后台页面导航 agent。目标:导航到指定页面。',
+      '用 browser_snapshot 查看当前菜单结构,逐级 browser_click 菜单项到达目标。',
+      '多级菜单示例:点用户名/头像展开用户菜单→个人信息→基本信息;',
+      '或顶部导航→充电桩→数据看板;或左侧菜单→某模块→子页面。',
+      '每次点击后用 browser_snapshot 确认是否到达目标或还需继续点下一级。',
+      '到达目标页面后,输出当前页面 URL。若找不到,输出当前 URL 并说明。',
+    ].join(''),
+    customTools: browserTools,
+    maxTurns: 12,
+    temperature: 0,
+    loopDetection: { maxRepetitions: 3, onLoopDetected: 'terminate' },
+  }
+}
+
 /** reporter:聚合上游 executor 结果生成报告。 */
 export const reporter: AgentConfig = {
   name: 'reporter',

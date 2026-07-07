@@ -9,13 +9,30 @@
 import type { Page } from 'playwright'
 import type { BrowserSession } from '../browser/pool.js'
 import { makeBrowserTools, smokeContext } from '../browser/tools.js'
-import type { ToolDefinition } from '@open-multi-agent/core'
+import { OpenMultiAgent } from '@open-multi-agent/core'
+import type { ToolDefinition, SupportedProvider } from '@open-multi-agent/core'
 import { aiLocate } from '../locator/ai-locate.js'
 import { ensurePageObject, upsertAlias } from '../locator/page-object.js'
+import { makeNavigator } from '../agents/roster.js'
 import type { StructuredStep, StructuredAssertion, ResolvedStep, ResolvedAssertion } from '../interpreter/schemas.js'
 import type { Locator } from '../browser/locator.js'
 import { sqlite } from '../db/client.js'
 import { config } from '../config.js'
+
+/** navigator agent 专用编排器(StepFun,支持 tool_calling)。 */
+let navOma: OpenMultiAgent | null = null
+function getNavOma(): OpenMultiAgent {
+  if (navOma) return navOma
+  navOma = new OpenMultiAgent({
+    defaultModel: config.OMA_MODEL,
+    defaultProvider: config.OMA_PROVIDER as SupportedProvider,
+    defaultBaseURL: config.OMA_BASE_URL,
+    defaultApiKey: config.OMA_API_KEY,
+    maxConcurrency: 1,
+    defaultToolPreset: 'readonly',
+  })
+  return navOma
+}
 
 type AnyTool = ToolDefinition<any>
 type ProgressFn = (msg: { type: string; text: string }) => void
@@ -140,40 +157,43 @@ export async function recordCase(
   const ctx = smokeContext()
   const { page } = session
 
-  // 起步:导航到已登录后台首页;或 START_ON_CURRENT 模式下 goto 用户当前标签页 URL
-  if (process.env.START_ON_CURRENT) {
-    const userPage = session.context.pages().find((p) => p !== page && p.url() && !p.url().startsWith('about:blank'))
-    const startUrl = userPage?.url()
-    if (startUrl) await page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
-    onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(START_ON_CURRENT,起步:${startUrl ?? '当前页'})` })
-  } else {
-    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
-    await settle(page)
-    onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(起步:${LOGIN_URL})` })
-  }
+  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
+  await settle(page)
+  onProgress?.({ type: 'record', text: `开始录制「${tc.title}」(起步:${LOGIN_URL})` })
 
   const resolvedSteps: ResolvedStep[] = []
   let stepsResolved = 0
 
   for (let i = 0; i < tc.structuredSteps.length; i++) {
     const step = tc.structuredSteps[i]
-    // START_ON_CURRENT:跳过"进入X页面"导航(用户已预导航到目标页)
-    if (
-      process.env.START_ON_CURRENT &&
-      step.action === 'navigate' &&
-      !/^https?:\/\//i.test((step.value ?? '').trim())
-    ) {
+
+    // 多级菜单导航:navigate 到页面名(非 URL)→ navigator agent 逐级点菜单,记录最终 URL
+    // 重放时 navigate_url(录制的 URL)直达,无需菜单点击
+    if (step.action === 'navigate' && step.value && !/^https?:\/\//i.test(step.value)) {
+      const navAgent = makeNavigator(tools)
+      onProgress?.({ type: 'record', text: `步骤${i + 1} 多级菜单导航到「${step.value}」…` })
+      try {
+        await getNavOma().runAgent(
+          navAgent,
+          `导航到「${step.value}」页面。当前在后台首页。用 browser_snapshot 看菜单,逐级 browser_click 到达目标(可能:点用户名/头像→个人信息→基本信息;或顶部→充电桩→数据看板;或左侧菜单→模块→子页面)。每次点击后 snapshot 确认。到达后输出当前 URL。`,
+        )
+      } catch (e) {
+        onProgress?.({ type: 'record', text: `导航异常: ${String((e as Error).message).slice(0, 100)}` })
+      }
+      const finalUrl = session.page.url()
       resolvedSteps.push({
-        action: 'wait',
+        action: 'navigate_url',
         resolvedLocator: null,
-        value: step.value,
+        value: finalUrl,
         targetDescription: step.targetDescription,
         rawText: step.rawText,
       })
       stepsResolved++
-      onProgress?.({ type: 'record', text: `步骤${i + 1} 进入页面(START_ON_CURRENT,跳过)` })
+      await settle(page)
+      onProgress?.({ type: 'record', text: `步骤${i + 1} 导航完成 → ${finalUrl}` })
       continue
     }
+
     const action = normalizeAction(step)
     // select = 点击选项文本(下拉框由前一步打开);value 空则走 AI 解析
     let resolvedLocator: Locator | null = null
