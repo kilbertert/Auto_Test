@@ -167,30 +167,35 @@ export async function recordCase(
   for (let i = 0; i < tc.structuredSteps.length; i++) {
     const step = tc.structuredSteps[i]
 
-    // 多级菜单导航:navigate 到页面名(非 URL)→ navigator agent 逐级点菜单,记录最终 URL
-    // 重放时 navigate_url(录制的 URL)直达,无需菜单点击
-    if (step.action === 'navigate' && step.value && !/^https?:\/\//i.test(step.value)) {
-      const navAgent = makeNavigator(tools)
-      onProgress?.({ type: 'record', text: `步骤${i + 1} 多级菜单导航到「${step.value}」…` })
-      try {
-        await getNavOma().runAgent(
-          navAgent,
-          `导航到「${step.value}」页面。当前在后台首页。用 browser_snapshot 看菜单,逐级 browser_click 到达目标(可能:点用户名/头像→个人信息→基本信息;或顶部→充电桩→数据看板;或左侧菜单→模块→子页面)。每次点击后 snapshot 确认。到达后输出当前 URL。`,
-        )
-      } catch (e) {
-        onProgress?.({ type: 'record', text: `导航异常: ${String((e as Error).message).slice(0, 100)}` })
+    // 多级菜单导航:navigate 步骤。URL→直达;页面名(含 value 空的情况)→ navigator agent
+    if (step.action === 'navigate') {
+      const v = (step.value ?? '').trim()
+      if (v && /^https?:\/\//i.test(v)) {
+        // URL 导航
+        await executeAction(byName, ctx, 'navigate_url', null, v)
+        resolvedSteps.push({ action: 'navigate_url', resolvedLocator: null, value: v, targetDescription: step.targetDescription, rawText: step.rawText })
+        stepsResolved++
+        await settle(page)
+        onProgress?.({ type: 'record', text: `步骤${i + 1} URL 导航 → ${v}` })
+      } else {
+        // 页面名 → navigator agent 多级菜单导航,记录最终 URL
+        const pageName = v || step.targetDescription
+        const navAgent = makeNavigator(tools)
+        onProgress?.({ type: 'record', text: `步骤${i + 1} 多级菜单导航到「${pageName}」…` })
+        try {
+          await getNavOma().runAgent(
+            navAgent,
+            `导航到「${pageName}」页面。当前在后台首页。用 browser_snapshot 看菜单,逐级 browser_click 到达目标(可能:点用户名/头像→个人信息→基本信息;或顶部→充电桩→数据看板;或左侧菜单→模块→子页面)。每次点击后 snapshot 确认。到达后输出当前 URL。`,
+          )
+        } catch (e) {
+          onProgress?.({ type: 'record', text: `导航异常: ${String((e as Error).message).slice(0, 100)}` })
+        }
+        const finalUrl = session.page.url()
+        resolvedSteps.push({ action: 'navigate_url', resolvedLocator: null, value: finalUrl, targetDescription: step.targetDescription, rawText: step.rawText })
+        stepsResolved++
+        await settle(page)
+        onProgress?.({ type: 'record', text: `步骤${i + 1} 导航完成 → ${finalUrl}` })
       }
-      const finalUrl = session.page.url()
-      resolvedSteps.push({
-        action: 'navigate_url',
-        resolvedLocator: null,
-        value: finalUrl,
-        targetDescription: step.targetDescription,
-        rawText: step.rawText,
-      })
-      stepsResolved++
-      await settle(page)
-      onProgress?.({ type: 'record', text: `步骤${i + 1} 导航完成 → ${finalUrl}` })
       continue
     }
 
