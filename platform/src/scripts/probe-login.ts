@@ -15,12 +15,12 @@ async function main(): Promise<void> {
   console.log(snap.slice(0, 2500))
   console.log('=== input 元素(name/type/placeholder) ===')
   const inputs = await page.$$eval('input', (els) =>
-    els.map((e) => ({ name: (e as HTMLInputElement).name, type: (e as HTMLInputElement).type, placeholder: (e as HTMLInputElement).placeholder, id: e.id })),
+    els.map((e) => ({ name: (e as any).name, type: (e as any).type, placeholder: (e as any).placeholder, id: e.id })),
   )
   console.log(JSON.stringify(inputs, null, 2))
   console.log('=== 按钮/链接文本 ===')
   const btns = await page.$$eval('button, [role=button], input[type=submit], a', (els) =>
-    els.slice(0, 15).map((e) => (e.textContent || (e as HTMLInputElement).value || '').trim()).filter(Boolean),
+    els.slice(0, 15).map((e) => ((e as any).textContent || (e as any).value || '').trim()).filter(Boolean),
   )
   console.log(JSON.stringify(btns))
   await browser.close()

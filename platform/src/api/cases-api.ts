@@ -5,6 +5,7 @@
 import type { ServerResponse } from 'node:http'
 import { sqlite } from '../db/client.js'
 import { importXlsx } from '../importer/import.js'
+import { DEFAULT_XLSX_PATH } from '../importer/paths.js'
 import { interpretBatch } from '../interpreter/interpret.js'
 import { broadcast } from '../ws-bus.js'
 
@@ -137,7 +138,7 @@ export async function importHandler(
   res: ServerResponse,
   body: { filePath?: string },
 ): Promise<void> {
-  const filePath = body.filePath ?? '/home/ranlei/Auto-Test/测试用例.xlsx'
+  const filePath = body.filePath ?? process.env.XLSX_PATH ?? DEFAULT_XLSX_PATH
   try {
     const result = await importXlsx(filePath, true)
     json(res, 200, result)
