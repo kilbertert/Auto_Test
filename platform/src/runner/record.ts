@@ -95,6 +95,23 @@ async function settle(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
 }
 
+/** 录制时验证断言是否通过(用当前 locator + expected)。 */
+async function verifyAssert(
+  byName: Map<string, AnyTool>,
+  ctx: ReturnType<typeof smokeContext>,
+  kind: string,
+  loc: Locator,
+  expected: string | undefined,
+): Promise<boolean> {
+  try {
+    const r = await byName.get('browser_assert')!.execute({ kind, locator: loc, expected: expected ?? '' }, ctx)
+    if (r.isError) return false
+    return (JSON.parse(r.data) as { pass: boolean }).pass
+  } catch {
+    return false
+  }
+}
+
 /** AI 解析 locator:别名词典优先(命中免 AI),未命中走 AI + 自学习回写。 */
 async function resolveLocator(page: Page, description: string): Promise<Locator | null> {
   if (!description) return null
@@ -168,13 +185,22 @@ export async function recordCase(
     })
   }
 
-  // 断言:仅解析 locator(不执行)
+  // 断言:解析 locator + 录制时验证(失败则重试定位),确保重放可复现
   const resolvedAssertions: ResolvedAssertion[] = []
   let assertionsResolved = 0
   for (const a of tc.structuredAssertions) {
+    const needsLoc = a.kind !== 'url' && a.kind !== 'title'
     let loc: Locator | null = a.locator && a.locator.type !== 'alias' ? a.locator : null
-    if (!loc && a.kind !== 'url' && a.kind !== 'title') {
+    if (needsLoc && !loc) {
       loc = await resolveLocator(page, a.target ?? a.expected) // AI
+    }
+    if (needsLoc && loc) {
+      const pass = await verifyAssert(byName, ctx, a.kind, loc, a.expected)
+      if (!pass) {
+        onProgress?.({ type: 'record', text: `断言 ${a.kind} 录制未通过,重试定位…` })
+        const loc2 = await resolveLocator(page, a.target ?? a.expected) // AI 重试
+        if (loc2) loc = loc2
+      }
     }
     resolvedAssertions.push({
       kind: a.kind,
@@ -183,7 +209,7 @@ export async function recordCase(
       target: a.target,
       rawText: a.rawText,
     })
-    if (loc || a.kind === 'url' || a.kind === 'title') assertionsResolved++
+    if (loc || !needsLoc) assertionsResolved++
   }
 
   const now = new Date().toISOString()

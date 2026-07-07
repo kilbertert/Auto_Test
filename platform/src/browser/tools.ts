@@ -64,9 +64,9 @@ export function makeBrowserTools(session: BrowserSession): ToolDefinition<any>[]
 
   const assertTool = defineTool({
     name: 'browser_assert',
-    description: '断言。kind: text(元素文本含 expected)/visible/hidden/url/title。返回 {pass,actual,expected}。失败不抛,返回 isError 供上层判定。',
+    description: '断言。kind: text(文本含 expected)/visible/hidden/url/title/count(元素数,expected 如 >0/>=2/3)/value(输入值含)/enabled/checked。返回 {pass,actual,expected}。失败不抛,返回 isError 供上层判定。',
     inputSchema: z.object({
-      kind: z.enum(['text', 'visible', 'hidden', 'url', 'title']),
+      kind: z.enum(['text', 'visible', 'hidden', 'url', 'title', 'count', 'value', 'enabled', 'checked']),
       locator: LocatorSchema.optional(),
       expected: z.string().optional(),
       timeout: z.number().optional(),
@@ -91,6 +91,33 @@ export function makeBrowserTools(session: BrowserSession): ToolDefinition<any>[]
           const hidden = await el.isHidden()
           return { data: JSON.stringify({ pass: hidden, actual: String(hidden), expected: expected ?? 'true' }) }
         }
+        if (kind === 'count') {
+          const n = await el.count()
+          const exp = (expected ?? '>0').trim()
+          let pass: boolean
+          if (exp.startsWith('>=')) pass = n >= parseInt(exp.slice(2), 10)
+          else if (exp.startsWith('>')) pass = n > parseInt(exp.slice(1), 10)
+          else if (exp.startsWith('<=')) pass = n <= parseInt(exp.slice(2), 10)
+          else if (exp.startsWith('<')) pass = n < parseInt(exp.slice(1), 10)
+          else if (/^\d+$/.test(exp)) pass = n === parseInt(exp, 10)
+          else pass = n > 0
+          return { data: JSON.stringify({ pass, actual: String(n), expected: exp }) }
+        }
+        if (kind === 'value') {
+          const actual = (await el.inputValue({ timeout: timeout ?? 10000 }).catch(() => '')) ?? ''
+          return { data: JSON.stringify({ pass: actual.includes(expected ?? ''), actual, expected }) }
+        }
+        if (kind === 'enabled') {
+          const enabled = await el.isEnabled()
+          const want = expected !== 'false'
+          return { data: JSON.stringify({ pass: enabled === want, actual: String(enabled), expected: String(want) }) }
+        }
+        if (kind === 'checked') {
+          const checked = await el.isChecked().catch(() => false)
+          const want = expected === 'true'
+          return { data: JSON.stringify({ pass: checked === want, actual: String(checked), expected: String(want) }) }
+        }
+        // text(默认)
         const actual = (await el.textContent({ timeout: timeout ?? 10000 })) ?? ''
         return { data: JSON.stringify({ pass: actual.includes(expected ?? ''), actual, expected }) }
       } catch (e) {
