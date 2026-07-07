@@ -18,7 +18,7 @@ import { runMigrate } from '../db/migrate.js'
 import { interpretBatch } from '../interpreter/interpret.js'
 import { sqlite } from '../db/client.js'
 import type { StructuredStep, StructuredAssertion } from '../interpreter/schemas.js'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync } from 'node:fs'
 
 const modulePath = process.argv[2]
 const N = parseInt(process.argv[3] ?? '5', 10)
@@ -106,11 +106,13 @@ async function main(): Promise<void> {
       '- 每个需要操作元素的步骤:browser_locate(用 targetDescription 中文描述)定位 → click/type/select 等。',
       '- 完成后用 browser_assert 校验断言,browser_screenshot 截图。',
       '- **只读安全**:不要做创建/删除/编辑/保存等写操作;若步骤要求写操作,跳过该步并在输出标记"跳过写操作"。',
-      '- **高效**:只在首次进入页面或迷路时 browser_snapshot;已知元素直接 browser_locate+操作,不要每步都 snapshot。某步连续 2 次失败就跳过该步继续,不反复重试。',
+      '- **高效**:需要看页面结构时(进入新页面、找不到元素)用 browser_snapshot,不必每步都 snapshot。某步连续 2 次失败就跳过该步继续,不反复重试。下拉框若是自定义组件:点击触发器后等选项弹出再点选项。',
       '- **必须输出最终文本**:完成步骤后立即输出 verdict(passed/failed)+ 每步结果 + 截图路径;不要只调用工具不输出文本总结。',
     ].join('\n')
 
     const session = await browserPool.acquire('real-reg-' + c.id)
+    const shotDir = `screenshots/real-reg-${c.id}`
+    rmSync(shotDir, { recursive: true, force: true }) // 清旧截图,只留本轮
     try {
       // CDP 新页面是空白 about:blank,先导航到已登录后台首页(共享 cookie → 已登录),
       // 之后 agent 用菜单点击导航到目标模块,而非 URL。
@@ -118,11 +120,11 @@ async function main(): Promise<void> {
         console.log('  (首页导航警告:', String((e as Error).message).slice(0, 80), ')'),
       )
       const tools = makeBrowserTools(session)
-      const executor = { ...makeExecutor(tools), maxTurns: 40 }
+      // timeoutMs:整 case 上限(防卡死);callTimeoutMs:单次 LLM 调用上限
+      const executor = { ...makeExecutor(tools), maxTurns: 40, timeoutMs: 180000, callTimeoutMs: 60000 }
       const r = await oma.runAgent(executor, prompt)
-      console.log(`  -> success=${r.success}`)
+      console.log(`  -> success=${r.success}` + (r.error ? `  error=${String(r.error).slice(0, 120)}` : ''))
       console.log(`  -> 输出:${r.output.slice(0, 600)}`)
-      const shotDir = `screenshots/real-reg-${c.id}`
       const shots = existsSync(shotDir) ? readdirSync(shotDir) : []
       console.log(`  -> 截图(${shots.length}):${shots.join(', ') || '(无)'}`)
       if (r.success) completed++
