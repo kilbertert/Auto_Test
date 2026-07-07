@@ -33,7 +33,16 @@ class BrowserPool {
     if (this.browser) return
     const cdp = this.cdpUrl
     if (cdp) {
-      this.browser = await chromium.connectOverCDP(cdp)
+      // CDP 连接:超时 60s + 重试一次(应对 Edge 偶发慢响应/累积标签)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          this.browser = await chromium.connectOverCDP(cdp, { timeout: 60000 })
+          break
+        } catch (e) {
+          if (attempt === 1) throw e
+          await new Promise((r) => setTimeout(r, 2000))
+        }
+      }
       const ctxs = this.browser.contexts()
       this.sharedContext = ctxs[0] ?? (await this.browser.newContext({ ignoreHTTPSErrors: true }))
     } else {
