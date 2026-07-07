@@ -150,10 +150,10 @@ export async function recordCase(
   for (let i = 0; i < tc.structuredSteps.length; i++) {
     const step = tc.structuredSteps[i]
     const action = normalizeAction(step)
-    // select = 点击选项文本(下拉框由前一步打开);其他用显式 locator 或 AI
+    // select = 点击选项文本(下拉框由前一步打开);value 空则走 AI 解析
     let resolvedLocator: Locator | null = null
-    if (step.action === 'select') {
-      resolvedLocator = { type: 'text', value: (step.value ?? '').trim() }
+    if (step.action === 'select' && step.value && step.value.trim()) {
+      resolvedLocator = { type: 'text', value: step.value.trim() }
     } else if (step.locator && step.locator.type !== 'alias') {
       resolvedLocator = step.locator
     }
@@ -197,11 +197,18 @@ export async function recordCase(
   let assertionsResolved = 0
   for (const a of tc.structuredAssertions) {
     const needsLoc = a.kind !== 'url' && a.kind !== 'title'
-    let loc: Locator | null = a.locator && a.locator.type !== 'alias' ? a.locator : null
-    if (needsLoc && !loc) {
+    let loc: Locator | null = null
+    let retryable = true
+    if (a.kind === 'text' && a.expected && a.expected.trim()) {
+      // text 断言:直接检查期望文本是否出现在页面(可靠,不解析模糊 target 元素)
+      loc = { type: 'text', value: a.expected.trim() }
+      retryable = false // 文本在不在页面是事实,非 locator 问题,不重试
+    } else if (a.locator && a.locator.type !== 'alias') {
+      loc = a.locator
+    } else if (needsLoc) {
       loc = await resolveLocator(page, a.target ?? a.expected) // AI
     }
-    if (needsLoc && loc) {
+    if (needsLoc && loc && retryable) {
       const pass = await verifyAssert(byName, ctx, a.kind, loc, a.expected)
       if (!pass) {
         onProgress?.({ type: 'record', text: `断言 ${a.kind} 录制未通过,重试定位…` })
