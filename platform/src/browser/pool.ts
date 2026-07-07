@@ -43,6 +43,7 @@ class BrowserPool {
           await new Promise((r) => setTimeout(r, 2000))
         }
       }
+      if (!this.browser) throw new Error('CDP connect failed')
       const ctxs = this.browser.contexts()
       this.sharedContext = ctxs[0] ?? (await this.browser.newContext({ ignoreHTTPSErrors: true }))
     } else {
