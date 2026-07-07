@@ -15,6 +15,7 @@ import type { StructuredStep, StructuredAssertion } from '../interpreter/schemas
 
 const modulePath = process.argv[2]
 const N = parseInt(process.argv[3] ?? '5', 10)
+const force = process.argv.includes('--force')
 
 interface Row {
   id: number
@@ -26,8 +27,9 @@ interface Row {
 
 async function main(): Promise<void> {
   if (!modulePath) {
-    console.error('用法: npm run record <modulePath> [N]')
-    console.error('例: npm run record 数据看板 3')
+    console.error('用法: npm run record -- <modulePath> [N] [--force]')
+    console.error('例: npm run record -- 数据看板 3        (录制未录制的)')
+    console.error('    npm run record -- 数据看板 3 --force (重新录制已录制的)')
     process.exit(1)
   }
   if (!config.hasLlm) {
@@ -35,7 +37,7 @@ async function main(): Promise<void> {
     process.exit(1)
   }
   runMigrate()
-  console.log(`[record] 模块:${modulePath}  N=${N}  CDP:${process.env.BROWSER_CDP_URL ?? '(未设,开新浏览器)'}`)
+  console.log(`[record] 模块:${modulePath}  N=${N}  CDP:${process.env.BROWSER_CDP_URL ?? '(未设,开新浏览器)'}${force ? '  [--force 重新录制]' : ''}`)
   const cnt = sqlite
     .prepare('SELECT COUNT(*) n FROM test_case WHERE module_path LIKE ?')
     .get(modulePath + '%') as { n: number }
@@ -49,16 +51,17 @@ async function main(): Promise<void> {
   )
   console.log('  interpret:', interp)
 
-  // 2. 取未录制的 interpreted 用例
+  // 2. 取待录制用例(--force 时含已录制,可重录)
+  const where = ['structured_steps IS NOT NULL', "interpret_status='done'"]
+  if (!force) where.push("(record_status IS NULL OR record_status != 'recorded')")
   const rows = sqlite
     .prepare(
       `SELECT id, title, module_path, structured_steps, structured_assertions
-       FROM test_case WHERE structured_steps IS NOT NULL AND interpret_status='done'
-       AND (record_status IS NULL OR record_status != 'recorded') AND module_path LIKE ?
+       FROM test_case WHERE ${where.join(' AND ')} AND module_path LIKE ?
        ORDER BY id LIMIT ?`,
     )
     .all(modulePath + '%', N) as Row[]
-  console.log(`[2] 待录制:${rows.length}`)
+  console.log(`[2] 待录制:${rows.length}${force ? '(含已录制,--force)' : ''}`)
 
   if (rows.length === 0) {
     console.log('[record] 无待录制用例(可能已全部录制),结束。')
