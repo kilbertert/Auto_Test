@@ -21,6 +21,7 @@ import type { StructuredStep, StructuredAssertion } from '../interpreter/schemas
 
 const modulePath = process.argv[2]
 const N = parseInt(process.argv[3] ?? '5', 10)
+const LOGIN_URL = process.env.TEST_LOGIN_URL ?? config.TARGET_LOGIN_URL
 
 interface CaseRow {
   id: number
@@ -93,13 +94,14 @@ async function main(): Promise<void> {
     const asserts = c.structured_assertions ? (JSON.parse(c.structured_assertions) as StructuredAssertion[]) : []
     console.log(`\n[3] 执行 #${c.id} 「${c.title}」  (${c.module_path})`)
     const prompt = [
-      '你在一个已登录的后台中(CDP 连接,无需登录)。执行以下测试用例,逐步用 browser_* 工具完成。',
+      `你已在后台首页(${LOGIN_URL},CDP 已登录)。执行以下测试用例,逐步用 browser_* 工具完成。`,
       `用例标题:${c.title}`,
       `模块:${c.module_path}`,
       `\n## 结构化步骤\n${JSON.stringify(steps, null, 2)}`,
       `\n## 断言\n${JSON.stringify(asserts, null, 2)}`,
       '\n## 要求',
-      '- "进入/打开 X 页面"=在后台菜单中点击对应项(先 browser_snapshot 看菜单,再 browser_locate 找菜单项,browser_click),不是 URL 导航。',
+      '- 你已在后台首页。**不要用 browser_navigate 到页面名(非 URL)**;"进入/打开 X 页面"=在左侧/顶部菜单中点击对应项(先 browser_snapshot 看菜单结构,再 browser_locate 按菜单项文本定位,browser_click)。',
+      '- 数据看板等模块可能在左侧菜单"数据"或顶部"运营/充电桩"下,用 browser_snapshot 找到并点击进入。',
       '- 每个需要操作元素的步骤:browser_locate(用 targetDescription 中文描述)定位 → click/type/select 等。',
       '- 完成后用 browser_assert 校验断言,browser_screenshot 截图。',
       '- **只读安全**:不要做创建/删除/编辑/保存等写操作;若步骤要求写操作,跳过该步并在输出标记"跳过写操作"。',
@@ -108,6 +110,11 @@ async function main(): Promise<void> {
 
     const session = await browserPool.acquire('real-reg-' + c.id)
     try {
+      // CDP 新页面是空白 about:blank,先导航到已登录后台首页(共享 cookie → 已登录),
+      // 之后 agent 用菜单点击导航到目标模块,而非 URL。
+      await session.page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch((e) =>
+        console.log('  (首页导航警告:', String((e as Error).message).slice(0, 80), ')'),
+      )
       const tools = makeBrowserTools(session)
       const executor = { ...makeExecutor(tools), maxTurns: 25 }
       const r = await oma.runAgent(executor, prompt)
