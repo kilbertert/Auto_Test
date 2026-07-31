@@ -284,7 +284,7 @@ async function doctor(): Promise<boolean> {
   console.log('\n环境检查：')
   for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
   if (!providerCheck.ok || !apiKeyCheck.ok) {
-    console.log('  Windows 修复方式：关闭窗口后重新双击 Auto-Test.cmd，安装器会配置 API 地址和隐藏输入的 API Key。')
+    console.log('  Windows 修复方式：关闭窗口后重新双击内部私有包中的 Auto-Test.cmd，安装器会自动恢复模型配置。')
   }
   if (!chromiumCheck.ok && input.isTTY && await confirm('现在安装 Chromium 浏览器', true)) {
     chromiumCheck.ok = await spawnInherited('npx', ['playwright', 'install', 'chromium']) === 0

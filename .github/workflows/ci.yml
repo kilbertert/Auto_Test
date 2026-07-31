@@ -40,6 +40,13 @@ jobs:
       - name: Run deterministic checks
         run: npm run check
 
+      - name: Verify private Windows package assembly
+        run: |
+          printf '%s\n' 'synthetic-private-package-key' | scripts/build-private-windows-package.sh
+          package="$(find artifacts/private-release -name 'Auto-Test-Windows-private-*.zip' -print -quit)"
+          test -n "$package"
+          test "$(unzip -p "$package" Auto-Test.private-key)" = 'synthetic-private-package-key'
+
   windows-verify:
     name: Windows Verify
     runs-on: windows-latest
@@ -69,9 +76,6 @@ jobs:
       - name: Verify Windows bootstrap
         shell: pwsh
         env:
-          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.invalid/v1
-          AUTO_TEST_CODEX_MODEL: synthetic-model
-          AUTO_TEST_PERSIST_API_KEY: "0"
           AUTO_TEST_SKIP_API_PROBE: "1"
           AUTO_TEST_MODEL_API_KEY: synthetic-ci-key
         run: |
@@ -82,11 +86,7 @@ jobs:
       - name: Verify legacy provider migration
         shell: pwsh
         env:
-          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.invalid/v1
-          AUTO_TEST_CODEX_MODEL: synthetic-model
-          AUTO_TEST_PERSIST_API_KEY: "0"
           AUTO_TEST_SKIP_API_PROBE: "1"
-          AUTO_TEST_MODEL_API_KEY: synthetic-ci-key
         run: |
           $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
@@ -101,10 +101,13 @@ jobs:
           env_key = "CLIPROXYAPI_KEY"
           '@
           Set-Content -Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml') -Value $legacyConfig -Encoding UTF8
-          $legacySecret = ConvertFrom-SecureString (ConvertTo-SecureString 'legacy-proxy-key' -AsPlainText -Force)
-          Set-Content -Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi') -Value $legacySecret -Encoding UTF8
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          $previousSecret = Get-Content -Raw -Encoding UTF8 $secretPath
+          Set-Content -Path .\Auto-Test.private-key -Value 'synthetic-private-package-key' -NoNewline -Encoding UTF8
           .\Auto-Test.cmd --setup-only
           .\Auto-Test.cmd doctor
+          if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed' }
+          if ((Get-Content -Raw -Encoding UTF8 $secretPath) -eq $previousSecret) { throw 'Private package key did not replace the existing DPAPI secret' }
 
       - name: Verify generated Codex provider config
         shell: pwsh
@@ -114,15 +117,17 @@ jobs:
           $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
           if (-not (Test-Path $configPath)) { throw 'Codex config was not created' }
           $config = Get-Content -Raw -Encoding UTF8 $configPath
-          if ($config -notmatch 'model = "synthetic-model"') { throw 'Model was not configured' }
+          if ($config -notmatch 'model = "gpt-5\.6-sol"') { throw 'Default model was not configured' }
           if ($config -notmatch 'model_provider = "auto_test_api"') { throw 'Provider was not configured' }
           if ($config -notmatch '\[model_providers\.auto_test_api\]') { throw 'Provider section was not configured' }
-          if ($config -notmatch 'base_url = "https://model-api\.example\.invalid/v1"') { throw 'Base URL was not configured' }
+          if ($config -notmatch 'base_url = "https://api\.psydo\.top/v1"') { throw 'Default Base URL was not configured' }
           if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
           if ($config -notmatch 'env_key = "AUTO_TEST_MODEL_API_KEY"') { throw 'Provider API key environment was not configured' }
           if ($config -notmatch 'requires_openai_auth = false') { throw 'Account login was not disabled' }
           if ($config -match 'cliproxyapi|CLIProxyAPI|CLIPROXYAPI_KEY') { throw 'Legacy CLIProxyAPI configuration remains' }
-          if ($config -match 'synthetic-ci-key') { throw 'API key leaked into config.toml' }
-          if (Test-Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi')) { throw 'CI key was persisted despite opt-out' }
+          if ($config -match 'synthetic-ci-key|synthetic-private-package-key') { throw 'API key leaked into config.toml' }
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          if (-not (Test-Path $secretPath)) { throw 'Private package key was not persisted with DPAPI' }
+          if ((Get-Content -Raw -Encoding UTF8 $secretPath) -match 'synthetic-private-package-key') { throw 'DPAPI file contains the plaintext API key' }
           $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
           if ((& $codex --version) -notmatch '0\.144\.5') { throw 'Unexpected Codex CLI version' }

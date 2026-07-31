@@ -31,6 +31,7 @@ screenshots/
 .auth/
 storage-state*.json
 auth-state*.json
+Auto-Test.private-key
 
 # Real test inputs are private by default. Synthetic templates may be committed.
 *.xlsx

@@ -13,13 +13,18 @@ Set-Location $RepositoryRoot
 
 $NodeVersion = '24.15.0'
 $CodexVersion = '0.144.5'
+$DefaultBaseUrl = 'https://api.psydo.top/v1'
+$DefaultModel = 'gpt-5.6-sol'
 $ProviderId = 'auto_test_api'
 $ProviderName = 'Auto-Test Model API'
 $ProviderKeyEnvironment = 'AUTO_TEST_MODEL_API_KEY'
 $LegacyProviderId = 'cliproxyapi'
+$BootstrapSecretFileName = 'Auto-Test.private-key'
 $script:ApiConfigurationChanged = $false
 $script:ProviderConfigPath = ''
 $script:ProviderSecretPath = ''
+$script:BootstrapSecretPath = ''
+$script:BootstrapSecretUsed = $false
 $script:PreviousConfigExists = $false
 $script:PreviousConfigContent = ''
 $script:PreviousSecretExists = $false
@@ -131,6 +136,42 @@ function Convert-SecureText([Security.SecureString] $SecureValue) {
   }
 }
 
+function Protect-Secret([string] $Value) {
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+  $entropy = [Text.UTF8Encoding]::new($false).GetBytes('Auto-Test Model API Key v1')
+  $protected = $null
+  try {
+    $protected = [Security.Cryptography.ProtectedData]::Protect(
+      $bytes,
+      $entropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    return [Convert]::ToBase64String($protected)
+  } finally {
+    if ($bytes.Length -gt 0) { [Array]::Clear($bytes, 0, $bytes.Length) }
+    if ($entropy.Length -gt 0) { [Array]::Clear($entropy, 0, $entropy.Length) }
+    if ($protected -and $protected.Length -gt 0) { [Array]::Clear($protected, 0, $protected.Length) }
+  }
+}
+
+function Unprotect-Secret([string] $Value) {
+  $protected = [Convert]::FromBase64String($Value)
+  $entropy = [Text.UTF8Encoding]::new($false).GetBytes('Auto-Test Model API Key v1')
+  $bytes = $null
+  try {
+    $bytes = [Security.Cryptography.ProtectedData]::Unprotect(
+      $protected,
+      $entropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    return [Text.UTF8Encoding]::new($false).GetString($bytes)
+  } finally {
+    if ($protected.Length -gt 0) { [Array]::Clear($protected, 0, $protected.Length) }
+    if ($entropy.Length -gt 0) { [Array]::Clear($entropy, 0, $entropy.Length) }
+    if ($bytes -and $bytes.Length -gt 0) { [Array]::Clear($bytes, 0, $bytes.Length) }
+  }
+}
+
 function Escape-TomlString([string] $Value) {
   return $Value.Replace('\', '\\').Replace('"', '\"')
 }
@@ -155,8 +196,10 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
 
   $configPath = Join-Path $codexHome 'config.toml'
   $secretPath = Join-Path $codexHome 'provider-key.dpapi'
+  $bootstrapSecretPath = Join-Path $RepositoryRoot $BootstrapSecretFileName
   $script:ProviderConfigPath = $configPath
   $script:ProviderSecretPath = $secretPath
+  $script:BootstrapSecretPath = $bootstrapSecretPath
   $script:PreviousConfigExists = Test-Path $configPath
   $script:PreviousConfigContent = if ($script:PreviousConfigExists) { Get-Content -Raw -Encoding UTF8 $configPath } else { '' }
   $script:PreviousSecretExists = Test-Path $secretPath
@@ -187,17 +230,28 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   $apiKey = [Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process')
   $apiKeyFromProcess = -not [string]::IsNullOrWhiteSpace($apiKey)
   if (-not $apiKeyFromProcess) { $apiKey = '' }
+  $apiKeyFromBootstrap = $false
+  if (-not $ForcePrompt -and (Test-Path $bootstrapSecretPath)) {
+    $apiKey = (Get-Content -Raw -Encoding UTF8 $bootstrapSecretPath).Trim()
+    if ([string]::IsNullOrWhiteSpace($apiKey)) { throw '私有安装包中的模型 API Key 为空。' }
+    $apiKeyFromBootstrap = $true
+    $script:BootstrapSecretUsed = $true
+  }
   $apiKeyLoadedFromDpapi = $false
   if (-not $ForcePrompt -and $providerReady -and -not $apiKey -and (Test-Path $secretPath)) {
     try {
       $encrypted = Get-Content -Raw -Encoding UTF8 $secretPath
-      $apiKey = Convert-SecureText (ConvertTo-SecureString $encrypted.Trim())
+      try {
+        $apiKey = Unprotect-Secret $encrypted.Trim()
+      } catch {
+        $apiKey = Convert-SecureText (ConvertTo-SecureString $encrypted.Trim())
+      }
       $apiKeyLoadedFromDpapi = $true
     } catch {
       throw '已保存的 API Key 无法由当前 Windows 用户解密，请使用 --reconfigure-api 重新配置。'
     }
   }
-  $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or -not $providerReady -or
+  $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or $apiKeyFromBootstrap -or -not $providerReady -or
     $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
   if ($baseUrl -and $existingBaseUrl -and $baseUrl -ne $existingBaseUrl) {
     $script:ApiConfigurationChanged = $true
@@ -207,8 +261,6 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   }
 
   if ($ForcePrompt) {
-    $baseUrl = ''
-    $model = ''
     $apiKey = ''
     $apiKeyFromProcess = $false
     $providerReady = $false
@@ -217,7 +269,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $providerReady = $false
     Write-Host ''
     Write-Host '[迁移] 检测到旧的服务器 CLIProxyAPI 配置。'
-    Write-Host '       请改为填写 Windows 能够直接访问的模型 API，不需要暴露 Auto-Test 服务器。'
+    Write-Host '       正在自动改用内置的直连模型 API，不需要暴露 Auto-Test 服务器。'
   }
 
   if (-not $baseUrl -and $providerReady -and $existingBaseUrl) {
@@ -227,43 +279,32 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $model = $existingModel
   }
   if (-not $baseUrl) {
-    if ([Console]::IsInputRedirected) {
-      throw '缺少 AUTO_TEST_CODEX_BASE_URL，无法在非交互模式配置模型 API。'
-    }
-    Write-Host ''
-    Write-Host '请输入现有的、Windows 能够直接访问的 Responses API 地址。'
-    $baseUrl = (Read-Host 'API Base URL').Trim()
+    $baseUrl = $DefaultBaseUrl
   }
   if (-not (Test-HttpUrl $baseUrl)) { throw "API Base URL 无效：$baseUrl" }
 
   if (-not $model) {
-    if ([Console]::IsInputRedirected) {
-      throw '缺少 AUTO_TEST_CODEX_MODEL，无法在非交互模式配置模型 API。'
-    }
-    $model = (Read-Host '模型 ID（由 API 服务提供方给出）').Trim()
+    $model = $DefaultModel
   }
   if ([string]::IsNullOrWhiteSpace($model) -or $model -match '[\r\n]') {
     throw '模型 ID 无效。'
   }
 
-  $secureKey = $null
-  $keyProvidedNow = $apiKeyFromProcess
+  $keyProvidedNow = $apiKeyFromProcess -or $apiKeyFromBootstrap
   if (-not $apiKey) {
     if ([Console]::IsInputRedirected) {
-      throw "缺少 $ProviderKeyEnvironment，无法在非交互模式配置模型 API。"
+      throw '当前是公开源码包，没有包含私有模型 API Key。请使用内部私有 Windows 安装包。'
     }
-    $secureKey = Read-Host 'API Key（输入过程不会显示）' -AsSecureString
+    $secureKey = Read-Host 'API Key（公开源码包首次使用时需要；输入过程不会显示）' -AsSecureString
     $apiKey = Convert-SecureText $secureKey
     if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'API Key 不能为空。' }
     $keyProvidedNow = $true
-  } elseif ($keyProvidedNow -and $env:AUTO_TEST_PERSIST_API_KEY -ne '0') {
-    $secureKey = ConvertTo-SecureString $apiKey -AsPlainText -Force
   }
   if ($keyProvidedNow) {
     if ($env:AUTO_TEST_PERSIST_API_KEY -eq '0') {
       Remove-Item -Force $secretPath -ErrorAction SilentlyContinue
     } else {
-      $encrypted = ConvertFrom-SecureString $secureKey
+      $encrypted = Protect-Secret $apiKey
       [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
     }
   }
@@ -284,6 +325,12 @@ requires_openai_auth = false
   [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
   Write-Host "[OK] Codex API Provider：$ProviderName / $model"
   Write-Host "     配置目录：$codexHome"
+}
+
+function Complete-BootstrapSecretImport {
+  if (-not $script:BootstrapSecretUsed -or -not $script:BootstrapSecretPath) { return }
+  Remove-Item -Force $script:BootstrapSecretPath -ErrorAction Stop
+  Write-Host '[OK] 私有模型凭据已导入当前 Windows 用户并清除明文引导文件'
 }
 
 function Restore-PreviousProviderConfig {
@@ -353,6 +400,7 @@ try {
   Ensure-CodexCli
   Ensure-ApiProvider -ForcePrompt:$reconfigureApi
   Test-CodexProvider
+  Complete-BootstrapSecretImport
   Ensure-ProjectRuntime
 
   if ($setupOnly) {

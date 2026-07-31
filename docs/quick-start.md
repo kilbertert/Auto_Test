@@ -8,7 +8,7 @@
 
 ## 推荐方式：交互入口
 
-Windows 用户双击仓库根目录的 `Auto-Test.cmd`。启动器会自动安装 Node.js、固定版本 Codex CLI、项目依赖和 Chromium，并通过隐藏输入配置自定义 Responses API，不需要 `codex login`。
+Windows 用户使用内部私有包时，双击仓库根目录的 `Auto-Test.cmd`。启动器会自动安装 Node.js、固定版本 Codex CLI、项目依赖和 Chromium，并导入包内预置的直连 Responses API 配置，不需要填写模型信息或执行 `codex login`。公开源码包不包含私有 API Key。
 
 其他系统执行：
 
