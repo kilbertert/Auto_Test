@@ -109,6 +109,22 @@ jobs:
           if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed' }
           if ((Get-Content -Raw -Encoding UTF8 $secretPath) -eq $previousSecret) { throw 'Private package key did not replace the existing DPAPI secret' }
 
+      - name: Verify no-argument CMD launcher
+        shell: pwsh
+        env:
+          AUTO_TEST_SKIP_API_PROBE: "1"
+          AUTO_TEST_MODEL_API_KEY: synthetic-private-package-key
+          AUTO_TEST_NO_PAUSE: "1"
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $output = cmd.exe /d /c "Auto-Test.cmd < nul" 2>&1
+          $exitCode = $LASTEXITCODE
+          if ($output -match 'syntax of the command is incorrect|命令语法不正确') {
+            throw "CMD launcher syntax failed: $output"
+          }
+          if ($exitCode -ne 1) { throw "Expected non-interactive menu exit code 1, got $exitCode" }
+
       - name: Verify generated Codex provider config
         shell: pwsh
         run: |
