@@ -473,7 +473,13 @@ function Install-PlaywrightChromium {
       } finally {
         $ErrorActionPreference = $previousErrorActionPreference
       }
-      if ($lastExitCode -eq 0) { return }
+      if (Test-PlaywrightChromiumReady) {
+        if ($lastExitCode -ne 0) {
+          Write-Host "[OK] Chromium 文件已验证可用（安装命令退出码：$lastExitCode）"
+        }
+        return
+      }
+      Write-Host "[提示] Playwright 安装命令退出码：$lastExitCode，且尚未找到可用的 Chromium。"
     }
   } finally {
     Restore-EnvironmentVariable 'PLAYWRIGHT_DOWNLOAD_HOST' $previousDownloadHost

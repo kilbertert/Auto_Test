@@ -9,6 +9,7 @@ describe('Windows portable launcher', () => {
     expect(script).toContain("node_modules\\npm\\bin\\npm-cli.js")
     expect(script).toContain("node_modules\\@playwright\\test\\cli.js")
     expect(script).toContain('& $script:NodeExecutable $playwrightCli install chromium')
+    expect(script).toContain('if (Test-PlaywrightChromiumReady)')
     expect(script).not.toMatch(/&\s+npx\b/)
     expect(script).not.toMatch(/&\s+npm\b/)
   })
