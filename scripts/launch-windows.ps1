@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
+[Reflection.Assembly]::Load('System.Security') | Out-Null
 
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepositoryRoot
