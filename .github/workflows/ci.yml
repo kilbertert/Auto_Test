@@ -52,7 +52,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}\auto-test-playwright-browsers
+      PLAYWRIGHT_BROWSERS_PATH: .playwright-browsers
 
     steps:
       - name: Check out repository
