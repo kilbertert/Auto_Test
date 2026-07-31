@@ -22,6 +22,8 @@ interface EasyRunOptions {
   profileId?: string
   maxIterations?: number
   outputDirectory?: string
+  headed?: boolean
+  slowMo?: number
 }
 
 const rl = createInterface({ input, output })
@@ -207,6 +209,8 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
     ...urls.flatMap((url) => ['--url', url]),
     ...(profileId ? ['--profile', profileId] : []),
     ...(options.maxIterations ? ['--max-iterations', String(options.maxIterations)] : []),
+    options.headed ? '--headed' : '--headless',
+    ...(options.slowMo !== undefined ? ['--slow-mo', String(options.slowMo)] : []),
     '--output-dir', outputDirectory,
   ]
   const exitCode = await spawnInherited(npmExecutable(), args)
@@ -225,7 +229,14 @@ async function runInteractive(): Promise<void> {
   console.log(`已选择：${filePath}`)
   const urls = urlValues(await ask('粘贴网站 URL；多个地址用空格分开'))
   const single = await confirm('是否先只执行一条数据进行安全验证', true)
-  await runEasyWorkflow({ filePath, urls, ...(single ? { maxIterations: 1 } : {}) })
+  const headed = await confirm('是否显示浏览器中的自动化操作', process.platform === 'win32')
+  await runEasyWorkflow({
+    filePath,
+    urls,
+    ...(single ? { maxIterations: 1 } : {}),
+    headed,
+    ...(headed ? { slowMo: 150 } : {}),
+  })
 }
 
 async function latestStatePath(): Promise<string | undefined> {
@@ -369,12 +380,18 @@ async function main(): Promise<void> {
     const filePath = valueAfter(args, '--file')
     const urls = valuesAfter(args, '--url')
     if (!filePath || urls.length === 0) throw new Error('run 必须提供 --file 和至少一个 --url')
+    if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
+    const slowMoValue = valueAfter(args, '--slow-mo')
+    const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
+    if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
     const code = await runEasyWorkflow({
       filePath,
       urls,
       ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
       ...(args.includes('--one') ? { maxIterations: 1 } : {}),
       ...(valueAfter(args, '--output-dir') ? { outputDirectory: valueAfter(args, '--output-dir')! } : {}),
+      headed: args.includes('--headed'),
+      ...(slowMo !== undefined ? { slowMo } : {}),
     })
     process.exitCode = code
     return
@@ -387,7 +404,7 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/')
+    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--headed|--headless] [--slow-mo 150]')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')
     console.log('      npm run easy -- doctor')

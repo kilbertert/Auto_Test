@@ -53,6 +53,8 @@ interface PipelineOptions {
   maxEnvironmentRetries: number
   profileId?: string
   profileRegistryPath?: string
+  headed: boolean
+  slowMo?: number
 }
 
 function help(): string {
@@ -74,6 +76,9 @@ function help(): string {
     `  --profile-registry <path>   环境 Profile Registry，默认 ${defaultEnvironmentProfileRegistryPath()}`,
     '',
     '浏览器与风险:',
+    '  --headed                    显示 Chromium 自动化操作',
+    '  --headless                  使用无头 Chromium（默认）',
+    '  --slow-mo <ms>              每个 Playwright 动作减速指定毫秒',
     '  --storage-state <id>=<path> 目标 storageState，可重复',
     '  --session-storage <id>=<path> 目标 sessionStorage，可重复',
     '  --allow-write               允许 write phase',
@@ -107,8 +112,10 @@ function targetPaths(args: string[], name: string): Record<string, string> {
 }
 
 function integerOption(args: string[], name: string, fallback?: number): number | undefined {
-  const raw = valueAfter(args, name)
-  if (raw === undefined) return fallback
+  const index = args.indexOf(name)
+  if (index < 0) return fallback
+  const raw = args[index + 1]
+  if (!raw || raw.startsWith('--')) throw new Error(`${name} 必须提供取值`)
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 0) throw new Error(`${name} 必须是非负整数`)
   return value
@@ -134,6 +141,8 @@ function parseArgs(args: string[]): PipelineOptions {
   if (maxIterations !== undefined && maxIterations < 1) throw new Error('--max-iterations 必须大于 0')
   const iterationOffset = integerOption(args, '--iteration-offset')
   const maxEnvironmentRetries = integerOption(args, '--max-environment-retries', 2)!
+  if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
+  const slowMo = integerOption(args, '--slow-mo')
   return {
     filePath: resolve(file),
     urls: valuesAfter(args, '--url'),
@@ -157,6 +166,8 @@ function parseArgs(args: string[]): PipelineOptions {
     maxEnvironmentRetries,
     ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
     ...(valueAfter(args, '--profile-registry') ? { profileRegistryPath: resolve(valueAfter(args, '--profile-registry')!) } : {}),
+    headed: args.includes('--headed'),
+    ...(slowMo !== undefined ? { slowMo } : {}),
   }
 }
 
@@ -193,6 +204,11 @@ async function main(): Promise<void> {
   await mkdir(options.outputDirectory, { recursive: true, mode: 0o750 })
   const mediaDirectory = resolve(options.outputDirectory, 'media')
   await mkdir(mediaDirectory, { recursive: true, mode: 0o750 })
+  const browserOptions = {
+    headless: !options.headed,
+    ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
+  }
+  console.log(`Browser mode: ${options.headed ? 'headed' : 'headless'}${options.slowMo !== undefined ? `; slowMo=${options.slowMo}ms` : ''}`)
 
   const intake = await intakeWorkflowXlsx({
     filePath: options.filePath,
@@ -275,6 +291,8 @@ async function main(): Promise<void> {
         profileId: environmentProfile?.id ?? null,
         maxIterations: options.maxIterations ?? null,
         iterationOffset: options.iterationOffset ?? null,
+        headed: options.headed,
+        slowMo: options.slowMo ?? null,
         briefSha256: createHash('sha256').update(plannerBrief).digest('hex'),
         supplementalImageSha256s: inputBundle.imageSha256s,
       })).digest('hex'),
@@ -286,7 +304,7 @@ async function main(): Promise<void> {
           workspaceDirectory: resolve(options.outputDirectory, 'recovery-planner-workspace'),
         }),
         explore: async (draft, round, previous) => {
-          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment)
+          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
           const evidenceDirectory = resolve(options.outputDirectory, `round-${round}-page-evidence`)
           const seed = previous ?? initialSeed
           const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `round-${round}.autonomous.state.json`))
@@ -300,6 +318,7 @@ async function main(): Promise<void> {
           const resumeFromTarget = existingState ? workflowResumeTarget(existingState, internalPlan) : undefined
           const adapters = targetAdapters(draft.targets)
           return exploreWorkflowPlan(draft, new PlaywrightWorkflowDriver({
+            ...browserOptions,
             storageStateByTarget: adapters.storageStateByTarget,
             sessionStorageByTarget: adapters.sessionStorageByTarget,
           }), {
@@ -326,12 +345,13 @@ async function main(): Promise<void> {
           workspaceDirectory: resolve(options.outputDirectory, `round-${round + 1}-refinement-workspace`),
         }),
         execute: async (plan, attempt) => {
-          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment)
+          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
           const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `runtime-attempt-${attempt}.state.json`))
           const existingState = await stateStore.load()
           const resumeFromTarget = existingState ? workflowResumeTarget(existingState, plan) : undefined
           const adapters = targetAdapters(plan.targets)
           return executeWorkflow(plan, new PlaywrightWorkflowDriver({
+            ...browserOptions,
             storageStateByTarget: adapters.storageStateByTarget,
             sessionStorageByTarget: adapters.sessionStorageByTarget,
           }), {
@@ -368,6 +388,7 @@ async function main(): Promise<void> {
     const evidenceDirectory = resolve(options.outputDirectory, `round-${round}-page-evidence`)
     await writeJson(draftPath, draft)
     const driver = new PlaywrightWorkflowDriver({
+      ...browserOptions,
       storageStateByTarget: options.storageStateByTarget,
       sessionStorageByTarget: options.sessionStorageByTarget,
     })
@@ -422,6 +443,7 @@ async function main(): Promise<void> {
   if (!options.execute) return
 
   const result = await executeWorkflow(plan, new PlaywrightWorkflowDriver({
+    ...browserOptions,
     storageStateByTarget: options.storageStateByTarget,
     sessionStorageByTarget: options.sessionStorageByTarget,
   }), {

@@ -11,6 +11,11 @@ export interface EnvironmentAuthenticationResult {
   refreshedOrigins: string[]
 }
 
+export interface EnvironmentAuthenticationOptions {
+  headless?: boolean
+  slowMo?: number
+}
+
 async function privateJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
@@ -36,6 +41,7 @@ function authenticatedUrl(value: string, login: NonNullable<EnvironmentProfile['
 export async function ensureEnvironmentAuthentication(
   profile: EnvironmentProfile,
   environment: NodeJS.ProcessEnv = process.env,
+  options: EnvironmentAuthenticationOptions = {},
 ): Promise<EnvironmentAuthenticationResult> {
   const adapters = profile.auth.filter((adapter) => adapter.login)
   if (adapters.length === 0) return { profileId: profile.id, checkedOrigins: [], refreshedOrigins: [] }
@@ -45,7 +51,10 @@ export async function ensureEnvironmentAuthentication(
       throw new Error(`Auth adapter for ${adapter.origin} must configure successPathname or successUrlContains`)
     }
   }
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({
+    headless: options.headless ?? true,
+    ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
+  })
   const checkedOrigins: string[] = []
   const refreshedOrigins: string[] = []
   try {

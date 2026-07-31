@@ -172,4 +172,25 @@ describe('CLI output safety', () => {
     expect(recovery.stderr).toContain('--draft 必须提供取值')
     expect(exploration.stderr).toContain('--max-iterations 必须是正整数')
   })
+
+  it('validates workflow browser visibility options before reading the source workbook', () => {
+    const script = resolve(import.meta.dirname, '../src/cli/workflow-pipeline.ts')
+    const conflict = runCli(script, [
+      '--file', 'missing.xlsx',
+      '--headed',
+      '--headless',
+    ], process.cwd())
+    const invalidSlowMo = runCli(script, [
+      '--file', 'missing.xlsx',
+      '--slow-mo', '-1',
+    ], process.cwd())
+    const missingSlowMo = runCli(script, [
+      '--file', 'missing.xlsx',
+      '--slow-mo',
+    ], process.cwd())
+
+    expect(conflict.stderr).toContain('--headed 与 --headless 不能同时使用')
+    expect(invalidSlowMo.stderr).toContain('--slow-mo 必须是非负整数')
+    expect(missingSlowMo.stderr).toContain('--slow-mo 必须提供取值')
+  })
 })

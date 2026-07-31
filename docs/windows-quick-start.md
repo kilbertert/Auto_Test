@@ -87,7 +87,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 1. 在弹出的窗口中选择测试用例 Excel；
 2. 粘贴网站 URL；
 3. 默认先执行一条数据做安全验证；
-4. 等待框架显示最终结果。
+4. 选择是否显示浏览器中的自动化操作；Windows 默认显示，并对动作做轻微减速以便观察；
+5. 等待框架显示最终结果。
 
 如果 URL 已经注册，框架会自动选择对应环境并复用登录状态。每次运行的输出目录也会自动创建。
 
@@ -106,8 +107,12 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --file "C:/TestData/cases.xlsx" `
   --url "https://app.example.test/" `
   --url "https://admin.example.test/" `
+  --headed `
+  --slow-mo 150 `
   --one
 ```
+
+`--headed` 会显示页面探索、认证刷新和最终 Runtime 的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，截图、Trace 和结果报告仍保存在本次结果目录中。
 
 其他命令：
 
