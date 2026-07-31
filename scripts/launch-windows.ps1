@@ -491,8 +491,10 @@ function Install-PlaywrightChromium {
 
 function Test-PlaywrightChromiumReady {
   if (-not $script:NodeExecutable -or -not (Test-Path $script:NodeExecutable)) { return $false }
+  $browserCheck = Join-Path $RepositoryRoot 'scripts\check-playwright-browser.cjs'
+  if (-not (Test-Path $browserCheck)) { return $false }
   try {
-    & $script:NodeExecutable -e "const fs=require('fs'); const p=require('@playwright/test').chromium.executablePath(); process.exit(fs.existsSync(p)?0:1)"
+    & $script:NodeExecutable $browserCheck
     return $LASTEXITCODE -eq 0
   } catch {
     return $false
