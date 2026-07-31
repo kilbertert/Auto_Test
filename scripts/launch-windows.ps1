@@ -34,6 +34,8 @@ $script:PreviousConfigExists = $false
 $script:PreviousConfigContent = ''
 $script:PreviousSecretExists = $false
 $script:PreviousSecretContent = ''
+$script:NodeExecutable = ''
+$script:NpmCliPath = ''
 
 function Resolve-ToolsHome {
   if ($env:AUTO_TEST_TOOLS_HOME) { return $env:AUTO_TEST_TOOLS_HOME }
@@ -60,6 +62,16 @@ function Get-Sha256([string] $Path) {
   }
 }
 
+function Use-NodeRuntime([string] $NodeHome) {
+  $nodeExecutable = Join-Path $NodeHome 'node.exe'
+  $npmCliPath = Join-Path $NodeHome 'node_modules\npm\bin\npm-cli.js'
+  if (-not (Test-Path $nodeExecutable)) { throw 'Auto-Test 独立 Node.js 缺少 node.exe。' }
+  if (-not (Test-Path $npmCliPath)) { throw 'Auto-Test 独立 Node.js 缺少 npm CLI。' }
+  $env:Path = "$NodeHome;$env:Path"
+  $script:NodeExecutable = $nodeExecutable
+  $script:NpmCliPath = $npmCliPath
+}
+
 function Ensure-Node {
   $toolsHome = Resolve-ToolsHome
   $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
@@ -67,7 +79,7 @@ function Ensure-Node {
   $nodeHome = Join-Path $toolsHome $archiveStem
   $nodeExecutable = Join-Path $nodeHome 'node.exe'
   if ((Get-NodeVersion $nodeExecutable) -eq $NodeVersion) {
-    $env:Path = "$nodeHome;$env:Path"
+    Use-NodeRuntime $nodeHome
     Write-Host "[OK] Node.js v$NodeVersion"
     return
   }
@@ -98,7 +110,7 @@ function Ensure-Node {
     Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
   }
   if ((Get-NodeVersion $nodeExecutable) -ne $NodeVersion) { throw 'Node.js 私有安装验证失败。' }
-  $env:Path = "$nodeHome;$env:Path"
+  Use-NodeRuntime $nodeHome
   Write-Host "[OK] Node.js v$NodeVersion"
 }
 
@@ -122,7 +134,7 @@ function Ensure-CodexCli {
 
   Write-Host "[安装] 正在为 Auto-Test 安装独立 Codex CLI $CodexVersion……"
   New-Item -ItemType Directory -Force -Path $toolsHome | Out-Null
-  & npm install --prefix $toolsHome "@openai/codex@$CodexVersion" --no-save --no-package-lock --no-fund --no-audit
+  & $script:NodeExecutable $script:NpmCliPath install --prefix $toolsHome "@openai/codex@$CodexVersion" --no-save --no-package-lock --no-fund --no-audit
   if ($LASTEXITCODE -ne 0) { throw 'Codex CLI 安装失败。请检查 npm 网络或代理配置。' }
   $env:Path = "$(Split-Path -Parent $codexExecutable);$env:Path"
   $env:AUTO_TEST_CODEX_BIN = $codexExecutable
@@ -424,6 +436,13 @@ function Restore-EnvironmentVariable([string] $Name, [string] $PreviousValue) {
 }
 
 function Install-PlaywrightChromium {
+  $playwrightCli = Join-Path $RepositoryRoot 'node_modules\@playwright\test\cli.js'
+  if (-not $script:NodeExecutable -or -not (Test-Path $script:NodeExecutable)) {
+    throw '找不到 Auto-Test 独立 Node.js，无法安装 Chromium。'
+  }
+  if (-not (Test-Path $playwrightCli)) {
+    throw '找不到项目内的 Playwright CLI，请重新运行 Auto-Test 安装。'
+  }
   $previousDownloadHost = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_DOWNLOAD_HOST', 'Process')
   $previousChromiumDownloadHost = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST', 'Process')
   $previousConnectionTimeout = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT', 'Process')
@@ -446,9 +465,10 @@ function Install-PlaywrightChromium {
 
       $previousErrorActionPreference = $ErrorActionPreference
       try {
-        # npm/npx may write progress diagnostics to stderr on Windows PowerShell 5.
+        # Invoke the project CLI with the pinned portable Node runtime. This avoids
+        # npm.ps1/npx.ps1 prefix discovery failures on otherwise clean Windows hosts.
         $ErrorActionPreference = 'Continue'
-        & npx playwright install chromium
+        & $script:NodeExecutable $playwrightCli install chromium
         $lastExitCode = $LASTEXITCODE
       } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -463,23 +483,30 @@ function Install-PlaywrightChromium {
   throw 'Chromium 安装失败。请检查网络，或设置 AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST 后重试。'
 }
 
+function Test-PlaywrightChromiumReady {
+  if (-not $script:NodeExecutable -or -not (Test-Path $script:NodeExecutable)) { return $false }
+  try {
+    & $script:NodeExecutable -e "const fs=require('fs'); const p=require('@playwright/test').chromium.executablePath(); process.exit(fs.existsSync(p)?0:1)"
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
 function Ensure-ProjectRuntime {
   $tsx = Join-Path $RepositoryRoot 'node_modules\.bin\tsx.cmd'
   if (-not (Test-Path $tsx)) {
     Write-Host '[安装] 正在安装 Auto-Test 项目依赖……'
-    & npm ci
+    & $script:NodeExecutable $script:NpmCliPath ci
     if ($LASTEXITCODE -ne 0) { throw 'Auto-Test 项目依赖安装失败。' }
   }
 
-  $browserReady = $false
-  try {
-    & node -e "const fs=require('fs'); const p=require('@playwright/test').chromium.executablePath(); process.exit(fs.existsSync(p)?0:1)"
-    $browserReady = $LASTEXITCODE -eq 0
-  } catch {
-    $browserReady = $false
-  }
+  $browserReady = Test-PlaywrightChromiumReady
   if (-not $browserReady) {
     Install-PlaywrightChromium
+    if (-not (Test-PlaywrightChromiumReady)) {
+      throw 'Chromium 安装命令已结束，但没有找到可用的浏览器文件。'
+    }
   }
   Write-Host '[OK] Auto-Test 项目依赖和浏览器已就绪'
 }
@@ -502,9 +529,9 @@ try {
   }
 
   if ($forwardArgs.Count -eq 0) {
-    & npm run easy
+    & $script:NodeExecutable $script:NpmCliPath run easy
   } else {
-    & npm run easy -- @forwardArgs
+    & $script:NodeExecutable $script:NpmCliPath run easy -- @forwardArgs
   }
   exit $LASTEXITCODE
 } catch {
