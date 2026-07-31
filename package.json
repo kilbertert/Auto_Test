@@ -1,0 +1,53 @@
+{
+  "name": "auto-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI-assisted Excel to Playwright Test compiler",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "import": "tsx src/cli/import-xlsx.ts",
+    "intake:workflow": "tsx src/cli/intake-workflow.ts",
+    "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
+    "autonomous:workflow": "tsx src/cli/workflow-pipeline.ts --autonomous",
+    "plan:workflow": "tsx src/cli/plan-workflow.ts",
+    "plan-recovery:workflow": "tsx src/cli/plan-recovery-workflow.ts",
+    "explore:workflow": "tsx src/cli/explore-workflow.ts",
+    "refine:workflow": "tsx src/cli/refine-workflow.ts",
+    "approve:workflow": "tsx src/cli/approve-workflow.ts",
+    "execute:workflow": "tsx src/cli/execute-workflow.ts",
+    "compile": "tsx src/cli/compile-ir.ts",
+    "explore": "tsx src/cli/explore.ts",
+    "validate:locators": "tsx src/cli/validate-locators.ts",
+    "classify": "tsx src/cli/classify-failures.ts",
+    "repair": "tsx src/cli/repair.ts",
+    "report": "tsx src/cli/report.ts",
+    "report:workflow": "tsx src/cli/workflow-acceptance-report.ts",
+    "fixture": "node tests/fixtures/site/server.mjs",
+    "demo:compile": "npm run compile -- --ir examples/local-login-suite.ir.json --output artifacts/compiled/local-login.spec.ts",
+    "demo:test": "npm run demo:compile && playwright test --config playwright.demo.config.ts",
+    "demo:report": "npm run demo:test && npm run report -- --ir examples/local-login-suite.ir.json --source-map artifacts/compiled/local-login.spec.map.json --playwright-report artifacts/playwright/results.json --output-json artifacts/report/local-login.run-report.json --output-html artifacts/report/local-login.run-report.html",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@e965/xlsx": "^0.20.3",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "fast-xml-parser": "^5.10.1",
+    "he": "^1.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "@types/he": "^1.2.3",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
