@@ -10,33 +10,36 @@
 
 1. 从 Node.js 官方发布包安装 Auto-Test 私有的固定版本 Node.js 24，并校验官方 SHA-256；
 2. 在 Auto-Test 私有工具目录安装与服务器一致的 Codex CLI 固定版本；
-3. 配置 Auto-Test 独立的 Codex API Provider；
+3. 使用现成的 Base URL、模型 ID 和 API Key 配置 Auto-Test 独立的 Codex API Provider；
 4. 发送一次最小模型请求，验证 API 地址、Key 和模型真实可用；
 5. 安装项目依赖和 Chromium；
 6. 打开中文操作菜单。
 
 不需要执行 `codex login`，也不使用 ChatGPT 账号额度。
 
-首次安装时只需提供两项模型 API 信息：
+首次安装时需要提供三项模型 API 信息：
 
-- `API Base URL`：Windows 能够访问的 Responses API 地址；
+- `API Base URL`：Windows 能够直接访问的 Responses API 地址；
+- `模型 ID`：API 服务提供方给出的实际模型名称；
 - `API Key`：隐藏输入，不会显示在窗口或命令历史中。
 
-服务器当前使用 `http://127.0.0.1:8317/v1`，但 `127.0.0.1` 只代表服务器本机。如果 Auto-Test 在另一台 Windows 电脑运行，需要提供代理服务对该电脑可访问的地址。
-
-安装器使用与服务器一致的 Provider 结构：
+Windows 会直接调用上述 API，不需要连接或暴露 Auto-Test 服务器，也不要求安装 CLIProxyAPI。安装器使用通用的直接 API Provider：
 
 ```toml
-model = "gpt-5.6-sol"
-model_provider = "cliproxyapi"
+model = "由 API 服务提供方给出的模型 ID"
+model_provider = "auto_test_api"
 
-[model_providers.cliproxyapi]
+[model_providers.auto_test_api]
+name = "Auto-Test Model API"
+base_url = "https://现有的模型 API 地址/v1"
 wire_api = "responses"
-env_key = "CLIPROXYAPI_KEY"
+env_key = "AUTO_TEST_MODEL_API_KEY"
 requires_openai_auth = false
 ```
 
-Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `CLIPROXYAPI_KEY`，不会写入仓库、TOML 或明文用户环境变量。
+Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
+
+旧版本如果检测到 `cliproxyapi` 配置，会引导重新填写这三项信息。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。
 
 准备完成后会打开中文菜单：
 
@@ -112,8 +115,9 @@ Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保
 管理员批量部署时可以预置环境变量并静默准备：
 
 ```powershell
-$env:AUTO_TEST_CODEX_BASE_URL = "https://your-proxy.example/v1"
-$env:CLIPROXYAPI_KEY = "deployment-secret"
+$env:AUTO_TEST_CODEX_BASE_URL = "https://model-api.example/v1"
+$env:AUTO_TEST_CODEX_MODEL = "your-model-id"
+$env:AUTO_TEST_MODEL_API_KEY = "deployment-secret"
 $env:AUTO_TEST_PERSIST_API_KEY = "0"
 .\Auto-Test.cmd --setup-only
 ```

@@ -13,10 +13,10 @@ Set-Location $RepositoryRoot
 
 $NodeVersion = '24.15.0'
 $CodexVersion = '0.144.5'
-$DefaultModel = 'gpt-5.6-sol'
-$ProviderId = 'cliproxyapi'
-$ProviderName = 'CLIProxyAPI'
-$ProviderKeyEnvironment = 'CLIPROXYAPI_KEY'
+$ProviderId = 'auto_test_api'
+$ProviderName = 'Auto-Test Model API'
+$ProviderKeyEnvironment = 'AUTO_TEST_MODEL_API_KEY'
+$LegacyProviderId = 'cliproxyapi'
 $script:ApiConfigurationChanged = $false
 $script:ProviderConfigPath = ''
 $script:ProviderSecretPath = ''
@@ -153,10 +153,6 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   $env:AUTO_TEST_CODEX_HOME = $codexHome
   $env:AUTO_TEST_CODEX_ENV_KEY = $ProviderKeyEnvironment
 
-  $baseUrl = $env:AUTO_TEST_CODEX_BASE_URL
-  $apiKey = [Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process')
-  $apiKeyFromProcess = -not [string]::IsNullOrWhiteSpace($apiKey)
-  $apiKeyLoadedFromDpapi = $false
   $configPath = Join-Path $codexHome 'config.toml'
   $secretPath = Join-Path $codexHome 'provider-key.dpapi'
   $script:ProviderConfigPath = $configPath
@@ -165,7 +161,34 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   $script:PreviousConfigContent = if ($script:PreviousConfigExists) { Get-Content -Raw -Encoding UTF8 $configPath } else { '' }
   $script:PreviousSecretExists = Test-Path $secretPath
   $script:PreviousSecretContent = if ($script:PreviousSecretExists) { Get-Content -Raw -Encoding UTF8 $secretPath } else { '' }
-  if (-not $apiKey -and (Test-Path $secretPath)) {
+
+  $existingConfig = $script:PreviousConfigContent
+  $providerMatch = [Regex]::Match($existingConfig, '(?m)^\s*model_provider\s*=\s*"([^"]+)"\s*$')
+  $existingProviderId = if ($providerMatch.Success) { $providerMatch.Groups[1].Value } else { '' }
+  $providerSectionPattern = "(?m)^\s*\[model_providers\.$([Regex]::Escape($ProviderId))\]\s*$"
+  $baseUrlMatch = [Regex]::Match($existingConfig, '(?m)^\s*base_url\s*=\s*"([^"]+)"\s*$')
+  $modelMatch = [Regex]::Match($existingConfig, '(?m)^\s*model\s*=\s*"([^"]+)"\s*$')
+  $configuredBaseUrl = if ($baseUrlMatch.Success) { $baseUrlMatch.Groups[1].Value } else { '' }
+  $configuredModel = if ($modelMatch.Success) { $modelMatch.Groups[1].Value } else { '' }
+  $providerKeyPattern = '(?m)^\s*env_key\s*=\s*"' + [Regex]::Escape($ProviderKeyEnvironment) + '"\s*$'
+  $providerReady = $existingProviderId -eq $ProviderId -and
+    [Regex]::IsMatch($existingConfig, $providerSectionPattern) -and
+    [Regex]::IsMatch($existingConfig, '(?m)^\s*wire_api\s*=\s*"responses"\s*$') -and
+    [Regex]::IsMatch($existingConfig, $providerKeyPattern) -and
+    [Regex]::IsMatch($existingConfig, '(?m)^\s*requires_openai_auth\s*=\s*false\s*$') -and
+    -not [string]::IsNullOrWhiteSpace($configuredBaseUrl) -and
+    -not [string]::IsNullOrWhiteSpace($configuredModel)
+  $legacyProvider = $existingProviderId -eq $LegacyProviderId
+  $existingBaseUrl = if ($providerReady) { $configuredBaseUrl } else { '' }
+  $existingModel = if ($providerReady) { $configuredModel } else { '' }
+
+  $baseUrl = $env:AUTO_TEST_CODEX_BASE_URL
+  $model = $env:AUTO_TEST_CODEX_MODEL
+  $apiKey = [Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process')
+  $apiKeyFromProcess = -not [string]::IsNullOrWhiteSpace($apiKey)
+  if (-not $apiKeyFromProcess) { $apiKey = '' }
+  $apiKeyLoadedFromDpapi = $false
+  if (-not $ForcePrompt -and $providerReady -and -not $apiKey -and (Test-Path $secretPath)) {
     try {
       $encrypted = Get-Content -Raw -Encoding UTF8 $secretPath
       $apiKey = Convert-SecureText (ConvertTo-SecureString $encrypted.Trim())
@@ -174,50 +197,78 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
       throw '已保存的 API Key 无法由当前 Windows 用户解密，请使用 --reconfigure-api 重新配置。'
     }
   }
-  $existingConfig = if (Test-Path $configPath) { Get-Content -Raw -Encoding UTF8 $configPath } else { '' }
-  $providerReady = $existingConfig -match 'model_provider\s*=\s*"cliproxyapi"' -and
-    $existingConfig -match '\[model_providers\.cliproxyapi\]'
-  $existingBaseUrl = if ($existingConfig -match 'base_url\s*=\s*"([^"]+)"') { $Matches[1] } else { '' }
-  $script:ApiConfigurationChanged = $ForcePrompt -or -not $providerReady -or $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
+  $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or -not $providerReady -or
+    $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
   if ($baseUrl -and $existingBaseUrl -and $baseUrl -ne $existingBaseUrl) {
+    $script:ApiConfigurationChanged = $true
+  }
+  if ($model -and $existingModel -and $model -ne $existingModel) {
     $script:ApiConfigurationChanged = $true
   }
 
   if ($ForcePrompt) {
     $baseUrl = ''
+    $model = ''
     $apiKey = ''
+    $apiKeyFromProcess = $false
     $providerReady = $false
+  }
+  if ($legacyProvider) {
+    $providerReady = $false
+    Write-Host ''
+    Write-Host '[迁移] 检测到旧的服务器 CLIProxyAPI 配置。'
+    Write-Host '       请改为填写 Windows 能够直接访问的模型 API，不需要暴露 Auto-Test 服务器。'
   }
 
   if (-not $baseUrl -and $providerReady -and $existingBaseUrl) {
     $baseUrl = $existingBaseUrl
+  }
+  if (-not $model -and $providerReady -and $existingModel) {
+    $model = $existingModel
   }
   if (-not $baseUrl) {
     if ([Console]::IsInputRedirected) {
       throw '缺少 AUTO_TEST_CODEX_BASE_URL，无法在非交互模式配置模型 API。'
     }
     Write-Host ''
-    Write-Host '请输入 Windows 能够访问的 Responses API 地址。'
-    Write-Host '注意：服务器上的 http://127.0.0.1:8317/v1 只代表服务器本机，不能直接用于另一台 Windows 电脑。'
+    Write-Host '请输入现有的、Windows 能够直接访问的 Responses API 地址。'
     $baseUrl = (Read-Host 'API Base URL').Trim()
   }
   if (-not (Test-HttpUrl $baseUrl)) { throw "API Base URL 无效：$baseUrl" }
 
+  if (-not $model) {
+    if ([Console]::IsInputRedirected) {
+      throw '缺少 AUTO_TEST_CODEX_MODEL，无法在非交互模式配置模型 API。'
+    }
+    $model = (Read-Host '模型 ID（由 API 服务提供方给出）').Trim()
+  }
+  if ([string]::IsNullOrWhiteSpace($model) -or $model -match '[\r\n]') {
+    throw '模型 ID 无效。'
+  }
+
+  $secureKey = $null
+  $keyProvidedNow = $apiKeyFromProcess
   if (-not $apiKey) {
     if ([Console]::IsInputRedirected) {
       throw "缺少 $ProviderKeyEnvironment，无法在非交互模式配置模型 API。"
     }
     $secureKey = Read-Host 'API Key（输入过程不会显示）' -AsSecureString
     $apiKey = Convert-SecureText $secureKey
-    if (-not $apiKey) { throw 'API Key 不能为空。' }
-    if ($env:AUTO_TEST_PERSIST_API_KEY -ne '0') {
+    if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'API Key 不能为空。' }
+    $keyProvidedNow = $true
+  } elseif ($keyProvidedNow) {
+    $secureKey = ConvertTo-SecureString $apiKey -AsPlainText -Force
+  }
+  if ($keyProvidedNow) {
+    if ($env:AUTO_TEST_PERSIST_API_KEY -eq '0') {
+      Remove-Item -Force $secretPath -ErrorAction SilentlyContinue
+    } else {
       $encrypted = ConvertFrom-SecureString $secureKey
       [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
     }
   }
   [Environment]::SetEnvironmentVariable($ProviderKeyEnvironment, $apiKey, 'Process')
 
-  $model = if ($env:AUTO_TEST_CODEX_MODEL) { $env:AUTO_TEST_CODEX_MODEL } else { $DefaultModel }
   $config = @"
 model = "$(Escape-TomlString $model)"
 model_provider = "$ProviderId"
@@ -258,7 +309,7 @@ function Test-CodexProvider {
     & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
     if ($LASTEXITCODE -ne 0) {
       Restore-PreviousProviderConfig
-      throw '模型 API 探针失败，已恢复上一版配置。请检查 Windows 可访问的 API Base URL、API Key 和模型名称。'
+      throw '模型 API 探针失败，已恢复上一版配置。请检查 API Base URL、API Key 和模型 ID。'
     }
     $probe = Get-Content -Raw -Encoding UTF8 $probePath
     if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {

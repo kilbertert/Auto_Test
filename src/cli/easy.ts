@@ -258,10 +258,19 @@ async function doctor(): Promise<boolean> {
   const codexInstalled = await commandAvailable(codexExecutable, ['--version'])
   const codexHome = process.env.CODEX_HOME || resolve(homedir(), '.codex')
   const codexConfigPath = resolve(codexHome, 'config.toml')
-  const providerEnvironmentName = process.env.AUTO_TEST_CODEX_ENV_KEY || 'CLIPROXYAPI_KEY'
   const codexConfig = await readFile(codexConfigPath, 'utf8').catch(() => '')
-  const providerConfigured = /model_provider\s*=\s*"[^\"]+"/.test(codexConfig) &&
-    /\[model_providers\.[^\]]+\]/.test(codexConfig)
+  const providerId = /model_provider\s*=\s*"([^"]+)"/.exec(codexConfig)?.[1]
+  const escapedProviderId = providerId?.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')
+  const providerSection = escapedProviderId
+    ? new RegExp('\\[model_providers\\.' + escapedProviderId + '\\]([\\s\\S]*?)(?=\\n\\s*\\[|$)').exec(codexConfig)?.[1]
+    : undefined
+  const configuredEnvironmentName = providerSection
+    ? /env_key\s*=\s*"([^"]+)"/.exec(providerSection)?.[1]
+    : undefined
+  const providerEnvironmentName = process.env.AUTO_TEST_CODEX_ENV_KEY ||
+    configuredEnvironmentName ||
+    'AUTO_TEST_MODEL_API_KEY'
+  const providerConfigured = Boolean(providerId && providerSection)
   const apiKeyAvailable = Boolean(process.env[providerEnvironmentName])
   const nodeCheck = { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 }
   const codexInstallCheck = { label: 'Codex CLI 已安装', ok: codexInstalled }

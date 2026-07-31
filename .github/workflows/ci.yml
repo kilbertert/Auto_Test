@@ -69,14 +69,42 @@ jobs:
       - name: Verify Windows bootstrap
         shell: pwsh
         env:
-          AUTO_TEST_CODEX_BASE_URL: https://example.invalid/v1
+          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.invalid/v1
+          AUTO_TEST_CODEX_MODEL: synthetic-model
           AUTO_TEST_PERSIST_API_KEY: "0"
           AUTO_TEST_SKIP_API_PROBE: "1"
-          CLIPROXYAPI_KEY: synthetic-ci-key
+          AUTO_TEST_MODEL_API_KEY: synthetic-ci-key
         run: |
           $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
           .\Auto-Test.cmd --setup-only
+
+      - name: Verify legacy provider migration
+        shell: pwsh
+        env:
+          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.invalid/v1
+          AUTO_TEST_CODEX_MODEL: synthetic-model
+          AUTO_TEST_PERSIST_API_KEY: "0"
+          AUTO_TEST_SKIP_API_PROBE: "1"
+          AUTO_TEST_MODEL_API_KEY: synthetic-ci-key
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $legacyConfig = @'
+          model = "legacy-model"
+          model_provider = "cliproxyapi"
+
+          [model_providers.cliproxyapi]
+          name = "CLIProxyAPI"
+          base_url = "http://127.0.0.1:8317/v1"
+          wire_api = "responses"
+          env_key = "CLIPROXYAPI_KEY"
+          '@
+          Set-Content -Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml') -Value $legacyConfig -Encoding UTF8
+          $legacySecret = ConvertFrom-SecureString (ConvertTo-SecureString 'legacy-proxy-key' -AsPlainText -Force)
+          Set-Content -Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi') -Value $legacySecret -Encoding UTF8
+          .\Auto-Test.cmd --setup-only
+          .\Auto-Test.cmd doctor
 
       - name: Verify generated Codex provider config
         shell: pwsh
@@ -86,8 +114,14 @@ jobs:
           $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
           if (-not (Test-Path $configPath)) { throw 'Codex config was not created' }
           $config = Get-Content -Raw -Encoding UTF8 $configPath
-          if ($config -notmatch 'model_provider = "cliproxyapi"') { throw 'Provider was not configured' }
+          if ($config -notmatch 'model = "synthetic-model"') { throw 'Model was not configured' }
+          if ($config -notmatch 'model_provider = "auto_test_api"') { throw 'Provider was not configured' }
+          if ($config -notmatch '\[model_providers\.auto_test_api\]') { throw 'Provider section was not configured' }
+          if ($config -notmatch 'base_url = "https://model-api\.example\.invalid/v1"') { throw 'Base URL was not configured' }
           if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
+          if ($config -notmatch 'env_key = "AUTO_TEST_MODEL_API_KEY"') { throw 'Provider API key environment was not configured' }
+          if ($config -notmatch 'requires_openai_auth = false') { throw 'Account login was not disabled' }
+          if ($config -match 'cliproxyapi|CLIProxyAPI|CLIPROXYAPI_KEY') { throw 'Legacy CLIProxyAPI configuration remains' }
           if ($config -match 'synthetic-ci-key') { throw 'API key leaked into config.toml' }
           if (Test-Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi')) { throw 'CI key was persisted despite opt-out' }
           $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
