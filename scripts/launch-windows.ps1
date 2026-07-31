@@ -39,6 +39,17 @@ function Get-NodeVersion([string] $Executable) {
   }
 }
 
+function Get-Sha256([string] $Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '')
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Ensure-Node {
   $toolsHome = Resolve-ToolsHome
   $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
@@ -64,7 +75,7 @@ function Ensure-Node {
     $checksumLine = Get-Content $checksumPath | Where-Object { $_ -match "\s+$([Regex]::Escape($archiveStem)).zip$" } | Select-Object -First 1
     if (-not $checksumLine) { throw 'Node.js 官方校验文件中没有找到目标 Windows 发布包。' }
     $expectedHash = ($checksumLine -split '\s+')[0].ToUpperInvariant()
-    $actualHash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToUpperInvariant()
+    $actualHash = (Get-Sha256 $archivePath).ToUpperInvariant()
     if ($actualHash -ne $expectedHash) { throw 'Node.js 发布包 SHA-256 校验失败，已拒绝安装。' }
     Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
     $extractedHome = Join-Path $extractPath $archiveStem
