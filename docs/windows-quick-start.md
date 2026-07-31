@@ -41,6 +41,15 @@ Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保
 
 旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。
 
+Chromium 首次下载默认优先使用适合当前 Windows 部署区域的 Playwright 镜像；镜像失败会自动回退官方 CDN。企业网络如果有自己的制品镜像，可以在启动前临时指定：
+
+```powershell
+$env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwright"
+.\Auto-Test.cmd --setup-only
+```
+
+浏览器安装完成后会复用本机缓存，后续启动不会重复下载 190 MiB 以上的 Chromium 压缩包。
+
 公开 GitHub 源码和公开 Release 不包含 API Key。只有服务器生成、私下交付的 `Auto-Test-Windows-private-*.zip` 才能零输入启动；该 ZIP 本身属于敏感凭据载体，分发后应从聊天工具、网盘和下载目录删除。更推荐为 Auto-Test 使用独立、限额、可随时撤销的 Key，而不是长期共享个人或服务器主 Key。
 
 准备完成后会打开中文菜单：

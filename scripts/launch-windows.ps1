@@ -404,6 +404,65 @@ function Test-CodexProvider {
   }
 }
 
+function Get-PlaywrightDownloadHosts {
+  $configuredHost = $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST
+  if (-not $configuredHost) { $configuredHost = $env:PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST }
+  if (-not $configuredHost) { $configuredHost = $env:PLAYWRIGHT_DOWNLOAD_HOST }
+  if ($configuredHost) { return @($configuredHost.TrimEnd('/')) }
+
+  # The mirror is substantially faster for the default Windows deployment region;
+  # an empty entry keeps the official Playwright CDN as a deterministic fallback.
+  return @('https://npmmirror.com/mirrors/playwright', '')
+}
+
+function Restore-EnvironmentVariable([string] $Name, [string] $PreviousValue) {
+  if ($null -eq $PreviousValue) {
+    Remove-Item "Env:$Name" -ErrorAction SilentlyContinue
+  } else {
+    Set-Item "Env:$Name" $PreviousValue
+  }
+}
+
+function Install-PlaywrightChromium {
+  $previousDownloadHost = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_DOWNLOAD_HOST', 'Process')
+  $previousChromiumDownloadHost = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST', 'Process')
+  $previousConnectionTimeout = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT', 'Process')
+  $hosts = @(Get-PlaywrightDownloadHosts)
+  $lastExitCode = 1
+  try {
+    foreach ($downloadHost in $hosts) {
+      if ($downloadHost) {
+        $env:PLAYWRIGHT_DOWNLOAD_HOST = $downloadHost
+        $env:PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST = $downloadHost
+        Write-Host "[安装] 正在通过 $downloadHost 下载 Chromium 浏览器……"
+      } else {
+        Remove-Item Env:PLAYWRIGHT_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+        Remove-Item Env:PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+        Write-Host '[重试] 镜像下载失败，回退 Playwright 官方 CDN……'
+      }
+      if (-not $env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT) {
+        $env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT = '120000'
+      }
+
+      $previousErrorActionPreference = $ErrorActionPreference
+      try {
+        # npm/npx may write progress diagnostics to stderr on Windows PowerShell 5.
+        $ErrorActionPreference = 'Continue'
+        & npx playwright install chromium
+        $lastExitCode = $LASTEXITCODE
+      } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+      }
+      if ($lastExitCode -eq 0) { return }
+    }
+  } finally {
+    Restore-EnvironmentVariable 'PLAYWRIGHT_DOWNLOAD_HOST' $previousDownloadHost
+    Restore-EnvironmentVariable 'PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST' $previousChromiumDownloadHost
+    Restore-EnvironmentVariable 'PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT' $previousConnectionTimeout
+  }
+  throw 'Chromium 安装失败。请检查网络，或设置 AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST 后重试。'
+}
+
 function Ensure-ProjectRuntime {
   $tsx = Join-Path $RepositoryRoot 'node_modules\.bin\tsx.cmd'
   if (-not (Test-Path $tsx)) {
@@ -420,9 +479,7 @@ function Ensure-ProjectRuntime {
     $browserReady = $false
   }
   if (-not $browserReady) {
-    Write-Host '[安装] 正在安装 Chromium 浏览器……'
-    & npx playwright install chromium
-    if ($LASTEXITCODE -ne 0) { throw 'Chromium 安装失败。' }
+    Install-PlaywrightChromium
   }
   Write-Host '[OK] Auto-Test 项目依赖和浏览器已就绪'
 }
