@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  environmentProfileMatches,
   matchingEnvironmentProfiles,
   normalizeTargetUrls,
   policyForRisk,
+  registerEnvironment,
+  riskForPolicy,
   safeProfileId,
   upsertEnvironmentProfile,
 } from '../src/usability/environment-registration.js'
@@ -30,6 +33,9 @@ describe('easy environment registration', () => {
     expect(policyForRisk('read')).toMatchObject({ allowWrite: false, allowDestructive: false })
     expect(policyForRisk('write')).toMatchObject({ allowWrite: true, allowDestructive: false })
     expect(policyForRisk('destructive')).toMatchObject({ allowWrite: true, allowDestructive: true })
+    expect(riskForPolicy(policyForRisk('read'))).toBe('read')
+    expect(riskForPolicy(policyForRisk('write'))).toBe('write')
+    expect(riskForPolicy(policyForRisk('destructive'))).toBe('destructive')
   })
 
   it('creates and updates a private profile registry without hand-written JSON', async () => {
@@ -64,14 +70,52 @@ describe('easy environment registration', () => {
       id: 'preserve-auth',
       origins: ['https://admin.example.test'],
       auth: [{ origin: 'https://admin.example.test', storageStatePath: './state.json' }],
-      policy: policyForRisk('read'),
+      policy: { ...policyForRisk('read'), maxRefinements: 7, maxEnvironmentRetries: 5 },
     }
     await upsertEnvironmentProfile(profile, registryPath)
-    await upsertEnvironmentProfile({ ...profile, policy: policyForRisk('destructive') }, registryPath)
+    await registerEnvironment({
+      profileId: profile.id,
+      urls: ['https://admin.example.test/'],
+      risk: 'destructive',
+      captureLogin: false,
+      registryPath,
+    })
 
     const registry = await loadEnvironmentProfileRegistry(registryPath)
     expect(registry.profiles[0]?.auth).toHaveLength(1)
-    expect(registry.profiles[0]?.policy).toMatchObject({ allowWrite: true, allowDestructive: true })
+    expect(registry.profiles[0]?.policy).toMatchObject({
+      allowWrite: true,
+      allowDestructive: true,
+      maxRefinements: 7,
+      maxEnvironmentRetries: 5,
+    })
+  })
+
+  it('reports origins discovered after the initial URL entry as partial profile coverage', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-coverage-'))
+    temporaryDirectories.push(directory)
+    const registryPath = resolve(directory, 'environment-profiles.json')
+    await upsertEnvironmentProfile({
+      id: 'charging-environment',
+      origins: ['https://admin.example.test', 'https://simulator.example.test'],
+      auth: [],
+      policy: policyForRisk('destructive'),
+    }, registryPath)
+
+    const targetUrls = [
+      'https://admin.example.test/',
+      'https://simulator.example.test/',
+      'https://h5.example.test/login',
+    ]
+    const matches = await environmentProfileMatches(targetUrls, registryPath)
+
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      profile: { id: 'charging-environment' },
+      coveredOrigins: ['https://admin.example.test', 'https://simulator.example.test'],
+      missingOrigins: ['https://h5.example.test'],
+    })
+    expect(await matchingEnvironmentProfiles(targetUrls, registryPath)).toEqual([])
   })
 
   it('does not replace a valid registry with an invalid profile update', async () => {

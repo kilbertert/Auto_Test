@@ -65,6 +65,20 @@ describe('environment profile registry', () => {
     expect(await loadEnvironmentProfileContext(profile)).toContain('Socket port: 9872')
   })
 
+  it('names every missing origin when a requested profile is incomplete', async () => {
+    const { registryPath } = await fixture()
+    const registry = await loadEnvironmentProfileRegistry(registryPath)
+
+    expect(() => selectEnvironmentProfile(registry, [
+      'https://admin.example.test/',
+      'https://h5.example.test/',
+      'https://new.example.test/',
+      'https://other.example.test/',
+    ], 'charging-staging')).toThrow(
+      'missing origins: https://new.example.test, https://other.example.test',
+    )
+  })
+
   it('rejects auth artifacts that are readable by group or other users', async () => {
     if (process.platform === 'win32') return
     const { registryPath } = await fixture(0o640)

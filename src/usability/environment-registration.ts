@@ -27,6 +27,12 @@ export interface EnvironmentRegistrationResult {
   capturedOrigins: string[]
 }
 
+export interface EnvironmentProfileMatch {
+  profile: EnvironmentProfile
+  coveredOrigins: string[]
+  missingOrigins: string[]
+}
+
 function jsonWithoutBom(input: string): unknown {
   return JSON.parse(input.replace(/^\uFEFF/, '')) as unknown
 }
@@ -110,6 +116,12 @@ export function policyForRisk(risk: EasyRiskLevel): EnvironmentProfile['policy']
     maxRefinements: 3,
     maxEnvironmentRetries: 2,
   }
+}
+
+export function riskForPolicy(policy: EnvironmentProfile['policy']): EasyRiskLevel {
+  if (policy.allowDestructive) return 'destructive'
+  if (policy.allowWrite) return 'write'
+  return 'read'
 }
 
 async function readRegistryForUpdate(path: string): Promise<EnvironmentProfileRegistry> {
@@ -240,7 +252,11 @@ export async function registerEnvironment(options: EnvironmentRegistrationOption
     auth,
     ...(existing?.secretVaultPath ? { secretVaultPath: existing.secretVaultPath } : {}),
     ...(existing?.plannerContextPath ? { plannerContextPath: existing.plannerContextPath } : {}),
-    policy: policyForRisk(options.risk),
+    policy: {
+      ...policyForRisk(options.risk),
+      ...(existing?.policy.maxRefinements !== undefined ? { maxRefinements: existing.policy.maxRefinements } : {}),
+      ...(existing?.policy.maxEnvironmentRetries !== undefined ? { maxEnvironmentRetries: existing.policy.maxEnvironmentRetries } : {}),
+    },
   }
   try {
     await upsertEnvironmentProfile(profile, registryPath)
@@ -255,10 +271,22 @@ export async function matchingEnvironmentProfiles(
   urls: string[],
   registryPath = defaultEnvironmentProfileRegistryPath(),
 ): Promise<EnvironmentProfile[]> {
+  const matches = await environmentProfileMatches(urls, registryPath)
+  return matches.filter((match) => match.missingOrigins.length === 0).map((match) => match.profile)
+}
+
+export async function environmentProfileMatches(
+  urls: string[],
+  registryPath = defaultEnvironmentProfileRegistryPath(),
+): Promise<EnvironmentProfileMatch[]> {
   try {
     const registry = await loadEnvironmentProfileRegistry(registryPath)
     const origins = targetOrigins(urls)
-    return registry.profiles.filter((profile) => origins.every((origin) => profile.origins.includes(origin)))
+    return registry.profiles.map((profile) => ({
+      profile,
+      coveredOrigins: origins.filter((origin) => profile.origins.includes(origin)),
+      missingOrigins: origins.filter((origin) => !profile.origins.includes(origin)),
+    }))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error

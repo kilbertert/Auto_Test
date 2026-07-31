@@ -191,7 +191,10 @@ export function selectEnvironmentProfile(
   if (requestedId) {
     const selected = registry.profiles.find((profile) => profile.id === requestedId)
     if (!selected) throw new Error(`Unknown environment profile: ${requestedId}`)
-    if (!origins.every((origin) => selected.origins.includes(origin))) throw new Error(`Environment profile ${requestedId} does not cover all target origins`)
+    const missingOrigins = origins.filter((origin) => !selected.origins.includes(origin))
+    if (missingOrigins.length > 0) {
+      throw new Error(`Environment profile ${requestedId} does not cover all target origins; missing origins: ${missingOrigins.join(', ')}`)
+    }
     return selected
   }
   if (candidates.length !== 1) throw new Error(`Expected exactly one environment profile for target origins; found ${candidates.length}`)

@@ -7,14 +7,17 @@ import { stdin as input, stdout as output } from 'node:process'
 import { chromium } from '@playwright/test'
 import crossSpawn from 'cross-spawn'
 import {
-  matchingEnvironmentProfiles,
+  environmentProfileMatches,
   normalizeTargetUrls,
   registerEnvironment,
+  riskForPolicy,
   safeProfileId,
   type EasyRiskLevel,
+  type EnvironmentProfileMatch,
 } from '../usability/environment-registration.js'
 import { friendlyRunSummary } from '../usability/result-summary.js'
-import { defaultEnvironmentProfileRegistryPath } from '../workflow/environment-profile.js'
+import { preflightEasyWorkflow } from '../usability/workflow-preflight.js'
+import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '../workflow/environment-profile.js'
 
 interface EasyRunOptions {
   filePath: string
@@ -74,12 +77,13 @@ async function confirm(prompt: string, defaultYes = true): Promise<boolean> {
   return ['y', 'yes', '是', '1'].includes(answer)
 }
 
-async function chooseRisk(): Promise<EasyRiskLevel> {
+async function chooseRisk(defaultRisk: EasyRiskLevel = 'read'): Promise<EasyRiskLevel> {
   console.log('\n本环境允许的最高操作范围：')
   console.log('  1. 只读查看（推荐）')
   console.log('  2. 允许新增、修改、启动等写入操作')
   console.log('  3. 允许本轮测试数据的停止、删除、结算等清理操作')
-  const value = await ask('请选择', '1')
+  const defaultValue = defaultRisk === 'destructive' ? '3' : defaultRisk === 'write' ? '2' : '1'
+  const value = await ask('请选择', defaultValue)
   if (value === '1') return 'read'
   if (value === '2') return 'write'
   if (value === '3') {
@@ -96,14 +100,22 @@ async function waitForManualLogin(origins: string[]): Promise<void> {
   await rl.question('')
 }
 
-async function registerInteractive(initialUrls: string[] = []): Promise<string> {
+async function registerInteractive(
+  initialUrls: string[] = [],
+  defaults: { profileId?: string; existingProfile?: EnvironmentProfile } = {},
+): Promise<string> {
   const urls = initialUrls.length > 0
     ? normalizeTargetUrls(initialUrls)
     : normalizeTargetUrls(urlValues(await ask('粘贴需要访问的网站 URL；多个地址用空格分开')))
-  const suggested = safeProfileId('', urls)
-  const profileId = safeProfileId(await ask('给这个测试环境起个简短名称', suggested), urls)
-  const captureLogin = await confirm('这些网站是否需要登录', true)
-  const risk = await chooseRisk()
+  const suggested = defaults.existingProfile?.id ?? defaults.profileId ?? safeProfileId('', urls)
+  const profileId = defaults.existingProfile
+    ? defaults.existingProfile.id
+    : safeProfileId(await ask('给这个测试环境起个简短名称', suggested), urls)
+  if (defaults.existingProfile) console.log(`正在更新环境：${profileId}`)
+  const captureLogin = defaults.existingProfile
+    ? await confirm('是否重新捕获这些网站的登录状态', false)
+    : await confirm('这些网站是否需要登录', true)
+  const risk = await chooseRisk(defaults.existingProfile ? riskForPolicy(defaults.existingProfile.policy) : 'read')
   console.log('\n正在注册环境，请不要关闭本窗口……')
   const result = await registerEnvironment({
     profileId,
@@ -185,19 +197,52 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   const filePath = resolve(stripDraggedPath(options.filePath))
   if (extname(filePath).toLowerCase() !== '.xlsx') throw new Error('请选择 .xlsx 测试用例文件')
   await access(filePath)
-  const urls = normalizeTargetUrls(options.urls)
+  const suppliedUrls = normalizeTargetUrls(options.urls)
+  console.log('\n正在分析测试用例中的网站范围……')
+  const preflight = await preflightEasyWorkflow(filePath, suppliedUrls)
+  const urls = preflight.targetUrls
+  if (preflight.discoveredOrigins.length > 0) {
+    console.log(`从测试用例中发现还需要访问：${preflight.discoveredOrigins.join('、')}`)
+  }
   let profileId = options.profileId
-  if (!profileId) {
-    const profiles = await matchingEnvironmentProfiles(urls)
+  const profileMatches = await environmentProfileMatches(urls)
+  if (profileId) {
+    const requested = profileMatches.find((match) => match.profile.id === profileId)
+    if (!requested) throw new Error(`未找到环境：${profileId}`)
+    if (requested.missingOrigins.length > 0) {
+      if (!input.isTTY) throw new Error(profileCoverageError(requested))
+      console.log(`环境“${profileId}”尚未覆盖：${requested.missingOrigins.join('、')}`)
+      console.log('现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。')
+      profileId = await registerInteractive(urls, { existingProfile: requested.profile })
+    }
+  } else {
+    const profiles = profileMatches.filter((match) => match.missingOrigins.length === 0).map((match) => match.profile)
     if (profiles.length === 1) profileId = profiles[0]!.id
     else if (profiles.length > 1) {
       console.log(`找到多个匹配环境：${profiles.map((profile) => profile.id).join('、')}`)
       profileId = await ask('请输入本次使用的环境名称', profiles[0]!.id)
     } else if (input.isTTY) {
-      console.log('这些网站尚未注册，先用向导完成一次环境注册。')
-      profileId = await registerInteractive(urls)
+      const related = profileMatches
+        .filter((match) => match.coveredOrigins.length > 0)
+        .sort((left, right) =>
+          left.missingOrigins.length - right.missingOrigins.length || left.profile.id.localeCompare(right.profile.id),
+        )
+      let registrationDefaults: { profileId?: string; existingProfile?: EnvironmentProfile } = {}
+      if (related.length > 0) {
+        console.log('已有环境尚未覆盖测试用例需要的全部网站：')
+        for (const match of related) console.log(`  ${match.profile.id}：缺少 ${match.missingOrigins.join('、')}`)
+        const suggestedProfileId = related.length === 1
+          ? related[0]!.profile.id
+          : await ask('请输入要更新的环境名称', related[0]!.profile.id)
+        const existingProfile = related.find((match) => match.profile.id === suggestedProfileId)?.profile
+        registrationDefaults = existingProfile ? { existingProfile } : { profileId: suggestedProfileId }
+        console.log('现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。')
+      } else {
+        console.log('这些网站尚未注册，先用向导完成一次环境注册。')
+      }
+      profileId = await registerInteractive(urls, registrationDefaults)
     } else {
-      throw new Error('这些网站尚未注册。请先运行 npm run easy，选择“注册或更新测试环境”。')
+      throw new Error(profileRegistrationError(profileMatches, urls))
     }
   }
   const outputDirectory = resolve(options.outputDirectory ?? defaultRunDirectory(filePath))
@@ -221,6 +266,17 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
     console.log('\n框架未能生成结果摘要，请查看上方错误信息。')
   }
   return exitCode
+}
+
+function profileCoverageError(match: EnvironmentProfileMatch): string {
+  return `环境“${match.profile.id}”缺少网站：${match.missingOrigins.join('、')}`
+}
+
+function profileRegistrationError(matches: EnvironmentProfileMatch[], urls: string[]): string {
+  const related = matches.find((match) => match.coveredOrigins.length > 0)
+  if (related) return `${profileCoverageError(related)}。请先运行 npm run easy，选择“注册或更新测试环境”。`
+  const origins = [...new Set(urls.map((url) => new URL(url).origin))]
+  return `以下网站尚未注册：${origins.join('、')}。请先运行 npm run easy，选择“注册或更新测试环境”。`
 }
 
 async function runInteractive(): Promise<void> {
