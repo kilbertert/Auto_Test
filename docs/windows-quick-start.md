@@ -4,11 +4,41 @@
 
 ## 第一次使用
 
-1. 安装 [Node.js 24](https://nodejs.org/) 和组织批准的 Codex CLI。
-2. 在 PowerShell 中执行一次 `codex login`，按提示完成模型账号登录。
-3. 双击仓库根目录的 `Auto-Test.cmd`。
+直接双击仓库根目录的 `Auto-Test.cmd`。
 
-启动器会自动安装项目依赖和 Chromium，并打开中文菜单：
+启动器会自动完成：
+
+1. 从 Node.js 官方发布包安装 Auto-Test 私有的固定版本 Node.js 24，并校验官方 SHA-256；
+2. 在 Auto-Test 私有工具目录安装与服务器一致的 Codex CLI 固定版本；
+3. 配置 Auto-Test 独立的 Codex API Provider；
+4. 发送一次最小模型请求，验证 API 地址、Key 和模型真实可用；
+5. 安装项目依赖和 Chromium；
+6. 打开中文操作菜单。
+
+不需要执行 `codex login`，也不使用 ChatGPT 账号额度。
+
+首次安装时只需提供两项模型 API 信息：
+
+- `API Base URL`：Windows 能够访问的 Responses API 地址；
+- `API Key`：隐藏输入，不会显示在窗口或命令历史中。
+
+服务器当前使用 `http://127.0.0.1:8317/v1`，但 `127.0.0.1` 只代表服务器本机。如果 Auto-Test 在另一台 Windows 电脑运行，需要提供代理服务对该电脑可访问的地址。
+
+安装器使用与服务器一致的 Provider 结构：
+
+```toml
+model = "gpt-5.6-sol"
+model_provider = "cliproxyapi"
+
+[model_providers.cliproxyapi]
+wire_api = "responses"
+env_key = "CLIPROXYAPI_KEY"
+requires_openai_auth = false
+```
+
+Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `CLIPROXYAPI_KEY`，不会写入仓库、TOML 或明文用户环境变量。
+
+准备完成后会打开中文菜单：
 
 ```text
 1. 开始一次新测试
@@ -55,10 +85,10 @@
 
 ## 可选命令行
 
-日常推荐双击启动器。需要接入脚本时才使用命令行：
+日常推荐双击启动器。需要接入脚本时仍通过启动器调用，以便自动加载加密的 API Key：
 
 ```powershell
-npm run easy -- run `
+.\Auto-Test.cmd run `
   --file "C:/TestData/cases.xlsx" `
   --url "https://app.example.test/" `
   --url "https://admin.example.test/" `
@@ -68,10 +98,27 @@ npm run easy -- run `
 其他命令：
 
 ```powershell
-npm run easy -- doctor
-npm run easy -- status
-npm run easy -- register --profile test-95 --url "https://example.test/"
+.\Auto-Test.cmd doctor
+.\Auto-Test.cmd status
+.\Auto-Test.cmd register --profile test-95 --url "https://example.test/"
 ```
+
+需要更换 API 地址或轮换 API Key 时执行：
+
+```powershell
+.\Auto-Test.cmd --reconfigure-api --setup-only
+```
+
+管理员批量部署时可以预置环境变量并静默准备：
+
+```powershell
+$env:AUTO_TEST_CODEX_BASE_URL = "https://your-proxy.example/v1"
+$env:CLIPROXYAPI_KEY = "deployment-secret"
+$env:AUTO_TEST_PERSIST_API_KEY = "0"
+.\Auto-Test.cmd --setup-only
+```
+
+人工使用时不要在命令行中填写 API Key，应使用安装器的隐藏输入。
 
 ## 注意事项
 

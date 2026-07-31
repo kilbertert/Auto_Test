@@ -66,6 +66,29 @@ jobs:
       - name: Run deterministic checks
         run: npm run check
 
-      - name: Verify Windows launcher
+      - name: Verify Windows bootstrap
         shell: cmd
-        run: Auto-Test.cmd --help
+        env:
+          AUTO_TEST_CODEX_BASE_URL: https://example.invalid/v1
+          AUTO_TEST_CODEX_HOME: ${{ runner.temp }}auto-test-codex
+          AUTO_TEST_PERSIST_API_KEY: "0"
+          AUTO_TEST_SKIP_API_PROBE: "1"
+          AUTO_TEST_TOOLS_HOME: ${{ runner.temp }}auto-test-tools
+          CLIPROXYAPI_KEY: synthetic-ci-key
+        run: Auto-Test.cmd --setup-only
+
+      - name: Verify generated Codex provider config
+        shell: pwsh
+        env:
+          AUTO_TEST_CODEX_HOME: ${{ runner.temp }}auto-test-codex
+          AUTO_TEST_TOOLS_HOME: ${{ runner.temp }}auto-test-tools
+        run: |
+          $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
+          if (-not (Test-Path $configPath)) { throw 'Codex config was not created' }
+          $config = Get-Content -Raw -Encoding UTF8 $configPath
+          if ($config -notmatch 'model_provider = "cliproxyapi"') { throw 'Provider was not configured' }
+          if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
+          if ($config -match 'synthetic-ci-key') { throw 'API key leaked into config.toml' }
+          if (Test-Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi')) { throw 'CI key was persisted despite opt-out' }
+          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
+          if ((& $codex --version) -notmatch '0\.144\.5') { throw 'Unexpected Codex CLI version' }

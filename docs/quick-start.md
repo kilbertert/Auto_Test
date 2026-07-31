@@ -8,7 +8,9 @@
 
 ## 推荐方式：交互入口
 
-Windows 用户双击仓库根目录的 `Auto-Test.cmd`。其他系统执行：
+Windows 用户双击仓库根目录的 `Auto-Test.cmd`。启动器会自动安装 Node.js、固定版本 Codex CLI、项目依赖和 Chromium，并通过隐藏输入配置自定义 Responses API，不需要 `codex login`。
+
+其他系统执行：
 
 ```bash
 npm ci
@@ -22,7 +24,7 @@ npm run easy
 
 ## 1. 高级准备
 
-环境要求 Node.js 24 或更高版本，并确保 Codex CLI 已安装和登录。首次使用先安装依赖和浏览器：
+高级命令行方式要求 Node.js 24 或更高版本，并确保 Codex CLI 已配置可用的自定义 API Provider。首次使用先安装依赖和浏览器：
 
 ```bash
 npm ci

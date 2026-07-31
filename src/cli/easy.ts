@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline/promises'
-import { access, mkdir, readdir, stat } from 'node:fs/promises'
-import { basename, extname, resolve } from 'node:path'
+import { access, mkdir, readFile, readdir, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, delimiter, dirname, extname, resolve } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium } from '@playwright/test'
 import crossSpawn from 'cross-spawn'
@@ -253,29 +254,34 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
 }
 
 async function doctor(): Promise<boolean> {
-  const codexInstalled = await commandAvailable('codex', ['--version'])
-  const codexLoggedIn = codexInstalled && await commandAvailable('codex', ['login', 'status'])
+  const codexExecutable = process.env.AUTO_TEST_CODEX_BIN || 'codex'
+  const codexInstalled = await commandAvailable(codexExecutable, ['--version'])
+  const codexHome = process.env.CODEX_HOME || resolve(homedir(), '.codex')
+  const codexConfigPath = resolve(codexHome, 'config.toml')
+  const providerEnvironmentName = process.env.AUTO_TEST_CODEX_ENV_KEY || 'CLIPROXYAPI_KEY'
+  const codexConfig = await readFile(codexConfigPath, 'utf8').catch(() => '')
+  const providerConfigured = /model_provider\s*=\s*"[^\"]+"/.test(codexConfig) &&
+    /\[model_providers\.[^\]]+\]/.test(codexConfig)
+  const apiKeyAvailable = Boolean(process.env[providerEnvironmentName])
   const nodeCheck = { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 }
   const codexInstallCheck = { label: 'Codex CLI 已安装', ok: codexInstalled }
-  const codexLoginCheck = { label: 'Codex CLI 已登录', ok: codexLoggedIn }
+  const providerCheck = { label: 'Codex 自定义 API Provider 已配置', ok: providerConfigured }
+  const apiKeyCheck = { label: `模型 API Key 已加载（${providerEnvironmentName}）`, ok: apiKeyAvailable }
   const chromiumCheck = {
     label: 'Chromium 浏览器已安装',
     ok: await access(chromium.executablePath()).then(() => true, () => false),
   }
-  const checks = [nodeCheck, codexInstallCheck, codexLoginCheck, chromiumCheck]
+  const checks = [nodeCheck, codexInstallCheck, providerCheck, apiKeyCheck, chromiumCheck]
   console.log('\n环境检查：')
   for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
-  if (!codexLoginCheck.ok && codexInstallCheck.ok && input.isTTY && await confirm('现在完成 Codex 登录', true)) {
-    await spawnInherited('codex', ['login'])
-    codexLoginCheck.ok = await commandAvailable('codex', ['login', 'status'])
-    console.log(codexLoginCheck.ok ? '✓ Codex CLI 登录成功' : '✗ Codex CLI 仍未登录')
-  } else if (!codexLoginCheck.ok) {
-    console.log('  修复方式：在 PowerShell 中执行 codex login，按提示完成登录。')
+  if (!providerCheck.ok || !apiKeyCheck.ok) {
+    console.log('  Windows 修复方式：关闭窗口后重新双击 Auto-Test.cmd，安装器会配置 API 地址和隐藏输入的 API Key。')
   }
   if (!chromiumCheck.ok && input.isTTY && await confirm('现在安装 Chromium 浏览器', true)) {
     chromiumCheck.ok = await spawnInherited('npx', ['playwright', 'install', 'chromium']) === 0
   }
   console.log(`\n环境配置目录：${defaultEnvironmentProfileRegistryPath()}`)
+  console.log(`Codex API 配置：${codexConfigPath}`)
   return checks.every((check) => check.ok)
 }
 
@@ -307,6 +313,17 @@ async function menu(): Promise<void> {
 
 async function main(): Promise<void> {
   process.umask(0o027)
+  if (process.env.AUTO_TEST_CODEX_BIN) {
+    const codexDirectory = dirname(process.env.AUTO_TEST_CODEX_BIN)
+    process.env.PATH = `${codexDirectory}${delimiter}${process.env.PATH ?? ''}`
+  }
+  if (!process.env.CODEX_HOME) {
+    if (process.env.AUTO_TEST_CODEX_HOME) {
+      process.env.CODEX_HOME = process.env.AUTO_TEST_CODEX_HOME
+    } else if (process.platform === 'win32' && process.env.APPDATA) {
+      process.env.CODEX_HOME = resolve(process.env.APPDATA, 'auto-test', 'codex-home')
+    }
+  }
   const args = process.argv.slice(2)
   const command = args[0]
   if (!command) {
