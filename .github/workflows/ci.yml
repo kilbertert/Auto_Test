@@ -130,6 +130,7 @@ jobs:
             throw "CMD launcher syntax failed: $output"
           }
           if ($exitCode -ne 1) { throw "Expected non-interactive menu exit code 1, got $exitCode" }
+          $global:LASTEXITCODE = 0
 
       - name: Verify generated Codex provider config
         shell: pwsh
