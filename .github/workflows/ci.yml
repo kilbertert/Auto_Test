@@ -118,8 +118,14 @@ jobs:
         run: |
           $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
-          $output = cmd.exe /d /c "Auto-Test.cmd < nul" 2>&1
-          $exitCode = $LASTEXITCODE
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = cmd.exe /d /c "Auto-Test.cmd < nul" 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
           if ($output -match 'syntax of the command is incorrect|命令语法不正确') {
             throw "CMD launcher syntax failed: $output"
           }
