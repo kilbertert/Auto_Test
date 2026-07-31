@@ -143,6 +143,7 @@ jq '{status, outcome, stage, round, executionAttempts, humanInputRequestPath, ru
 主要产物位于本次 `--output-dir`：
 
 - `intake.workflow.json`：从 Excel 解析出的工作流清单；
+- `run-events.jsonl`：脱敏后的阶段进度、模型轮次、心跳、结构规范化和失败诊断；
 - `round-N.plan-draft.json`：第 N 轮 AI Draft；
 - `round-N.exploration.json`：真实页面探索证据；
 - `workflow.execution-plan.json`：Policy Gate 批准的执行计划；

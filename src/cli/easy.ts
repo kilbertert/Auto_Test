@@ -264,6 +264,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
     await printSummary(statePath)
   } catch {
     console.log('\n框架未能生成结果摘要，请查看上方错误信息。')
+    console.log(`运行诊断：${resolve(outputDirectory, 'run-events.jsonl')}`)
   }
   return exitCode
 }

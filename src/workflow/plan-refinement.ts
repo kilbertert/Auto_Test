@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { CodexCliWorkflowPlanner } from './planner-provider.js'
+import {
+  diagnosticErrorDetails,
+  elapsedSeconds,
+  runWithWorkflowProgress,
+  type WorkflowProgressSink,
+} from './diagnostics.js'
 import type { WorkflowPlanExplorationReport } from './plan-exploration.js'
 import type { WorkflowPlanDraft, WorkflowPlannerRequest } from './planner-types.js'
 import { draftBodyFromUnknown, validateWorkflowPlanDraft } from './planner-validation.js'
@@ -81,6 +87,8 @@ export async function refineWorkflowDraftFromExploration(options: {
   pageEvidence: string
   provider: CodexCliWorkflowPlanner
   workspaceDirectory: string
+  progress?: WorkflowProgressSink
+  heartbeatIntervalMs?: number
 }): Promise<WorkflowPlanDraft> {
   const before = validateWorkflowPlanDraft(structuredClone(options.draft))
   const request: WorkflowPlannerRequest = {
@@ -91,7 +99,15 @@ export async function refineWorkflowDraftFromExploration(options: {
     inputSha256: before.planner.inputSha256,
     workspaceDirectory: options.workspaceDirectory,
   }
-  const response = await options.provider.refineFromExploration(
+  const response = await runWithWorkflowProgress(options.progress, {
+    stage: 'refining',
+    operation: 'planner.refine',
+    startMessage: '[Refiner] 正在根据真实页面证据修订 Execution Plan',
+    heartbeatMessage: (elapsedMs) => `[Refiner] 页面证据修订仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+    successMessage: (elapsedMs) => `[Refiner] 模型修订响应已返回，耗时 ${elapsedSeconds(elapsedMs)}`,
+    failureMessage: (elapsedMs, error) => `[Refiner] 模型修订失败（${elapsedSeconds(elapsedMs)}）：${diagnosticErrorDetails(error).message}`,
+    ...(options.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: options.heartbeatIntervalMs } : {}),
+  }, () => options.provider.refineFromExploration(
     request,
     JSON.stringify(before),
     JSON.stringify({
@@ -103,8 +119,10 @@ export async function refineWorkflowDraftFromExploration(options: {
       assertions: options.exploration.runtimeResult.assertions,
     }),
     options.pageEvidence,
-  )
-  await writeFile(resolve(options.workspaceDirectory, 'exploration-refinement-response.json'), `${JSON.stringify(response, null, 2)}\n`, { encoding: 'utf8', mode: 0o640 })
+  ))
+  const responsePath = resolve(options.workspaceDirectory, 'exploration-refinement-response.json')
+  await writeFile(responsePath, `${JSON.stringify(response, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+  await chmod(responsePath, 0o600)
   const body = draftBodyFromUnknown(JSON.parse(response.planJson) as unknown)
   const candidate = {
     ...body,

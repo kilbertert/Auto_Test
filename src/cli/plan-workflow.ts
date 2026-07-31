@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { WorkflowProgressRecorder } from '../workflow/diagnostics.js'
 import { CodexCliWorkflowPlanner } from '../workflow/planner-provider.js'
 import { planWorkflow } from '../workflow/planner.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
@@ -37,12 +38,14 @@ async function main(): Promise<void> {
   const initialResponse = resumeResponsePath
     ? JSON.parse(await readFile(resolve(resumeResponsePath), 'utf8')) as { planJson: string; summary: string[] }
     : undefined
+  const progress = await WorkflowProgressRecorder.open(resolve(dirname(output), 'run-events.jsonl'))
   const draft = await planWorkflow({
     manifest,
     mediaDirectory,
     brief,
     provider: new CodexCliWorkflowPlanner({ ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}) }),
     workspaceDirectory,
+    progress,
     ...(initialResponse ? { initialResponse } : {}),
   })
   await mkdir(dirname(output), { recursive: true, mode: 0o750 })

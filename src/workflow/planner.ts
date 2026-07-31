@@ -1,14 +1,24 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { redactSensitiveContent } from '../input/text.js'
+import {
+  diagnosticErrorDetails,
+  elapsedSeconds,
+  runWithWorkflowProgress,
+  type WorkflowProgressSink,
+} from './diagnostics.js'
 import type { WorkflowIntakeManifest } from './types.js'
 import type {
   WorkflowPlanDraft,
   WorkflowPlannerModelResponse,
   WorkflowPlannerProvider,
 } from './planner-types.js'
-import { draftBodyFromUnknown, validateWorkflowPlanDraft } from './planner-validation.js'
+import {
+  draftBodyFromUnknown,
+  validateWorkflowPlanDraft,
+  type WorkflowDraftNormalization,
+} from './planner-validation.js'
 
 export interface PlanWorkflowOptions {
   manifest: WorkflowIntakeManifest
@@ -17,6 +27,8 @@ export interface PlanWorkflowOptions {
   provider: WorkflowPlannerProvider
   workspaceDirectory: string
   initialResponse?: WorkflowPlannerModelResponse
+  progress?: WorkflowProgressSink
+  heartbeatIntervalMs?: number
 }
 
 export function parseWorkflowPlanJson(value: string): unknown {
@@ -57,6 +69,29 @@ async function verifiedImagePaths(manifest: WorkflowIntakeManifest, mediaDirecto
   return { paths, hashes }
 }
 
+async function writePrivateJson(path: string, value: unknown): Promise<void> {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+  await chmod(path, 0o600)
+}
+
+async function plannerCall(
+  options: PlanWorkflowOptions,
+  attempt: number,
+  operation: () => Promise<WorkflowPlannerModelResponse>,
+): Promise<WorkflowPlannerModelResponse> {
+  return runWithWorkflowProgress(options.progress, {
+    stage: 'planning',
+    operation: attempt === 1 ? 'planner.generate' : 'planner.repair',
+    attempt,
+    maxAttempts: 3,
+    startMessage: `[Planner] 正在${attempt === 1 ? '生成' : '修复'} Execution Plan，第 ${attempt}/3 轮`,
+    heartbeatMessage: (elapsedMs) => `[Planner] 第 ${attempt}/3 轮仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+    successMessage: (elapsedMs) => `[Planner] 第 ${attempt}/3 轮模型响应已返回，耗时 ${elapsedSeconds(elapsedMs)}`,
+    failureMessage: (elapsedMs, error) => `[Planner] 第 ${attempt}/3 轮模型调用失败（${elapsedSeconds(elapsedMs)}）：${diagnosticErrorDetails(error).message}`,
+    ...(options.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: options.heartbeatIntervalMs } : {}),
+  }, operation)
+}
+
 export async function planWorkflow(options: PlanWorkflowOptions): Promise<WorkflowPlanDraft> {
   const sanitizedBrief = redactSensitiveContent(options.brief ?? '')
   const images = await verifiedImagePaths(options.manifest, options.mediaDirectory)
@@ -74,17 +109,31 @@ export async function planWorkflow(options: PlanWorkflowOptions): Promise<Workfl
     inputSha256,
     workspaceDirectory: options.workspaceDirectory,
   }
-  let response = options.initialResponse ?? await options.provider.generate(request)
+  let response = options.initialResponse ?? await plannerCall(options, 1, () => options.provider.generate(request))
   let validated: WorkflowPlanDraft | undefined
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
-    await writeFile(resolve(options.workspaceDirectory, `planner-response-${attempt + 1}.json`), `${JSON.stringify(response, null, 2)}\n`, {
-      encoding: 'utf8',
-      mode: 0o640,
-    })
+    const attemptNumber = attempt + 1
+    const responsePath = resolve(options.workspaceDirectory, `planner-response-${attemptNumber}.json`)
+    await writePrivateJson(responsePath, response)
     try {
       const bodyInput = parseWorkflowPlanJson(response.planJson)
-      const body = draftBodyFromUnknown(bodyInput)
+      const normalizations: WorkflowDraftNormalization[] = []
+      const body = draftBodyFromUnknown(bodyInput, normalizations)
+      if (normalizations.length > 0) {
+        const normalizationPath = resolve(options.workspaceDirectory, `planner-normalization-${attemptNumber}.json`)
+        await writePrivateJson(normalizationPath, { version: '1.0', attempt: attemptNumber, normalizations })
+        await options.progress?.emit({
+          kind: 'normalization_applied',
+          stage: 'planning',
+          operation: 'planner.validate',
+          attempt: attemptNumber,
+          maxAttempts: 3,
+          message: `[Planner] 第 ${attemptNumber}/3 轮已确定性修复 ${normalizations.length} 个结构问题`,
+          artifactPath: normalizationPath,
+          details: { count: normalizations.length, kinds: [...new Set(normalizations.map((item) => item.kind))] },
+        })
+      }
       if (body.workflowId !== options.manifest.workflowId) throw new Error('Planner changed workflowId')
       if (body.sourceSha256 !== options.manifest.source.sha256) throw new Error('Planner changed sourceSha256')
       const candidate = validateWorkflowPlanDraft({
@@ -101,11 +150,41 @@ export async function planWorkflow(options: PlanWorkflowOptions): Promise<Workfl
       })
       requireManifestPhaseCoverage(candidate, options.manifest)
       validated = candidate
+      await options.progress?.emit({
+        kind: 'information',
+        stage: 'planning',
+        operation: 'planner.validate',
+        attempt: attemptNumber,
+        maxAttempts: 3,
+        message: `[Planner] 第 ${attemptNumber}/3 轮 Draft 校验通过，共 ${candidate.groups.length} 个 Group、${candidate.groups.flatMap((group) => group.phases).length} 个 Phase`,
+        artifactPath: responsePath,
+      })
       break
     } catch (error) {
       lastError = error
+      const details = diagnosticErrorDetails(error)
+      const validationPath = resolve(options.workspaceDirectory, `planner-validation-${attemptNumber}.json`)
+      await writePrivateJson(validationPath, {
+        version: '1.0',
+        attempt: attemptNumber,
+        status: 'failed',
+        code: details.code,
+        ...(details.location ? { location: details.location } : {}),
+        message: details.message,
+      })
+      await options.progress?.emit({
+        kind: 'validation_failed',
+        stage: 'planning',
+        operation: 'planner.validate',
+        attempt: attemptNumber,
+        maxAttempts: 3,
+        message: `[Planner] 第 ${attemptNumber}/3 轮结构校验未通过：${details.message}`,
+        code: details.code,
+        ...(details.location ? { location: details.location } : {}),
+        artifactPath: validationPath,
+      })
       if (!options.provider.repair || attempt === 2) break
-      response = await options.provider.repair(request, response, error instanceof Error ? error.message : String(error))
+      response = await plannerCall(options, attemptNumber + 1, () => options.provider.repair!(request, response, details.message))
     }
   }
   if (!validated) throw lastError instanceof Error ? lastError : new Error('Planner could not produce a valid draft')

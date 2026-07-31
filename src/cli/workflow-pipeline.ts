@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { runAutonomousWorkflow } from '../workflow/autonomous-controller.js'
 import type { AutonomousWorkflowPolicy } from '../workflow/autonomy-types.js'
 import { ensureEnvironmentAuthentication } from '../workflow/auth-broker.js'
+import { elapsedSeconds, runWithWorkflowProgress, WorkflowProgressRecorder } from '../workflow/diagnostics.js'
 import {
   defaultEnvironmentProfileRegistryPath,
   loadEnvironmentProfileContext,
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
     imagePaths: options.images,
   })
   await mkdir(options.outputDirectory, { recursive: true, mode: 0o750 })
+  const progress = await WorkflowProgressRecorder.open(resolve(options.outputDirectory, 'run-events.jsonl'))
   const mediaDirectory = resolve(options.outputDirectory, 'media')
   await mkdir(mediaDirectory, { recursive: true, mode: 0o750 })
   const browserOptions = {
@@ -210,11 +212,17 @@ async function main(): Promise<void> {
   }
   console.log(`Browser mode: ${options.headed ? 'headed' : 'headless'}${options.slowMo !== undefined ? `; slowMo=${options.slowMo}ms` : ''}`)
 
-  const intake = await intakeWorkflowXlsx({
+  const intake = await runWithWorkflowProgress(progress, {
+    stage: 'intake',
+    operation: 'intake.parse',
+    startMessage: '[Intake] 正在解析 Excel、URL 和图片资产',
+    heartbeatMessage: (elapsedMs) => `[Intake] 仍在解析输入，已等待 ${elapsedSeconds(elapsedMs)}`,
+    successMessage: (elapsedMs) => `[Intake] 输入解析完成，耗时 ${elapsedSeconds(elapsedMs)}`,
+  }, () => intakeWorkflowXlsx({
     filePath: options.filePath,
     additionalUrls: options.urls,
     supplementalImagePaths: inputBundle.imagePaths,
-  })
+  }))
   await writeJson(resolve(options.outputDirectory, 'intake.workflow.json'), intake.manifest)
   await writeJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
   for (const asset of intake.assets) await writeFile(resolve(mediaDirectory, asset.metadata.fileName), asset.content, { mode: 0o640 })
@@ -245,6 +253,7 @@ async function main(): Promise<void> {
           brief: plannerBrief,
           provider,
           workspaceDirectory: resolve(options.outputDirectory, 'planner-workspace'),
+          progress,
         })
     if (draft.sourceSha256 !== intake.manifest.source.sha256) throw new Error('Draft source hash does not match the Intake source')
     return draft
@@ -302,39 +311,49 @@ async function main(): Promise<void> {
           draft: await createDraft(),
           provider,
           workspaceDirectory: resolve(options.outputDirectory, 'recovery-planner-workspace'),
+          progress,
         }),
         explore: async (draft, round, previous) => {
-          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
-          const evidenceDirectory = resolve(options.outputDirectory, `round-${round}-page-evidence`)
-          const seed = previous ?? initialSeed
-          const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `round-${round}.autonomous.state.json`))
-          let existingState = await stateStore.load()
-          if (existingState && existingState.mutations.length === 0 && !workflowStateNeedsMutationRecovery(existingState)) {
-            await stateStore.clear()
-            existingState = undefined
-          }
-          const stopAfterRecovery = existingState ? workflowStateNeedsMutationRecovery(existingState) : false
-          const internalPlan = projectDraftToExecutionPlan(draft)
-          const resumeFromTarget = existingState ? workflowResumeTarget(existingState, internalPlan) : undefined
-          const adapters = targetAdapters(draft.targets)
-          return exploreWorkflowPlan(draft, new PlaywrightWorkflowDriver({
-            ...browserOptions,
-            storageStateByTarget: adapters.storageStateByTarget,
-            sessionStorageByTarget: adapters.sessionStorageByTarget,
-          }), {
-            resolver: new CodexCliWorkflowLocatorResolver({ ...(options.model ? { model: options.model } : {}) }),
-            evidenceDirectory,
-            stateStore,
-            allowWrite,
-            allowDestructive,
-            requireRecoveryFor: policy.requireRecoveryFor,
-            autoRecover: true,
-            ...(stopAfterRecovery ? { stopAfterRecovery: true } : {}),
-            ...(resumeFromTarget ? { resume: true, resumeFromTarget } : {}),
-            environment,
-            ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
-            ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
-            ...(seed ? { seedReport: seed, allowCompatibleSeed: true } : {}),
+          return runWithWorkflowProgress(progress, {
+            stage: 'exploring',
+            operation: 'workflow.explore',
+            attempt: round + 1,
+            startMessage: `[Explore] 正在执行第 ${round + 1} 轮页面探索`,
+            heartbeatMessage: (elapsedMs) => `[Explore] 第 ${round + 1} 轮仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+            successMessage: (elapsedMs) => `[Explore] 第 ${round + 1} 轮页面探索完成，耗时 ${elapsedSeconds(elapsedMs)}`,
+          }, async () => {
+            if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
+            const evidenceDirectory = resolve(options.outputDirectory, `round-${round}-page-evidence`)
+            const seed = previous ?? initialSeed
+            const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `round-${round}.autonomous.state.json`))
+            let existingState = await stateStore.load()
+            if (existingState && existingState.mutations.length === 0 && !workflowStateNeedsMutationRecovery(existingState)) {
+              await stateStore.clear()
+              existingState = undefined
+            }
+            const stopAfterRecovery = existingState ? workflowStateNeedsMutationRecovery(existingState) : false
+            const internalPlan = projectDraftToExecutionPlan(draft)
+            const resumeFromTarget = existingState ? workflowResumeTarget(existingState, internalPlan) : undefined
+            const adapters = targetAdapters(draft.targets)
+            return exploreWorkflowPlan(draft, new PlaywrightWorkflowDriver({
+              ...browserOptions,
+              storageStateByTarget: adapters.storageStateByTarget,
+              sessionStorageByTarget: adapters.sessionStorageByTarget,
+            }), {
+              resolver: new CodexCliWorkflowLocatorResolver({ ...(options.model ? { model: options.model } : {}) }),
+              evidenceDirectory,
+              stateStore,
+              allowWrite,
+              allowDestructive,
+              requireRecoveryFor: policy.requireRecoveryFor,
+              autoRecover: true,
+              ...(stopAfterRecovery ? { stopAfterRecovery: true } : {}),
+              ...(resumeFromTarget ? { resume: true, resumeFromTarget } : {}),
+              environment,
+              ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
+              ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
+              ...(seed ? { seedReport: seed, allowCompatibleSeed: true } : {}),
+            })
           })
         },
         refine: async (draft, exploration, round) => refineWorkflowDraftFromExploration({
@@ -343,27 +362,37 @@ async function main(): Promise<void> {
           pageEvidence: await readSanitizedPageEvidence(await cumulativePageEvidenceFiles(options.outputDirectory, round)),
           provider,
           workspaceDirectory: resolve(options.outputDirectory, `round-${round + 1}-refinement-workspace`),
+          progress,
         }),
         execute: async (plan, attempt) => {
-          if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
-          const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `runtime-attempt-${attempt}.state.json`))
-          const existingState = await stateStore.load()
-          const resumeFromTarget = existingState ? workflowResumeTarget(existingState, plan) : undefined
-          const adapters = targetAdapters(plan.targets)
-          return executeWorkflow(plan, new PlaywrightWorkflowDriver({
-            ...browserOptions,
-            storageStateByTarget: adapters.storageStateByTarget,
-            sessionStorageByTarget: adapters.sessionStorageByTarget,
-          }), {
-            allowWrite,
-            allowDestructive,
-            requireRecoveryFor: policy.requireRecoveryFor,
-            autoRecover: true,
-            stateStore,
-            ...(resumeFromTarget ? { resume: true, resumeFromTarget } : {}),
-            environment,
-            ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
-            ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
+          return runWithWorkflowProgress(progress, {
+            stage: 'executing',
+            operation: 'workflow.execute',
+            attempt,
+            startMessage: `[Runtime] 正在执行第 ${attempt} 次正式测试`,
+            heartbeatMessage: (elapsedMs) => `[Runtime] 第 ${attempt} 次正式测试仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+            successMessage: (elapsedMs) => `[Runtime] 第 ${attempt} 次正式测试完成，耗时 ${elapsedSeconds(elapsedMs)}`,
+          }, async () => {
+            if (environmentProfile) await ensureEnvironmentAuthentication(environmentProfile, environment, browserOptions)
+            const stateStore = new WorkflowStateStore(resolve(options.outputDirectory, `runtime-attempt-${attempt}.state.json`))
+            const existingState = await stateStore.load()
+            const resumeFromTarget = existingState ? workflowResumeTarget(existingState, plan) : undefined
+            const adapters = targetAdapters(plan.targets)
+            return executeWorkflow(plan, new PlaywrightWorkflowDriver({
+              ...browserOptions,
+              storageStateByTarget: adapters.storageStateByTarget,
+              sessionStorageByTarget: adapters.sessionStorageByTarget,
+            }), {
+              allowWrite,
+              allowDestructive,
+              requireRecoveryFor: policy.requireRecoveryFor,
+              autoRecover: true,
+              stateStore,
+              ...(resumeFromTarget ? { resume: true, resumeFromTarget } : {}),
+              environment,
+              ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
+              ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
+            })
           })
         },
       },
@@ -392,7 +421,14 @@ async function main(): Promise<void> {
       storageStateByTarget: options.storageStateByTarget,
       sessionStorageByTarget: options.sessionStorageByTarget,
     })
-    const report = await exploreWorkflowPlan(draft, driver, {
+    const report = await runWithWorkflowProgress(progress, {
+      stage: 'exploring',
+      operation: 'workflow.explore',
+      attempt: round + 1,
+      startMessage: `[Explore] 正在执行第 ${round + 1} 轮页面探索`,
+      heartbeatMessage: (elapsedMs) => `[Explore] 第 ${round + 1} 轮仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+      successMessage: (elapsedMs) => `[Explore] 第 ${round + 1} 轮页面探索完成，耗时 ${elapsedSeconds(elapsedMs)}`,
+    }, () => exploreWorkflowPlan(draft, driver, {
       resolver: new CodexCliWorkflowLocatorResolver({ ...(options.model ? { model: options.model } : {}) }),
       evidenceDirectory,
       stateStore: new WorkflowStateStore(resolve(options.outputDirectory, `round-${round}.state.json`)),
@@ -403,7 +439,7 @@ async function main(): Promise<void> {
       ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
       ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
       ...(seed ? { seedReport: seed, allowCompatibleSeed: true } : {}),
-    })
+    }))
     await writeJson(reportPath, report)
     if (report.status === 'passed') {
       passedReport = report
@@ -417,6 +453,7 @@ async function main(): Promise<void> {
       pageEvidence: await readSanitizedPageEvidence(await cumulativePageEvidenceFiles(options.outputDirectory, round)),
       provider,
       workspaceDirectory: resolve(options.outputDirectory, `round-${round + 1}-refinement-workspace`),
+      progress,
     })
     await writeJson(resolve(options.outputDirectory, `round-${round + 1}.plan-draft.json`), refined)
     const recovery = assessMutationRecovery(report.runtimeResult)
@@ -442,7 +479,14 @@ async function main(): Promise<void> {
   console.log(`Approved plan: ${planPath}`)
   if (!options.execute) return
 
-  const result = await executeWorkflow(plan, new PlaywrightWorkflowDriver({
+  const result = await runWithWorkflowProgress(progress, {
+    stage: 'executing',
+    operation: 'workflow.execute',
+    attempt: 1,
+    startMessage: '[Runtime] 正在执行正式测试',
+    heartbeatMessage: (elapsedMs) => `[Runtime] 正式测试仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+    successMessage: (elapsedMs) => `[Runtime] 正式测试完成，耗时 ${elapsedSeconds(elapsedMs)}`,
+  }, () => executeWorkflow(plan, new PlaywrightWorkflowDriver({
     ...browserOptions,
     storageStateByTarget: options.storageStateByTarget,
     sessionStorageByTarget: options.sessionStorageByTarget,
@@ -454,7 +498,7 @@ async function main(): Promise<void> {
     environment,
     ...(options.maxIterations !== undefined ? { maxIterationsPerGroup: options.maxIterations } : {}),
     ...(options.iterationOffset !== undefined ? { iterationOffsetPerGroup: options.iterationOffset } : {}),
-  })
+  }))
   const resultPath = resolve(options.outputDirectory, 'workflow.runtime.result.json')
   await writeJson(resultPath, result)
   console.log(`Runtime status: ${result.status}`)

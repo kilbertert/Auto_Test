@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LocatorIR } from '../src/core/types.js'
+import type { WorkflowProgressSink } from '../src/workflow/diagnostics.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import type { WorkflowPlanDraft, WorkflowPlannerProvider } from '../src/workflow/planner-types.js'
 import { workflowExplorationRefinementPrompt, workflowPlannerPrompt, workflowRecoveryPlanningPrompt } from '../src/workflow/planner-prompt.js'
@@ -80,7 +81,7 @@ describe('workflow planner validation', () => {
     })
   })
 
-  it('rejects plaintext sensitive data and untraceable planner targets', () => {
+  it('rejects plaintext sensitive data and repairs traceability only when parent evidence exists', () => {
     const withPhone = draft()
     withPhone.dataBindings.push({ name: 'bad', source: 'literal', valueType: 'scalar', value: '+6598765432' })
     expect(() => validateWorkflowPlanDraft(withPhone)).toThrow(/plaintext sensitive data/i)
@@ -88,7 +89,76 @@ describe('workflow planner validation', () => {
     const withoutRefs = draft()
     const step = withoutRefs.groups[0]!.phases[0]!.steps[1]!
     if (step.kind === 'fill') step.target.sourceRefs = []
-    expect(() => validateWorkflowPlanDraft(withoutRefs)).toThrow(/source references/i)
+    expect(() => validateWorkflowPlanDraft(withoutRefs)).not.toThrow()
+    if (step.kind === 'fill') expect(step.target.sourceRefs).toEqual(step.sourceRefs)
+
+    const untraceable = draft()
+    const phase = untraceable.groups[0]!.phases[0]!
+    phase.sourceRefs = []
+    phase.steps[0]!.sourceRefs = []
+    expect(() => validateWorkflowPlanDraft(untraceable)).toThrow(
+      'groups[0].phases[0].sourceRefs must contain source references',
+    )
+  })
+
+  it('normalizes missing step IDs and source refs before spending a model repair attempt', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-planner-normalization-'))
+    temporaryDirectories.push(directory)
+    const input = draft()
+    const { planner: _planner, ...body } = structuredClone(input)
+    const phase = body.groups[0]!.phases[0]!
+    const step = phase.steps[1] as unknown as Record<string, unknown>
+    const target = step.target as Record<string, unknown>
+    target.candidates = [{ kind: 'placeholder', placeholder: 'Phone', source: 'aiSuggested' }]
+    step.type = step.kind
+    delete step.kind
+    delete step.id
+    delete step.sourceRefs
+    delete target.sourceRefs
+    const repair = vi.fn()
+    const provider: WorkflowPlannerProvider = {
+      name: 'fixture',
+      model: null,
+      async generate() { return { planJson: JSON.stringify(body), summary: [] } },
+      repair,
+    }
+    const events: Parameters<WorkflowProgressSink['emit']>[0][] = []
+    const progress: WorkflowProgressSink = { async emit(event) { events.push(event) } }
+    const manifest: WorkflowIntakeManifest = {
+      version: '1.0',
+      kind: 'workflow-intake',
+      workflowId: input.workflowId,
+      source: { format: 'xlsx', fileName: 'fixture.xlsx', sheetName: 'Cases', sha256: input.sourceSha256 },
+      targetUrls: ['https://app.example.test/'],
+      requiredCapabilities: [],
+      phases: [{
+        id: 'login', title: 'login', sourceRow: 2, risk: 'read', steps: [], resources: [], secretBindings: [], imageIds: [],
+        review: { status: 'draft', ambiguities: [] },
+      }],
+      embeddedImages: [],
+      supplementalImages: [],
+      review: { status: 'draft', reasons: [] },
+    }
+
+    const result = await planWorkflow({
+      manifest,
+      mediaDirectory: directory,
+      workspaceDirectory: directory,
+      provider,
+      progress,
+    })
+
+    expect(repair).not.toHaveBeenCalled()
+    expect(result.groups[0]!.phases[0]!.steps[1]).toMatchObject({
+      id: 'login-fill-2',
+      sourceRefs: ['phase:login'],
+      target: {
+        sourceRefs: ['phase:login'],
+        candidates: [{ strategy: 'placeholder', value: 'Phone', source: 'aiSuggested' }],
+      },
+    })
+    expect(events.some((event) => event.kind === 'normalization_applied')).toBe(true)
+    expect(await readFile(resolve(directory, 'planner-normalization-1.json'), 'utf8')).toContain('generated_id')
   })
 
   it('rejects an authentication phase that discards the session before shared dependent phases', () => {

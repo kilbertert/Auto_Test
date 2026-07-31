@@ -17,6 +17,22 @@ import type {
 
 const draftLocatorPrefix = '__auto_test_draft_locator__:'
 const draftTablePrefix = '__auto_test_draft_table__:'
+const stableIdPattern = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,127}$/u
+
+export interface WorkflowDraftNormalization {
+  kind: 'canonical_field_alias' | 'canonical_locator' | 'generated_id' | 'inherited_source_refs'
+  path: string
+  value: string | string[]
+}
+
+export class WorkflowPlanValidationError extends Error {
+  readonly code = 'workflow_plan_invalid'
+
+  constructor(readonly location: string, detail: string) {
+    super(`Invalid workflow plan draft: ${location} ${detail}`)
+    this.name = 'WorkflowPlanValidationError'
+  }
+}
 
 function requireCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Invalid workflow plan draft: ${message}`)
@@ -27,8 +43,193 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function requireSourceRefs(value: unknown, path: string): asserts value is string[] {
-  requireCondition(Array.isArray(value) && value.length > 0, `${path} must contain source references`)
-  requireCondition(value.every((item) => typeof item === 'string' && item.trim()), `${path} contains an invalid source reference`)
+  if (!Array.isArray(value) || value.length === 0) throw new WorkflowPlanValidationError(path, 'must contain source references')
+  if (!value.every((item) => typeof item === 'string' && item.trim())) {
+    throw new WorkflowPlanValidationError(path, 'contains an invalid source reference')
+  }
+}
+
+function requireStableId(value: unknown, path: string): asserts value is string {
+  if (typeof value !== 'string' || !stableIdPattern.test(value)) {
+    throw new WorkflowPlanValidationError(path, 'must be a stable ID')
+  }
+}
+
+function validSourceRefs(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  if (!value.every((item) => typeof item === 'string' && item.trim())) return undefined
+  return [...new Set(value)]
+}
+
+function stableIdToken(value: string): string {
+  const normalized = value.normalize('NFKC')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 96)
+  return normalized && stableIdPattern.test(normalized) ? normalized : 'item'
+}
+
+function uniqueGeneratedId(base: string, usedIds: Set<string>): string {
+  let candidate = base.slice(0, 128)
+  let suffix = 2
+  while (usedIds.has(candidate)) {
+    const ending = `-${suffix++}`
+    candidate = `${base.slice(0, 128 - ending.length)}${ending}`
+  }
+  usedIds.add(candidate)
+  return candidate
+}
+
+function inheritSourceRefs(
+  entry: Record<string, unknown>,
+  path: string,
+  inherited: string[] | undefined,
+  normalizations: WorkflowDraftNormalization[],
+): string[] | undefined {
+  const existing = validSourceRefs(entry.sourceRefs)
+  if (existing) {
+    entry.sourceRefs = existing
+    return existing
+  }
+  if (!inherited) return undefined
+  entry.sourceRefs = [...inherited]
+  normalizations.push({ kind: 'inherited_source_refs', path: `${path}.sourceRefs`, value: [...inherited] })
+  return inherited
+}
+
+function normalizeLocatorCandidate(
+  locator: Record<string, unknown>,
+  path: string,
+  normalizations: WorkflowDraftNormalization[],
+): void {
+  if (typeof locator.strategy === 'string' && typeof locator.value === 'string') return
+  let strategy: string | undefined
+  let value: string | undefined
+  if (typeof locator.exactText === 'string' && locator.exactText.trim()) {
+    strategy = 'text'
+    value = locator.exactText
+    locator.exact = true
+    delete locator.exactText
+  } else if (typeof locator.kind === 'string') {
+    if (locator.kind === 'title' && typeof locator.value === 'string' && locator.value.trim()) {
+      const title = locator.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      strategy = 'css'
+      value = `[title="${title}"]`
+    }
+    const aliases: Record<string, string> = {
+      role: 'role',
+      text: 'text',
+      placeholder: 'placeholder',
+      label: 'label',
+      testId: 'testId',
+      css: 'css',
+      xpath: 'xpath',
+    }
+    if (!strategy) {
+      strategy = aliases[locator.kind]
+      const aliasValue = strategy ? locator[strategy] : undefined
+      value = typeof aliasValue === 'string'
+        ? aliasValue
+        : typeof locator.value === 'string'
+          ? locator.value
+          : typeof locator.selector === 'string'
+            ? locator.selector
+            : undefined
+    }
+  }
+  if (!strategy || !value?.trim()) return
+  locator.strategy = strategy
+  locator.value = value
+  delete locator.kind
+  delete locator.role
+  delete locator.text
+  delete locator.placeholder
+  delete locator.label
+  delete locator.testId
+  delete locator.selector
+  normalizations.push({ kind: 'canonical_locator', path, value: `${strategy}:${value}` })
+}
+
+function normalizeLocatorTarget(
+  target: unknown,
+  path: string,
+  inherited: string[] | undefined,
+  normalizations: WorkflowDraftNormalization[],
+): void {
+  if (!isRecord(target)) return
+  inheritSourceRefs(target, path, inherited, normalizations)
+  if (!Array.isArray(target.candidates)) return
+  for (const [index, locator] of target.candidates.entries()) {
+    if (isRecord(locator)) normalizeLocatorCandidate(locator, `${path}.candidates[${index}]`, normalizations)
+  }
+}
+
+function normalizeDraftTraceability(input: Record<string, unknown>, normalizations: WorkflowDraftNormalization[]): void {
+  if (!Array.isArray(input.groups)) return
+  const usedIds = new Set<string>()
+  for (const [groupIndex, group] of input.groups.entries()) {
+    if (!isRecord(group) || !Array.isArray(group.phases)) continue
+    for (const [phaseIndex, phase] of group.phases.entries()) {
+      if (!isRecord(phase)) continue
+      const phasePath = `groups[${groupIndex}].phases[${phaseIndex}]`
+      const phaseId = typeof phase.id === 'string' && stableIdPattern.test(phase.id) ? phase.id : undefined
+      const phaseRefs = validSourceRefs(phase.sourceRefs)
+      if (phaseRefs) phase.sourceRefs = phaseRefs
+      if (Array.isArray(phase.steps)) {
+        for (const [stepIndex, step] of phase.steps.entries()) {
+          if (!isRecord(step)) continue
+          const stepPath = `${phasePath}.steps[${stepIndex}]`
+          if (step.kind === undefined && typeof step.type === 'string' && step.type.trim()) {
+            const alias = step.type
+            step.kind = alias
+            delete step.type
+            normalizations.push({ kind: 'canonical_field_alias', path: `${stepPath}.kind`, value: alias })
+          }
+          const existingId = typeof step.id === 'string' && stableIdPattern.test(step.id) ? step.id : undefined
+          if (!existingId || usedIds.has(existingId)) {
+            if (phaseId && typeof step.kind === 'string' && step.kind.trim()) {
+              const generated = uniqueGeneratedId(`${phaseId}-${stableIdToken(step.kind)}-${stepIndex + 1}`, usedIds)
+              step.id = generated
+              normalizations.push({ kind: 'generated_id', path: `${stepPath}.id`, value: generated })
+            }
+          } else {
+            usedIds.add(existingId)
+          }
+          const stepRefs = inheritSourceRefs(step, stepPath, phaseRefs, normalizations)
+          normalizeLocatorTarget(step.target, `${stepPath}.target`, stepRefs, normalizations)
+          normalizeLocatorTarget(step.imageTarget, `${stepPath}.imageTarget`, stepRefs, normalizations)
+          normalizeLocatorTarget(step.inputTarget, `${stepPath}.inputTarget`, stepRefs, normalizations)
+          if (isRecord(step.refresh) && step.refresh.kind === 'click') {
+            normalizeLocatorTarget(step.refresh.target, `${stepPath}.refresh.target`, stepRefs, normalizations)
+          }
+        }
+      }
+      if (Array.isArray(phase.assertions)) {
+        for (const [assertionIndex, assertion] of phase.assertions.entries()) {
+          if (!isRecord(assertion)) continue
+          const assertionPath = `${phasePath}.assertions[${assertionIndex}]`
+          if (assertion.kind === undefined && typeof assertion.type === 'string' && assertion.type.trim()) {
+            const alias = assertion.type
+            assertion.kind = alias
+            delete assertion.type
+            normalizations.push({ kind: 'canonical_field_alias', path: `${assertionPath}.kind`, value: alias })
+          }
+          const existingId = typeof assertion.id === 'string' && stableIdPattern.test(assertion.id) ? assertion.id : undefined
+          if (!existingId || usedIds.has(existingId)) {
+            if (phaseId && typeof assertion.kind === 'string' && assertion.kind.trim()) {
+              const generated = uniqueGeneratedId(`${phaseId}-${stableIdToken(assertion.kind)}-assertion-${assertionIndex + 1}`, usedIds)
+              assertion.id = generated
+              normalizations.push({ kind: 'generated_id', path: `${assertionPath}.id`, value: generated })
+            }
+          } else {
+            usedIds.add(existingId)
+          }
+          const assertionRefs = inheritSourceRefs(assertion, assertionPath, phaseRefs, normalizations)
+          normalizeLocatorTarget(assertion.target, `${assertionPath}.target`, assertionRefs, normalizations)
+        }
+      }
+    }
+  }
 }
 
 function placeholderLocator(id: string): LocatorIR {
@@ -103,37 +304,48 @@ function validateDraftTarget(target: WorkflowDraftLocatorTarget, path: string): 
   }
 }
 
-function projectRefresh(refresh: Extract<WorkflowDraftStep, { kind: 'captureTableRow' }>['refresh'], id: string) {
+function projectRefresh(
+  refresh: Extract<WorkflowDraftStep, { kind: 'captureTableRow' }>['refresh'],
+  id: string,
+  path: string,
+) {
   if (!refresh || refresh.kind !== 'click') return refresh
-  validateDraftTarget(refresh.target, `${id}.refresh.target`)
+  validateDraftTarget(refresh.target, `${path}.refresh.target`)
   return { kind: 'click' as const, locator: placeholderLocator(`${id}:refresh`) }
 }
 
-function projectStep(step: WorkflowDraftStep): WorkflowRuntimeStep {
-  requireSourceRefs(step.sourceRefs, `${step.id}.sourceRefs`)
+function projectStep(step: WorkflowDraftStep, path: string): WorkflowRuntimeStep {
+  requireStableId(step.id, `${path}.id`)
+  requireSourceRefs(step.sourceRefs, `${path}.sourceRefs`)
+  requireCondition([
+    'navigate', 'click', 'fill', 'press', 'check', 'ensureChecked', 'select', 'solveCaptcha', 'reload', 'wait',
+    'captureTableRow', 'clickAlignedTableAction',
+  ].includes(step.kind), `${path}.kind is invalid`)
   if (step.kind === 'click') {
-    validateDraftTarget(step.target, `${step.id}.target`)
+    validateDraftTarget(step.target, `${path}.target`)
     return { id: step.id, kind: step.kind, locator: placeholderLocator(step.id) }
   }
   if (step.kind === 'fill' || step.kind === 'select') {
-    validateDraftTarget(step.target, `${step.id}.target`)
+    validateDraftTarget(step.target, `${path}.target`)
     return { id: step.id, kind: step.kind, locator: placeholderLocator(step.id), value: step.value }
   }
   if (step.kind === 'press') {
-    validateDraftTarget(step.target, `${step.id}.target`)
+    validateDraftTarget(step.target, `${path}.target`)
+    requireCondition(typeof step.key === 'string' && step.key.trim(), `${path}.key must contain text`)
     return { id: step.id, kind: step.kind, locator: placeholderLocator(step.id), key: step.key }
   }
   if (step.kind === 'check') {
-    validateDraftTarget(step.target, `${step.id}.target`)
+    validateDraftTarget(step.target, `${path}.target`)
     return { id: step.id, kind: step.kind, locator: placeholderLocator(step.id) }
   }
   if (step.kind === 'ensureChecked') {
-    validateDraftTarget(step.target, `${step.id}.target`)
+    validateDraftTarget(step.target, `${path}.target`)
+    requireCondition(typeof step.expected === 'boolean', `${path}.expected must be boolean`)
     return { id: step.id, kind: step.kind, locator: placeholderLocator(step.id), expected: step.expected }
   }
   if (step.kind === 'solveCaptcha') {
-    validateDraftTarget(step.imageTarget, `${step.id}.imageTarget`)
-    validateDraftTarget(step.inputTarget, `${step.id}.inputTarget`)
+    validateDraftTarget(step.imageTarget, `${path}.imageTarget`)
+    validateDraftTarget(step.inputTarget, `${path}.inputTarget`)
     return {
       id: step.id,
       kind: step.kind,
@@ -142,18 +354,24 @@ function projectStep(step: WorkflowDraftStep): WorkflowRuntimeStep {
     }
   }
   if (step.kind === 'captureTableRow') {
-    const refresh = projectRefresh(step.refresh, step.id)
+    const refresh = projectRefresh(step.refresh, step.id, path)
     const { sourceRefs: _sourceRefs, refresh: _draftRefresh, ...runtimeStep } = step
     return refresh ? { ...runtimeStep, refresh } : runtimeStep
   }
+  if (step.kind === 'wait') requireCondition(Number.isInteger(step.timeoutMs) && step.timeoutMs >= 0, `${path}.timeoutMs must be non-negative`)
   const { sourceRefs: _sourceRefs, ...runtimeStep } = step
   return runtimeStep
 }
 
-function projectAssertion(assertion: WorkflowDraftAssertion): WorkflowRuntimeAssertion {
-  requireSourceRefs(assertion.sourceRefs, `${assertion.id}.sourceRefs`)
+function projectAssertion(assertion: WorkflowDraftAssertion, path: string): WorkflowRuntimeAssertion {
+  requireStableId(assertion.id, `${path}.id`)
+  requireSourceRefs(assertion.sourceRefs, `${path}.sourceRefs`)
+  requireCondition(
+    ['url', 'locatorText', 'locatorState', 'locatorCount', 'entityText', 'tableRowCount'].includes(assertion.kind),
+    `${path}.kind is invalid`,
+  )
   if (assertion.kind === 'locatorText') {
-    validateDraftTarget(assertion.target, `${assertion.id}.target`)
+    validateDraftTarget(assertion.target, `${path}.target`)
     return {
       id: assertion.id,
       kind: assertion.kind,
@@ -163,17 +381,20 @@ function projectAssertion(assertion: WorkflowDraftAssertion): WorkflowRuntimeAss
     }
   }
   if (assertion.kind === 'locatorState') {
-    validateDraftTarget(assertion.target, `${assertion.id}.target`)
+    validateDraftTarget(assertion.target, `${path}.target`)
     return { id: assertion.id, kind: assertion.kind, locator: placeholderLocator(assertion.id), expected: assertion.expected }
   }
   if (assertion.kind === 'locatorCount') {
-    validateDraftTarget(assertion.target, `${assertion.id}.target`)
+    validateDraftTarget(assertion.target, `${path}.target`)
     return { id: assertion.id, kind: assertion.kind, locator: placeholderLocator(assertion.id), expected: assertion.expected }
   }
   return { ...assertion }
 }
 
-export function draftBodyFromUnknown(input: unknown): WorkflowPlanDraftBody {
+export function draftBodyFromUnknown(
+  input: unknown,
+  normalizations: WorkflowDraftNormalization[] = [],
+): WorkflowPlanDraftBody {
   requireCondition(isRecord(input), 'root must be an object')
   requireCondition(input.version === '1.0', 'version must be 1.0')
   requireCondition(input.kind === 'workflow-plan-draft', 'kind must be workflow-plan-draft')
@@ -199,6 +420,7 @@ export function draftBodyFromUnknown(input: unknown): WorkflowPlanDraftBody {
       })
     : []
   const targetUrls = new Map(targetEntries.filter((entry): entry is readonly [string, { original: string | undefined; entry: string | undefined }] => typeof entry[0] === 'string'))
+  normalizeDraftTraceability(input, normalizations)
   if (Array.isArray(input.groups)) {
     const bindingNames = new Set(
       Array.isArray(input.dataBindings)
@@ -349,12 +571,17 @@ export function projectDraftToExecutionPlan(
   },
   tables: ReadonlyMap<string, import('./runtime-types.js').WorkflowTableSpec> = new Map(),
 ): WorkflowExecutionPlan {
-  const groups = draft.groups.map((group) => ({
+  requireCondition(Array.isArray(draft.groups), 'groups must be an array')
+  const groups = draft.groups.map((group, groupIndex) => ({
     ...group,
-    phases: group.phases.map((phase) => {
-      requireSourceRefs(phase.sourceRefs, `${phase.id}.sourceRefs`)
-      const steps = phase.steps.map((step) => {
-        const projected = projectStep(step)
+    phases: group.phases.map((phase, phaseIndex) => {
+      const phasePath = `groups[${groupIndex}].phases[${phaseIndex}]`
+      requireStableId(phase.id, `${phasePath}.id`)
+      requireSourceRefs(phase.sourceRefs, `${phasePath}.sourceRefs`)
+      requireCondition(Array.isArray(phase.steps), `${phasePath}.steps must be an array`)
+      requireCondition(Array.isArray(phase.assertions), `${phasePath}.assertions must be an array`)
+      const steps = phase.steps.map((step, stepIndex) => {
+        const projected = projectStep(step, `${phasePath}.steps[${stepIndex}]`)
         if ('locator' in projected) projected.locator = locators.get(step.id) ?? projected.locator
         if (projected.kind === 'solveCaptcha') {
           projected.imageLocator = locators.get(`${step.id}:image`) ?? projected.imageLocator
@@ -370,8 +597,8 @@ export function projectDraftToExecutionPlan(
         }
         return projected
       })
-      const assertions = phase.assertions.map((assertion) => {
-        const projected = projectAssertion(assertion)
+      const assertions = phase.assertions.map((assertion, assertionIndex) => {
+        const projected = projectAssertion(assertion, `${phasePath}.assertions[${assertionIndex}]`)
         if ('locator' in projected) projected.locator = locators.get(assertion.id) ?? projected.locator
         if (projected.kind === 'tableRowCount') projected.table = tables.get(`${assertion.id}:table`) ?? placeholderTable(`${assertion.id}:table`)
         return projected

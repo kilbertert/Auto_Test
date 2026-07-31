@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../workflow/autonomy-types.js'
 
 const questionLabels: Record<string, string> = {
@@ -25,8 +26,14 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, '')) as T
 }
 
+async function diagnosticLine(statePath: string): Promise<string | undefined> {
+  const path = resolve(dirname(statePath), 'run-events.jsonl')
+  return access(path).then(() => `运行诊断：${path}`, () => undefined)
+}
+
 export async function friendlyRunSummary(statePath: string): Promise<FriendlyRunSummary> {
   const state = await readJson<AutonomousWorkflowJobState>(statePath)
+  const diagnostics = await diagnosticLine(statePath)
   if (state.outcome === 'passed') {
     return {
       title: '测试通过',
@@ -44,6 +51,7 @@ export async function friendlyRunSummary(statePath: string): Promise<FriendlyRun
       lines: [
         state.diagnosis?.reason ?? state.error ?? '页面操作完成，但业务断言没有通过。',
         state.runtimeResultPath ? `详细执行证据：${state.runtimeResultPath}` : '请查看本次输出目录中的 Runtime 结果。',
+        ...(diagnostics ? [diagnostics] : []),
       ],
     }
   }
@@ -54,6 +62,7 @@ export async function friendlyRunSummary(statePath: string): Promise<FriendlyRun
       for (const question of request.questions) lines.push(questionLabels[question.id] ?? questionKindLabels[question.kind])
     }
     if (lines.length === 0) lines.push(state.diagnosis?.reason ?? state.error ?? '框架需要补充信息后才能继续。')
+    if (diagnostics) lines.push(diagnostics)
     return { title: '测试暂时无法继续', outcome: 'blocked', lines: [...new Set(lines)] }
   }
   if (state.status === 'running') {
@@ -62,6 +71,6 @@ export async function friendlyRunSummary(statePath: string): Promise<FriendlyRun
   return {
     title: '测试执行异常结束',
     outcome: 'failed',
-    lines: [state.error ?? '请查看控制台输出和本次运行目录。'],
+    lines: [state.error ?? '请查看控制台输出和本次运行目录。', ...(diagnostics ? [diagnostics] : [])],
   }
 }

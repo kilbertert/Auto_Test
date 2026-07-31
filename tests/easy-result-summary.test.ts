@@ -52,6 +52,7 @@ describe('friendly autonomous result summary', () => {
         responseInstructions: [],
       }
       await writeFile(requestPath, JSON.stringify(request))
+      await writeFile(resolve(directory, 'run-events.jsonl'), '{}\n')
       await writeFile(statePath, JSON.stringify(state({
         status: 'blocked', stage: 'blocked', outcome: 'blocked', humanInputRequestPath: requestPath,
       })))
@@ -60,6 +61,7 @@ describe('friendly autonomous result summary', () => {
 
       expect(result.title).toBe('测试暂时无法继续')
       expect(result.lines).toContain('缺少账号、验证码来源或其他私有测试数据。')
+      expect(result.lines.some((line) => line.includes('run-events.jsonl'))).toBe(true)
       expect(result.lines).not.toContain('internal prompt')
     } finally {
       await rm(directory, { recursive: true, force: true })

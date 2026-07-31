@@ -1,5 +1,11 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import {
+  diagnosticErrorDetails,
+  elapsedSeconds,
+  runWithWorkflowProgress,
+  type WorkflowProgressSink,
+} from './diagnostics.js'
 import type { WorkflowPlanDraft, WorkflowPlannerProvider, WorkflowPlannerRequest } from './planner-types.js'
 import { draftBodyFromUnknown, validateWorkflowPlanDraft } from './planner-validation.js'
 
@@ -25,6 +31,8 @@ export async function planWorkflowRecoveryContracts(options: {
   draft: WorkflowPlanDraft
   provider: WorkflowPlannerProvider
   workspaceDirectory: string
+  progress?: WorkflowProgressSink
+  heartbeatIntervalMs?: number
 }): Promise<WorkflowPlanDraft> {
   const before = validateWorkflowPlanDraft(structuredClone(options.draft))
   if (missingRecoveryPhaseIds(before).length === 0) return before
@@ -38,14 +46,30 @@ export async function planWorkflowRecoveryContracts(options: {
     workspaceDirectory: options.workspaceDirectory,
   }
   await mkdir(options.workspaceDirectory, { recursive: true, mode: 0o750 })
-  let response = await options.provider.planRecovery(request, JSON.stringify(before))
+  const callPlanner = (attempt: number, operation: () => Promise<import('./planner-types.js').WorkflowPlannerModelResponse>) => (
+    runWithWorkflowProgress(options.progress, {
+      stage: 'recovery_planning',
+      operation: attempt === 1 ? 'recovery-planner.generate' : 'recovery-planner.repair',
+      attempt,
+      maxAttempts: 3,
+      startMessage: `[Recovery Planner] 正在${attempt === 1 ? '生成' : '修复'}恢复契约，第 ${attempt}/3 轮`,
+      heartbeatMessage: (elapsedMs) => `[Recovery Planner] 第 ${attempt}/3 轮仍在运行，已等待 ${elapsedSeconds(elapsedMs)}`,
+      successMessage: (elapsedMs) => `[Recovery Planner] 第 ${attempt}/3 轮模型响应已返回，耗时 ${elapsedSeconds(elapsedMs)}`,
+      failureMessage: (elapsedMs, error) => `[Recovery Planner] 第 ${attempt}/3 轮模型调用失败（${elapsedSeconds(elapsedMs)}）：${diagnosticErrorDetails(error).message}`,
+      ...(options.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: options.heartbeatIntervalMs } : {}),
+    }, operation)
+  )
+  let response = await callPlanner(1, () => options.provider.planRecovery!(request, JSON.stringify(before)))
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
+    const attemptNumber = attempt + 1
+    const responsePath = resolve(options.workspaceDirectory, `recovery-planner-response-${attemptNumber}.json`)
     await writeFile(
-      resolve(options.workspaceDirectory, `recovery-planner-response-${attempt + 1}.json`),
+      responsePath,
       `${JSON.stringify(response, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o640 },
+      { encoding: 'utf8', mode: 0o600 },
     )
+    await chmod(responsePath, 0o600)
     try {
       const body = draftBodyFromUnknown(JSON.parse(response.planJson) as unknown)
       const candidate = validateWorkflowPlanDraft({
@@ -69,17 +93,35 @@ export async function planWorkflowRecoveryContracts(options: {
       await writeFile(
         resolve(options.workspaceDirectory, 'recovery-planner-response.json'),
         `${JSON.stringify(response, null, 2)}\n`,
-        { encoding: 'utf8', mode: 0o640 },
+        { encoding: 'utf8', mode: 0o600 },
       )
+      await chmod(resolve(options.workspaceDirectory, 'recovery-planner-response.json'), 0o600)
+      await options.progress?.emit({
+        kind: 'information',
+        stage: 'recovery_planning',
+        operation: 'recovery-planner.validate',
+        attempt: attemptNumber,
+        maxAttempts: 3,
+        message: `[Recovery Planner] 第 ${attemptNumber}/3 轮恢复契约校验通过`,
+        artifactPath: responsePath,
+      })
       return result
     } catch (error) {
       lastError = error
+      const details = diagnosticErrorDetails(error)
+      await options.progress?.emit({
+        kind: 'validation_failed',
+        stage: 'recovery_planning',
+        operation: 'recovery-planner.validate',
+        attempt: attemptNumber,
+        maxAttempts: 3,
+        message: `[Recovery Planner] 第 ${attemptNumber}/3 轮结构校验未通过：${details.message}`,
+        code: details.code,
+        ...(details.location ? { location: details.location } : {}),
+        artifactPath: responsePath,
+      })
       if (!options.provider.repair || attempt === 2) break
-      response = await options.provider.repair(
-        request,
-        response,
-        error instanceof Error ? error.message : String(error),
-      )
+      response = await callPlanner(attemptNumber + 1, () => options.provider.repair!(request, response, details.message))
     }
   }
   throw lastError instanceof Error ? lastError : new Error('Recovery Planner could not produce valid recovery contracts')
