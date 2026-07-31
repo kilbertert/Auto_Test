@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 describe('Windows portable launcher', () => {
   it('invokes npm and Playwright through the pinned portable Node runtime', async () => {
     const script = await readFile(resolve(import.meta.dirname, '../scripts/launch-windows.ps1'), 'utf8')
+    const browserCheck = await readFile(resolve(import.meta.dirname, '../scripts/check-playwright-browser.cjs'), 'utf8')
 
     expect(script).toContain("node_modules\\npm\\bin\\npm-cli.js")
     expect(script).toContain("node_modules\\@playwright\\test\\cli.js")
@@ -13,5 +14,7 @@ describe('Windows portable launcher', () => {
     expect(script).toContain('if (Test-PlaywrightChromiumReady)')
     expect(script).not.toMatch(/&\s+npx\b/)
     expect(script).not.toMatch(/&\s+npm\b/)
+    expect(browserCheck).toContain("chromium.launch({ headless: true })")
+    expect(browserCheck).toContain('AUTO_TEST_CHROMIUM_READY')
   })
 })

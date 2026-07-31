@@ -493,12 +493,16 @@ function Test-PlaywrightChromiumReady {
   if (-not $script:NodeExecutable -or -not (Test-Path $script:NodeExecutable)) { return $false }
   $browserCheck = Join-Path $RepositoryRoot 'scripts\check-playwright-browser.cjs'
   if (-not (Test-Path $browserCheck)) { return $false }
+  $previousErrorActionPreference = $ErrorActionPreference
   try {
-    & $script:NodeExecutable $browserCheck
-    return $LASTEXITCODE -eq 0
-  } catch {
-    return $false
+    $ErrorActionPreference = 'Continue'
+    $checkOutput = (& $script:NodeExecutable $browserCheck 2>&1 | Out-String).Trim()
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
+  if ($checkOutput -match '(?m)^AUTO_TEST_CHROMIUM_READY\s*$') { return $true }
+  if ($checkOutput) { Write-Host $checkOutput }
+  return $false
 }
 
 function Ensure-ProjectRuntime {
