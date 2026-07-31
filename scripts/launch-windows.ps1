@@ -351,6 +351,25 @@ function Restore-PreviousProviderConfig {
   }
 }
 
+function Get-CodexProbeFailureHint([string] $Output, [int] $ExitCode) {
+  if ($Output -match '(?i)\b401\b|unauthorized|invalid[^\r\n]*api[^\r\n]*key|api[_ -]?key[^\r\n]*disabled') {
+    return 'API Key 被模型服务拒绝。'
+  }
+  if ($Output -match '(?i)\b403\b|forbidden') {
+    return '模型服务拒绝了当前 Key 的访问权限。'
+  }
+  if ($Output -match '(?i)\b429\b|rate.?limit|quota|insufficient[^\r\n]*credit') {
+    return '模型服务额度不足或请求频率受限。'
+  }
+  if ($Output -match '(?i)\b404\b|model[^\r\n]*(not found|does not exist|unsupported)') {
+    return '模型 ID 不存在或当前 API 不支持该模型。'
+  }
+  if ($Output -match '(?i)dns|resolve|connection|connect|certificate|tls|timed? out|timeout') {
+    return '无法连接模型 API，请检查 Windows 网络、代理、DNS 或 TLS。'
+  }
+  return "Codex CLI 返回退出码 $ExitCode。"
+}
+
 function Test-CodexProvider {
   if (-not $script:ApiConfigurationChanged -or $env:AUTO_TEST_SKIP_API_PROBE -eq '1') { return }
   $codexExecutable = $env:AUTO_TEST_CODEX_BIN
@@ -358,12 +377,23 @@ function Test-CodexProvider {
   $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
   try {
     Write-Host '[检查] 正在验证模型 API 地址、Key 和模型可用性……'
-    & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
-    if ($LASTEXITCODE -ne 0) {
-      Restore-PreviousProviderConfig
-      throw '模型 API 探针失败，已恢复上一版配置。请检查 API Base URL、API Key 和模型 ID。'
+    $probeExitCode = 1
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+      # Windows PowerShell 5 wraps native stderr as ErrorRecord objects. Codex writes
+      # its normal version banner to stderr, so capture it without treating it as a script failure.
+      $ErrorActionPreference = 'Continue'
+      & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
+      $probeExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
     }
-    $probe = Get-Content -Raw -Encoding UTF8 $probePath
+    $probe = if (Test-Path $probePath) { Get-Content -Raw -Encoding UTF8 $probePath } else { '' }
+    if ($probeExitCode -ne 0) {
+      Restore-PreviousProviderConfig
+      $hint = Get-CodexProbeFailureHint $probe $probeExitCode
+      throw "模型 API 探针失败，已恢复上一版配置。$hint"
+    }
     if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {
       Restore-PreviousProviderConfig
       throw '模型 API 已响应但健康检查结果异常，已恢复上一版配置。'

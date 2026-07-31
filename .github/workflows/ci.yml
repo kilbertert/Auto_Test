@@ -109,6 +109,33 @@ jobs:
           if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed' }
           if ((Get-Content -Raw -Encoding UTF8 $secretPath) -eq $previousSecret) { throw 'Private package key did not replace the existing DPAPI secret' }
 
+      - name: Verify Windows PowerShell Codex probe stderr handling
+        shell: pwsh
+        env:
+          AUTO_TEST_MODEL_API_KEY: synthetic-stderr-probe-key
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $codexPath = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
+          $originalCodex = [IO.File]::ReadAllBytes($codexPath)
+          $stubCodex = @'
+          @echo off
+          if not "%~1"=="--version" goto :probe
+          echo codex-cli 0.144.5
+          exit /b 0
+          :probe
+          1>&2 echo OpenAI Codex v0.144.5
+          echo AUTO_TEST_API_READY
+          exit /b 0
+          '@
+          try {
+            [IO.File]::WriteAllText($codexPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            .\Auto-Test.cmd --setup-only
+            if ($LASTEXITCODE -ne 0) { throw "Expected successful stderr probe handling, got $LASTEXITCODE" }
+          } finally {
+            [IO.File]::WriteAllBytes($codexPath, $originalCodex)
+          }
+
       - name: Verify no-argument CMD launcher
         shell: pwsh
         env:
