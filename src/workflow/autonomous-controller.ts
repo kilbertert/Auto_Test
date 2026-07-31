@@ -23,7 +23,7 @@ import type {
 } from './autonomy-types.js'
 
 async function writePrivateJson(path: string, value: unknown): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o640 })
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
 }
 
 async function readJson<T>(path: string | undefined, label: string): Promise<T> {
