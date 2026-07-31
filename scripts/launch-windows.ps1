@@ -256,7 +256,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $apiKey = Convert-SecureText $secureKey
     if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'API Key 不能为空。' }
     $keyProvidedNow = $true
-  } elseif ($keyProvidedNow) {
+  } elseif ($keyProvidedNow -and $env:AUTO_TEST_PERSIST_API_KEY -ne '0') {
     $secureKey = ConvertTo-SecureString $apiKey -AsPlainText -Force
   }
   if ($keyProvidedNow) {
