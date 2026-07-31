@@ -90,5 +90,5 @@ jobs:
           if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
           if ($config -match 'synthetic-ci-key') { throw 'API key leaked into config.toml' }
           if (Test-Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi')) { throw 'CI key was persisted despite opt-out' }
-          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules.bincodex.cmd'
+          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
           if ((& $codex --version) -notmatch '0\.144\.5') { throw 'Unexpected Codex CLI version' }

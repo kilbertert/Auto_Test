@@ -27,7 +27,7 @@ $script:PreviousSecretContent = ''
 
 function Resolve-ToolsHome {
   if ($env:AUTO_TEST_TOOLS_HOME) { return $env:AUTO_TEST_TOOLS_HOME }
-  return Join-Path $env:APPDATA 'auto-test	ools'
+  return Join-Path $env:APPDATA 'auto-test\tools'
 }
 
 function Get-NodeVersion([string] $Executable) {
@@ -101,7 +101,7 @@ function Get-CodexVersion([string] $Executable) {
 
 function Ensure-CodexCli {
   $toolsHome = Resolve-ToolsHome
-  $codexExecutable = Join-Path $toolsHome 'node_modules.bincodex.cmd'
+  $codexExecutable = Join-Path $toolsHome 'node_modules\.bin\codex.cmd'
   $installed = Get-CodexVersion $codexExecutable
   if ($installed -eq $CodexVersion) {
     $env:Path = "$(Split-Path -Parent $codexExecutable);$env:Path"
@@ -143,7 +143,7 @@ function Test-HttpUrl([string] $Value) {
 
 function Resolve-CodexHome {
   if ($env:AUTO_TEST_CODEX_HOME) { return $env:AUTO_TEST_CODEX_HOME }
-  return Join-Path $env:APPDATA 'auto-testcodex-home'
+  return Join-Path $env:APPDATA 'auto-test\codex-home'
 }
 
 function Ensure-ApiProvider([switch] $ForcePrompt) {
@@ -272,7 +272,7 @@ function Test-CodexProvider {
 }
 
 function Ensure-ProjectRuntime {
-  $tsx = Join-Path $RepositoryRoot 'node_modules.bin	sx.cmd'
+  $tsx = Join-Path $RepositoryRoot 'node_modules\.bin\tsx.cmd'
   if (-not (Test-Path $tsx)) {
     Write-Host '[安装] 正在安装 Auto-Test 项目依赖……'
     & npm ci
