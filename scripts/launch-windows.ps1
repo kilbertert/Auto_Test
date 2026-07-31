@@ -7,7 +7,11 @@ $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
-[Reflection.Assembly]::Load('System.Security') | Out-Null
+try {
+  Add-Type -AssemblyName System.Security -ErrorAction Stop
+} catch {
+  Add-Type -AssemblyName System.Security.Cryptography.ProtectedData -ErrorAction Stop
+}
 
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepositoryRoot
