@@ -82,7 +82,7 @@ describe('environment authentication broker', () => {
 
     expect(first.refreshedOrigins).toEqual(profile.origins)
     expect(second.refreshedOrigins).toEqual([])
-    expect((await stat(storageStatePath)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect((await stat(storageStatePath)).mode & 0o777).toBe(0o600)
   })
 
   it('rejects an auth adapter without a success criterion before launching a browser', async () => {

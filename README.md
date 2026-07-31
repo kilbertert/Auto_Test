@@ -9,6 +9,7 @@
 ## 当前文档
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)
+- [Windows 快速操作指南](docs/windows-quick-start.md)
 - [仓库与历史方案审计](docs/repository-audit.md)
 - [MVP 规格与执行链路](docs/mvp-spec.md)
 - [测试用例 IR JSON Schema](schemas/test-case-ir.schema.json)
@@ -270,7 +271,7 @@ npm run autonomous:workflow -- \
   --output-dir artifacts/pipeline/autonomous
 ```
 
-如果目标 origin 已在默认的 `~/.config/auto-test/environment-profiles.json` 中唯一注册，任务调用可以缩减为：
+如果目标 origin 已在默认 Registry 中唯一注册，任务调用可以缩减为：Linux/macOS 使用 `~/.config/auto-test/environment-profiles.json`，Windows 使用 `%APPDATA%\auto-test\environment-profiles.json`。
 
 ```bash
 npm run autonomous:workflow -- \
@@ -279,7 +280,7 @@ npm run autonomous:workflow -- \
   --output-dir artifacts/pipeline/autonomous
 ```
 
-Registry 模板见 [environment-profiles.example.json](templates/environment-profiles.example.json)。Profile 一次性登记 origin、权限策略及认证 adapter；认证文件必须为 `0600`，相对路径按 Registry 所在目录解析。CLI 显式参数仍可用于临时覆盖 Profile 的认证映射，但不会扩大 Profile 未授权的 URL origin。
+Registry 模板见 [environment-profiles.example.json](templates/environment-profiles.example.json)。Profile 一次性登记 origin、权限策略及认证 adapter；认证文件在 Linux/macOS 必须为 `0600`，Windows 必须由当前用户的 NTFS ACL 保护，相对路径按 Registry 所在目录解析。CLI 显式参数仍可用于临时覆盖 Profile 的认证映射，但不会扩大 Profile 未授权的 URL origin。
 
 自治模式会将阶段和产物持久化到 `autonomous-job.state.json`，自动完成探索、受保护 Refiner、策略审核和 Runtime。终态只有：
 
@@ -399,7 +400,7 @@ runtime 当前提供：
 - `write` 和 `destructive` 两级显式门禁；
 - 表格实体唯一捕获、实体 ID 跨阶段引用，以及数据表/独立操作表重新对齐；
 - 阶段、步骤、断言和实体捕获的结构化证据；
-- 权限为 `0600` 的原子中断状态，且不保存秘密值或匹配行文本；
+- 原子写入的私有中断状态，Linux/macOS 权限为 `0600`，且不保存秘密值或匹配行文本；
 - 中断状态绑定 execution plan 的 SHA-256，计划改变后禁止继续使用旧状态；
 - 中断后禁止自动猜测恢复点，必须同时使用 `--resume --resume-from <target-id>`。
 

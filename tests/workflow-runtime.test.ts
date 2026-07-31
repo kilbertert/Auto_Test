@@ -432,7 +432,7 @@ describe('workflow runtime engine', () => {
     })
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('explicit approval') })
-    expect((await stat(store.path)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect((await stat(store.path)).mode & 0o777).toBe(0o600)
     expect(await store.load()).toMatchObject({ status: 'interrupted', cursor: { groupIndex: 0, phaseIndex: 0 } })
   })
 

@@ -1,6 +1,6 @@
-import { execFile } from 'node:child_process'
 import { mkdir, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import spawn from 'cross-spawn'
 import type { LocatorInspection } from './types.js'
 
 interface CliResponse {
@@ -12,14 +12,58 @@ interface CliResponse {
   status?: string
 }
 
+const MAX_CLI_OUTPUT_BYTES = 10 * 1024 * 1024
+
 function execute(executable: string, args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
-    execFile(executable, args, { cwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(`Playwright CLI failed: ${stderr.trim() || stdout.trim() || 'process exited unsuccessfully'}`))
+    const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const childStdout = child.stdout
+    const childStderr = child.stderr
+    if (!childStdout || !childStderr) {
+      child.kill()
+      reject(new Error('Playwright CLI did not expose output streams'))
+      return
+    }
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    let outputBytes = 0
+    let settled = false
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      child.kill('SIGTERM')
+      reject(error)
+    }
+    const capture = (target: Buffer[], chunk: Buffer): void => {
+      outputBytes += chunk.length
+      if (outputBytes > MAX_CLI_OUTPUT_BYTES) {
+        fail(new Error(`Playwright CLI output exceeded ${MAX_CLI_OUTPUT_BYTES} bytes`))
         return
       }
-      resolvePromise({ stdout, stderr })
+      target.push(chunk)
+    }
+    const timer = setTimeout(() => {
+      fail(new Error('Playwright CLI timed out after 120000ms'))
+    }, 120_000)
+    childStdout.on('data', (chunk: Buffer) => capture(stdout, chunk))
+    childStderr.on('data', (chunk: Buffer) => capture(stderr, chunk))
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      fail(error)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      const result = {
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      }
+      if (code !== 0) {
+        reject(new Error(`Playwright CLI failed: ${result.stderr.trim() || result.stdout.trim() || 'process exited unsuccessfully'}`))
+        return
+      }
+      resolvePromise(result)
     })
   })
 }
@@ -43,7 +87,7 @@ export class PlaywrightCliSession {
     readonly workspaceDir: string,
     repositoryRoot = process.cwd(),
   ) {
-    this.executable = resolve(repositoryRoot, 'node_modules/.bin/playwright')
+    this.executable = resolve(repositoryRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'playwright.cmd' : 'playwright')
   }
 
   private async command(args: string[]): Promise<CliResponse> {

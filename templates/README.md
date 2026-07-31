@@ -2,7 +2,7 @@
 
 `test-cases.xlsx` 是 Auto-Test MVP 的标准输入模板。
 
-`environment-profiles.example.json` 是无人值守任务的环境注册表示例。实际 Registry 默认放在 `~/.config/auto-test/environment-profiles.json`，不得提交认证状态文件。
+`environment-profiles.example.json` 是无人值守任务的环境注册表示例。Linux/macOS 的 Registry 默认放在 `~/.config/auto-test/environment-profiles.json`，Windows 默认放在 `%APPDATA%\auto-test\environment-profiles.json`。模板内的私有文件路径相对 Registry 解析，不得提交认证状态文件。
 
 规则：
 

@@ -6,9 +6,11 @@
 
 测试工程师不需要编写或修改 Execution Plan。登录、权限和业务前置条件需要在首次接入环境时注册一次。
 
+Windows 用户直接查看 [Windows 快速操作指南](windows-quick-start.md)。下文命令以 Linux/macOS Bash 为例。
+
 ## 1. 准备
 
-环境要求 Node.js 24 或更高版本。首次使用先安装依赖和浏览器：
+环境要求 Node.js 24 或更高版本，并确保 Codex CLI 已安装和登录。首次使用先安装依赖和浏览器：
 
 ```bash
 npm ci
@@ -34,7 +36,8 @@ Excel 可以是标准测试用例表，也可以是“阶段标题 + 操作说�
 默认配置位置：
 
 ```text
-~/.config/auto-test/environment-profiles.json
+Linux/macOS: ~/.config/auto-test/environment-profiles.json
+Windows:     %APPDATA%\auto-test\environment-profiles.json
 ```
 
 可以从模板开始：
@@ -64,11 +67,13 @@ Secret Vault 示例：
 }
 ```
 
-所有 Secret Vault、`storageState`、`sessionStorage` 和 Planner Context 文件都必须位于仓库外，并设置为当前用户私有：
+所有 Secret Vault、`storageState`、`sessionStorage` 和 Planner Context 文件都必须位于仓库外，并设置为当前用户私有。Linux/macOS 使用：
 
 ```bash
 chmod 600 /private/path/to/file
 ```
+
+Windows 使用用户目录的 NTFS ACL，具体操作见 [Windows 快速操作指南](windows-quick-start.md)。
 
 默认保持 `allowWrite: false`、`allowDestructive: false`。只有获得明确授权且用例包含恢复或清理步骤时才开启对应权限。
 

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import type { LocatorIR } from '../core/types.js'
 import { redactSensitiveContent } from '../input/text.js'
@@ -52,9 +52,18 @@ export interface ResolvedEnvironmentProfile {
   sessionStorageByTarget: Record<string, string>
 }
 
-export function defaultEnvironmentProfileRegistryPath(environment: NodeJS.ProcessEnv = process.env): string {
-  const configHome = environment.XDG_CONFIG_HOME || resolve(homedir(), '.config')
-  return resolve(configHome, 'auto-test', 'environment-profiles.json')
+export function defaultEnvironmentProfileRegistryPath(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = homedir(),
+): string {
+  const pathApi = platform === 'win32' ? win32 : posix
+  const configHome = environment.XDG_CONFIG_HOME || (
+    platform === 'win32'
+      ? environment.APPDATA || pathApi.resolve(homeDirectory, 'AppData', 'Roaming')
+      : pathApi.resolve(homeDirectory, '.config')
+  )
+  return pathApi.resolve(configHome, 'auto-test', 'environment-profiles.json')
 }
 
 function normalizedOrigin(value: string, label: string): string {
@@ -76,14 +85,23 @@ function requireLocator(locator: LocatorIR, label: string): void {
   if (!locator.value?.trim() || !['manual', 'playwrightCli'].includes(locator.source)) throw new Error(`${label} must be a verified locator`)
 }
 
-async function requirePrivateFile(path: string, label: string): Promise<void> {
-  const details = await stat(path)
-  if (!details.isFile()) throw new Error(`${label} is not a file: ${path}`)
-  if ((details.mode & 0o077) !== 0) throw new Error(`${label} must not grant group or other permissions: ${path}`)
+function parseJson(content: string): unknown {
+  return JSON.parse(content.replace(/^\uFEFF/, '')) as unknown
 }
 
-export async function loadEnvironmentProfileRegistry(path = defaultEnvironmentProfileRegistryPath()): Promise<EnvironmentProfileRegistry> {
-  const input = JSON.parse(await readFile(path, 'utf8')) as unknown
+async function requirePrivateFile(path: string, label: string, platform: NodeJS.Platform): Promise<void> {
+  const details = await stat(path)
+  if (!details.isFile()) throw new Error(`${label} is not a file: ${path}`)
+  if (platform !== 'win32' && (details.mode & 0o077) !== 0) {
+    throw new Error(`${label} must not grant group or other permissions: ${path}`)
+  }
+}
+
+export async function loadEnvironmentProfileRegistry(
+  path = defaultEnvironmentProfileRegistryPath(),
+  platform: NodeJS.Platform = process.platform,
+): Promise<EnvironmentProfileRegistry> {
+  const input = parseJson(await readFile(path, 'utf8'))
   if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error('Environment profile registry must be an object')
   const registry = input as EnvironmentProfileRegistry
   if (registry.version !== '1.0' || !Array.isArray(registry.profiles)) throw new Error('Environment profile registry has an unsupported shape')
@@ -95,11 +113,11 @@ export async function loadEnvironmentProfileRegistry(path = defaultEnvironmentPr
     profile.origins = [...new Set(profile.origins.map((origin) => normalizedOrigin(origin, `Profile ${profile.id} origin`)))]
     if (profile.secretVaultPath) {
       profile.secretVaultPath = privatePath(profile.secretVaultPath, path)
-      await requirePrivateFile(profile.secretVaultPath, 'secretVault')
+      await requirePrivateFile(profile.secretVaultPath, 'secretVault', platform)
     }
     if (profile.plannerContextPath) {
       profile.plannerContextPath = privatePath(profile.plannerContextPath, path)
-      await requirePrivateFile(profile.plannerContextPath, 'plannerContext')
+      await requirePrivateFile(profile.plannerContextPath, 'plannerContext', platform)
     }
     if (!Array.isArray(profile.auth)) throw new Error(`Environment profile ${profile.id} auth must be an array`)
     profile.auth = profile.auth.map((adapter) => ({
@@ -121,8 +139,8 @@ export async function loadEnvironmentProfileRegistry(path = defaultEnvironmentPr
     }
     for (const adapter of profile.auth) {
       if (!profile.origins.includes(adapter.origin)) throw new Error(`Environment profile ${profile.id} auth origin is outside profile origins: ${adapter.origin}`)
-      if (adapter.storageStatePath) await requirePrivateFile(adapter.storageStatePath, 'storageState')
-      if (adapter.sessionStoragePath) await requirePrivateFile(adapter.sessionStoragePath, 'sessionStorage')
+      if (adapter.storageStatePath) await requirePrivateFile(adapter.storageStatePath, 'storageState', platform)
+      if (adapter.sessionStoragePath) await requirePrivateFile(adapter.sessionStoragePath, 'sessionStorage', platform)
       if (adapter.login) {
         if (!adapter.storageStatePath) throw new Error(`Environment profile ${profile.id} login adapter requires storageStatePath`)
         if (normalizedOrigin(adapter.login.loginUrl, `Profile ${profile.id} loginUrl`) !== adapter.origin) throw new Error(`Environment profile ${profile.id} loginUrl is outside the auth origin`)
@@ -144,7 +162,7 @@ export async function loadEnvironmentProfileSecrets(
   profile: EnvironmentProfile,
 ): Promise<Record<string, string | string[]>> {
   if (!profile.secretVaultPath) return {}
-  const input = JSON.parse(await readFile(profile.secretVaultPath, 'utf8')) as unknown
+  const input = parseJson(await readFile(profile.secretVaultPath, 'utf8'))
   if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error(`Secret vault for profile ${profile.id} must be an object`)
   const values = input as Record<string, unknown>
   if (Object.entries(values).some(([key, value]) => !key.trim() || !(typeof value === 'string' || (Array.isArray(value) && value.every((item) => typeof item === 'string'))))) {

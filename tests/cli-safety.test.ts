@@ -148,7 +148,7 @@ describe('CLI output safety', () => {
     ], directory)
 
     expect(result.status, result.stderr).toBe(0)
-    expect((await stat(output)).mode & 0o777).toBe(0o640)
+    if (process.platform !== 'win32') expect((await stat(output)).mode & 0o777).toBe(0o640)
   })
 
   it('rejects missing planner option values and invalid exploration iteration bounds', async () => {

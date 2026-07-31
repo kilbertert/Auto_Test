@@ -7,13 +7,13 @@
         "https://app.example.test",
         "https://admin.example.test"
       ],
-      "secretVaultPath": "/private/staging-secrets.json",
-      "plannerContextPath": "/private/staging-planner-context.txt",
+      "secretVaultPath": "./staging-secrets.json",
+      "plannerContextPath": "./staging-planner-context.txt",
       "auth": [
         {
           "origin": "https://admin.example.test",
-          "storageStatePath": "/private/admin.storage-state.json",
-          "sessionStoragePath": "/private/admin.session-storage.json",
+          "storageStatePath": "./admin.storage-state.json",
+          "sessionStoragePath": "./admin.session-storage.json",
           "login": {
             "loginUrl": "https://admin.example.test/login?redirect=/index",
             "successPathname": "/index",

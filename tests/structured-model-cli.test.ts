@@ -15,10 +15,18 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
-async function executable(directory: string, name: string, body: string): Promise<string> {
-  const path = resolve(directory, name)
-  await writeFile(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 })
-  await chmod(path, 0o700)
+async function executable(
+  directory: string,
+  name: string,
+  body: { posix: string; windows: string },
+): Promise<string> {
+  const path = resolve(directory, process.platform === 'win32' ? `${name}.cmd` : name)
+  await writeFile(
+    path,
+    process.platform === 'win32' ? `@echo off\r\n${body.windows}\r\n` : `#!/bin/sh\n${body.posix}\n`,
+    { mode: 0o700 },
+  )
+  if (process.platform !== 'win32') await chmod(path, 0o700)
   return path
 }
 
@@ -33,14 +41,28 @@ describe('structured model CLI failover', () => {
   it('falls back after a capacity error and removes the unsupported schema dialect marker', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-model-fallback-'))
     temporaryDirectories.push(directory)
-    const codex = await executable(directory, 'codex-fake', "echo 'usage limit reached' >&2; exit 1")
-    const claude = await executable(directory, 'claude-fake', [
-      'for arg in "$@"; do',
-      '  case "$arg" in *json-schema.org*) echo "unsupported schema marker" >&2; exit 2;; esac',
-      'done',
-      'cat >/dev/null',
-      'echo \'{"structured_output":{"ok":true}}\'',
-    ].join('\n'))
+    const codex = await executable(directory, 'codex-fake', {
+      posix: "echo 'usage limit reached' >&2; exit 1",
+      windows: 'echo usage limit reached 1>&2\r\nexit /b 1',
+    })
+    const claude = await executable(directory, 'claude-fake', {
+      posix: [
+        'for arg in "$@"; do',
+        '  case "$arg" in *json-schema.org*) echo "unsupported schema marker" >&2; exit 2;; esac',
+        'done',
+        'cat >/dev/null',
+        'echo \'{"structured_output":{"ok":true}}\'',
+      ].join('\n'),
+      windows: [
+        'echo %* | %SystemRoot%\\System32\\findstr.exe /C:"json-schema.org" >nul',
+        'if errorlevel 1 goto schema_ok',
+        'echo unsupported schema marker 1>&2',
+        'exit /b 2',
+        ':schema_ok',
+        'more >nul',
+        'echo {"structured_output":{"ok":true}}',
+      ].join('\r\n'),
+    })
     const schemaPath = resolve(directory, 'schema.json')
     await writeFile(schemaPath, JSON.stringify({
       $schema: 'https://json-schema.org/draft/2020-12/schema',

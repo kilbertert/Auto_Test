@@ -71,7 +71,7 @@ function help(): string {
     '  --autonomous                启用持久化自治控制器；策略通过后自动执行',
     '  --max-environment-retries N 环境错误自动重试次数，默认 2',
     '  --profile <id>              指定已注册的环境 Profile',
-    '  --profile-registry <path>   环境 Profile Registry，默认 ~/.config/auto-test/environment-profiles.json',
+    `  --profile-registry <path>   环境 Profile Registry，默认 ${defaultEnvironmentProfileRegistryPath()}`,
     '',
     '浏览器与风险:',
     '  --storage-state <id>=<path> 目标 storageState，可重复',

@@ -614,7 +614,7 @@ describe('autonomous workflow controller', () => {
     expect(refine).toHaveBeenCalledTimes(1)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.plan?.review.reviewedBy).toBe('policy:fixture-policy')
-    expect((await stat(resolve(directory, 'autonomous-job.state.json'))).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect((await stat(resolve(directory, 'autonomous-job.state.json'))).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(resolve(directory, 'autonomous-job.state.json'), 'utf8')).outcome).toBe('passed')
   })
 
@@ -715,7 +715,7 @@ describe('autonomous workflow controller', () => {
       'authorization.recovery-cleanup',
       'business-rule.identifier-conflict',
     ])
-    expect((await stat(result.state.humanInputRequestPath!)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect((await stat(result.state.humanInputRequestPath!)).mode & 0o777).toBe(0o600)
   })
 
   it('requests an environment option instead of refining when the case value is unavailable', async () => {

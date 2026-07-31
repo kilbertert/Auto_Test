@@ -25,7 +25,7 @@ describe('autonomous workflow job store', () => {
       expect(persisted).not.toContain('exposed-value')
       expect(persisted).not.toContain('provider payload')
       expect(persisted).toContain('diagnostic omitted')
-      expect((await stat(path)).mode & 0o777).toBe(0o600)
+      if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

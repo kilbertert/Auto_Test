@@ -21,7 +21,7 @@ planning
   -> passed | product_failed | blocked
 ```
 
-`autonomous-job.state.json` is written atomically with mode `0600`. Drafts, exploration reports, plans, and Runtime evidence are written separately with mode `0640`.
+`autonomous-job.state.json` is written atomically with mode `0600` on POSIX systems. Windows uses the containing directory's NTFS ACL. Drafts, exploration reports, plans, and Runtime evidence are written separately.
 Job events and terminal errors are redacted before persistence. Diagnostics larger than 8,000 characters are omitted instead of retaining raw provider prompts, sessions, or response envelopes.
 
 ## Mutation Safety
@@ -58,14 +58,14 @@ The resulting reviewer is a policy identity such as `policy:cli-autonomy-v1`, no
 
 ## Environment Profiles
 
-The default registry path is `~/.config/auto-test/environment-profiles.json`. A profile binds one or more URL origins to:
+The default registry path is `~/.config/auto-test/environment-profiles.json` on Linux/macOS and `%APPDATA%\auto-test\environment-profiles.json` on Windows. A profile binds one or more URL origins to:
 
 - private Playwright `storageState` and `sessionStorage` adapters;
 - pre-authorized write and destructive risk levels;
 - refinement and transient-environment retry budgets.
 - optional form-login adapters backed by Secret refs and verified locators.
 
-When exactly one profile covers all supplied URL origins, the autonomous command needs only the Excel and URLs. Auth artifacts and Secret Vault files must not grant group or other permissions. Auth Broker validates the authenticated pathname, refreshes expired form sessions, and atomically rewrites `storageState` plus optional `sessionStorage`. Unknown or ambiguous origins fail closed.
+When exactly one profile covers all supplied URL origins, the autonomous command needs only the Excel and URLs. On POSIX systems, Auth artifacts and Secret Vault files must not grant group or other permissions; Windows relies on the current user's NTFS ACL. Auth Broker validates the authenticated pathname, refreshes expired form sessions, and atomically rewrites `storageState` plus optional `sessionStorage`. Unknown or ambiguous origins fail closed.
 
 Live page evidence redacts every value supplied through `AUTO_TEST_SECRET_*`, including profile-only secrets and members of JSON list bindings, even when the current Draft does not reference that secret.
 

@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import spawn from 'cross-spawn'
 
 interface CommandResult {
   stdout: string
@@ -43,19 +43,27 @@ function runCommand(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
     })
+    const childStdin = child.stdin
+    const childStdout = child.stdout
+    const childStderr = child.stderr
+    if (!childStdin || !childStdout || !childStderr) {
+      child.kill()
+      reject(new Error(`${label} did not expose standard streams`))
+      return
+    }
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
     const timer = setTimeout(() => {
       child.kill('SIGTERM')
       reject(new Error(`${label} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
-    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+    childStdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+    childStderr.on('data', (chunk: Buffer) => stderr.push(chunk))
     child.on('error', (error) => {
       clearTimeout(timer)
       reject(error)
     })
-    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+    childStdin.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code === 'EPIPE') return
       clearTimeout(timer)
       reject(error)
@@ -73,7 +81,7 @@ function runCommand(
       }
       resolvePromise(result)
     })
-    child.stdin.end(input)
+    childStdin.end(input)
   })
 }
 

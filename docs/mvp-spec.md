@@ -204,7 +204,7 @@ Playwright CLI 页面探索与定位器确认由 Phase 3 实现。
 - 表格唯一实体捕获、`entities.<name>.id` 运行时引用、数据表/操作表按行重新校验；
 - table row count 业务断言和排除已完成状态的活跃对象查询；
 - 阶段、步骤、断言和多次实体捕获证据；
-- `0600` 原子状态文件，中断时保留 cursor，但不持久化 secret 或整行业务文本；
+- 原子私有状态文件（Linux/macOS 为 `0600`，Windows 使用 NTFS ACL），中断时保留 cursor，但不持久化 secret 或整行业务文本；
 - 中断后必须显式指定恢复 target，可在当前 phase 内回退重建页面状态；
 - FakeDriver 覆盖多账号隔离、风险门禁、跨阶段实体、origin 逃逸和显式恢复。
 
