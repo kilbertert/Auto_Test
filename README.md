@@ -2,6 +2,8 @@
 
 面向测试工程师的 AI 辅助 Web 自动化测试项目。
 
+Windows 测试工程师可以直接双击 `Auto-Test.cmd`，通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需手工编辑 Profile JSON。
+
 目标输入是待测网站 URL 与测试用例 Excel。系统先把自然语言用例转换为可审核的中间表示，再通过 Playwright CLI 探索页面、生成 Playwright Test 脚本，并以确定性方式执行和报告结果。
 
 当前仓库已完成 MVP 的严格 Excel 导入、Playwright CLI 探索、确定性执行、失败分类、受限修复与集成运行报告基线。旧实现和实验产物已移出工作树，未继续沿用。

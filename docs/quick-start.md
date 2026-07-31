@@ -6,9 +6,21 @@
 
 测试工程师不需要编写或修改 Execution Plan。登录、权限和业务前置条件需要在首次接入环境时注册一次。
 
-Windows 用户直接查看 [Windows 快速操作指南](windows-quick-start.md)。下文命令以 Linux/macOS Bash 为例。
+## 推荐方式：交互入口
 
-## 1. 准备
+Windows 用户双击仓库根目录的 `Auto-Test.cmd`。其他系统执行：
+
+```bash
+npm ci
+npx playwright install chromium
+npm run easy
+```
+
+中文菜单会完成环境检查、浏览器登录会话注册、Excel 选择、URL 输入、自动输出目录和结果摘要。详细操作见 [Windows 双击使用指南](windows-quick-start.md)。
+
+下文是适合 CI、脚本接入或高级故障排查的完整命令行方式，日常测试不需要手工操作这些文件。
+
+## 1. 高级准备
 
 环境要求 Node.js 24 或更高版本，并确保 Codex CLI 已安装和登录。首次使用先安装依赖和浏览器：
 
@@ -29,7 +41,7 @@ Excel 可以是标准测试用例表，也可以是“阶段标题 + 操作说�
 
 不要把账号、密码、验证码、手机号列表或 Token 写入 Git、命令行参数和补充说明文件。
 
-## 2. 首次注册测试环境
+## 2. 高级环境配置
 
 公开且无需登录的只读网站可以跳过本节。登录网站或包含写操作的网站，应先创建环境 Profile。
 
@@ -77,7 +89,7 @@ Windows 使用用户目录的 NTFS ACL，具体操作见 [Windows 快速操作�
 
 默认保持 `allowWrite: false`、`allowDestructive: false`。只有获得明确授权且用例包含恢复或清理步骤时才开启对应权限。
 
-## 3. 执行测试
+## 3. 高级命令行执行
 
 推荐先跑单条数据 canary：
 

@@ -65,3 +65,7 @@ jobs:
 
       - name: Run deterministic checks
         run: npm run check
+
+      - name: Verify Windows launcher
+        shell: cmd
+        run: Auto-Test.cmd --help

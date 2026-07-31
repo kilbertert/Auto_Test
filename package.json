@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "easy": "tsx src/cli/easy.ts",
     "import": "tsx src/cli/import-xlsx.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
     "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
