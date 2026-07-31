@@ -8,6 +8,7 @@
 
 ## 当前文档
 
+- [跨场景自动化测试快速操作指南](docs/quick-start.md)
 - [仓库与历史方案审计](docs/repository-audit.md)
 - [MVP 规格与执行链路](docs/mvp-spec.md)
 - [测试用例 IR JSON Schema](schemas/test-case-ir.schema.json)
