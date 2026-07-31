@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { discoverWorkflowInputBundle } from '../src/workflow/input-bundle.js'
 
@@ -31,7 +31,7 @@ describe('workflow input bundle discovery', () => {
     const result = await discoverWorkflowInputBundle({ filePath: workbook })
 
     expect(result.brief).toBe('Synthetic workflow brief\n')
-    expect(result.imagePaths.map((path) => path.split('/').at(-1))).toEqual(['a.jpg', 'b.png'])
+    expect(result.imagePaths.map((path) => basename(path))).toEqual(['a.jpg', 'b.png'])
     expect(result.imageSha256s).toHaveLength(2)
   })
 

@@ -8,14 +8,14 @@ import type { WorkflowPlanDraft } from '../src/workflow/planner-types.js'
 import { validateWorkflowPlanDraft, workflowDraftSha256 } from '../src/workflow/planner-validation.js'
 
 const temporaryDirectories: string[] = []
-const tsxLoader = resolve(import.meta.dirname, '../node_modules/tsx/dist/loader.mjs')
+const tsxCli = resolve(import.meta.dirname, '../node_modules/tsx/dist/cli.mjs')
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
 function runCli(script: string, args: string[], cwd: string) {
-  return spawnSync(process.execPath, ['--import', tsxLoader, script, ...args], { cwd, encoding: 'utf8' })
+  return spawnSync(process.execPath, [tsxCli, script, ...args], { cwd, encoding: 'utf8' })
 }
 
 function approvalFixtures(): { draft: WorkflowPlanDraft; exploration: WorkflowPlanExplorationReport } {

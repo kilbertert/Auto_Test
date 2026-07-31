@@ -8,7 +8,7 @@ import { compilePlaywrightSuite } from '../src/compiler/playwright.js'
 import type { TestSuiteIR } from '../src/core/types.js'
 
 const fixturePath = resolve(import.meta.dirname, '../examples/local-login-suite.ir.json')
-const tsxLoader = resolve(import.meta.dirname, '../node_modules/tsx/dist/loader.mjs')
+const tsxLoader = pathToFileURL(resolve(import.meta.dirname, '../node_modules/tsx/dist/loader.mjs')).href
 let approvedSuite: TestSuiteIR
 
 function cloneSuite(): TestSuiteIR {

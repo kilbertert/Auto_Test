@@ -1,4 +1,4 @@
-import { basename, relative, resolve } from 'node:path'
+import { basename, relative, resolve, sep } from 'node:path'
 import { redactSensitiveText } from '../input/text.js'
 import type {
   ParsedPlaywrightCase,
@@ -64,7 +64,7 @@ function attachmentEvidence(attachment: NonNullable<RawResult['attachments']>[nu
   if (attachment.path) {
     const absolute = resolve(attachment.path)
     const candidate = relative(repositoryRoot, absolute)
-    path = candidate.startsWith('..') ? basename(absolute) : candidate
+    path = (candidate.startsWith('..') ? basename(absolute) : candidate).split(sep).join('/')
   }
   return {
     name: attachment.name ?? 'attachment',
