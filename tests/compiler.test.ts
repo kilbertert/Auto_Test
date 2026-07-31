@@ -1,10 +1,14 @@
+import { spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { compilePlaywrightSuite } from '../src/compiler/playwright.js'
 import type { TestSuiteIR } from '../src/core/types.js'
 
 const fixturePath = resolve(import.meta.dirname, '../examples/local-login-suite.ir.json')
+const tsxLoader = resolve(import.meta.dirname, '../node_modules/tsx/dist/loader.mjs')
 let approvedSuite: TestSuiteIR
 
 function cloneSuite(): TestSuiteIR {
@@ -32,6 +36,7 @@ describe('Playwright compiler', () => {
     expect(result.source).toContain('test.describe.configure({ retries: 1 })')
     expect(result.source).toContain('test.setTimeout(60000)')
     expect(result.source).toContain('assertAllowedOrigin(page.url())')
+    expect(result.source.indexOf('assertAllowedOrigin(String(')).toBeLessThan(result.source.indexOf('await page.goto(String('))
     expect(result.sourceMap).toMatchObject({
       version: '1.0',
       suiteId: 'local-login-approved',
@@ -103,5 +108,26 @@ describe('Playwright compiler', () => {
     expect(result.source).toBe('')
     expect(result.sourceMap).toBeNull()
     expect(diagnosticCodes(result)).toContain('schema_validation')
+  })
+
+  it('requires expected text for URL and response wait conditions', () => {
+    const suite = cloneSuite()
+    suite.cases[0]!.steps[0]!.waitFor = { kind: 'url' }
+
+    const result = compilePlaywrightSuite(suite)
+
+    expect(result.source).toBe('')
+    expect(diagnosticCodes(result)).toContain('schema_validation')
+  })
+
+  it('loads the IR schema independently of the caller working directory', () => {
+    const moduleUrl = pathToFileURL(resolve(import.meta.dirname, '../src/validation/schema.ts')).href
+    const result = spawnSync(process.execPath, [
+      '--import', tsxLoader, '--input-type=module', '--eval',
+      `const { validateSuite } = await import(${JSON.stringify(moduleUrl)}); console.log(validateSuite({}).valid)`,
+    ], { cwd: tmpdir(), encoding: 'utf8' })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout.trim()).toBe('false')
   })
 })

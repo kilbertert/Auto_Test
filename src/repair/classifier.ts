@@ -15,7 +15,7 @@ import type {
 function inferLegacyFailure(message: string): RuntimeFailureEvidence {
   if (/missing required secret environment variable/i.test(message)) return { kind: 'missing_data', phase: 'setup', message }
   if (/matched 0 elements|locator matched 0/i.test(message)) return { kind: 'locator_not_found', phase: 'step', message }
-  if (/matched [2-9]\d* elements|strict mode violation/i.test(message)) return { kind: 'locator_ambiguous', phase: 'step', message }
+  if (/matched (?:[2-9]|\d{2,}) elements|strict mode violation/i.test(message)) return { kind: 'locator_ambiguous', phase: 'step', message }
   if (/toHaveURL|toHaveText|toContainText|toBeVisible|expect\(/i.test(message)) return { kind: 'assertion_mismatch', phase: 'assertion', message }
   if (/ERR_NAME_NOT_RESOLVED|ERR_CONNECTION_REFUSED|ECONNREFUSED|browser.*closed/i.test(message)) return { kind: 'environment_error', phase: 'setup', message }
   if (/timeout|timed out/i.test(message)) return { kind: 'action_timeout', phase: 'step', message }

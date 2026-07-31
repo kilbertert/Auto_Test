@@ -84,4 +84,11 @@ describe('environment authentication broker', () => {
     expect(second.refreshedOrigins).toEqual([])
     expect((await stat(storageStatePath)).mode & 0o777).toBe(0o600)
   })
+
+  it('rejects an auth adapter without a success criterion before launching a browser', async () => {
+    const { profile } = await fixture()
+    delete profile.auth[0]!.login!.successPathname
+
+    await expect(ensureEnvironmentAuthentication(profile, {})).rejects.toThrow(/successPathname or successUrlContains/i)
+  })
 })

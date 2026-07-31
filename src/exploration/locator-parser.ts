@@ -23,7 +23,12 @@ function optionValue(object: ts.ObjectLiteralExpression | undefined, name: strin
 
 function callName(expression: ts.Expression): string | undefined {
   if (ts.isIdentifier(expression)) return expression.text
-  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) return expression.name.text
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'page' &&
+    ts.isIdentifier(expression.name)
+  ) return expression.name.text
   return undefined
 }
 

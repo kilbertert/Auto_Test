@@ -257,7 +257,7 @@ function parseAssertions(text: string, ambiguities: string[]): AssertionIR[] {
       oracleSource: 'tester' as const,
       immutable: true as const,
     }
-    const url = /(https?:\/\/\S+|\/[A-Za-z0-9_#?=&./-]+)/.exec(clause)?.[1]
+    const url = /(https?:\/\/\S+|(?<!\d)\/(?:[A-Za-z_#?][A-Za-z0-9_#?=&./-]*))/.exec(clause)?.[1]
     if (url) return { ...base, kind: 'url', operator: 'contains', expected: url, confidence: 0.95 }
     if (/无跳转/.test(clause)) {
       ambiguities.push(`断言「${clause}」需要明确允许的 URL`)
@@ -274,8 +274,9 @@ function parseAssertions(text: string, ambiguities: string[]): AssertionIR[] {
     if (/启用|可点击/.test(clause)) {
       return { ...base, kind: 'enabled', targetDescription: expectedText(clause), operator: 'equals', expected: true, confidence: 0.75 }
     }
-    if (/选中/.test(clause)) {
-      return { ...base, kind: 'checked', targetDescription: expectedText(clause), operator: 'equals', expected: true, confidence: 0.75 }
+    if (/选中|勾选/.test(clause)) {
+      const negated = /未选中|不应选中|不要选中|取消选中|未勾选|不应勾选|取消勾选/.test(clause)
+      return { ...base, kind: 'checked', targetDescription: expectedText(clause), operator: 'equals', expected: !negated, confidence: 0.75 }
     }
     if (/跳转到|进入.+页面/.test(clause)) {
       ambiguities.push(`页面断言「${clause}」缺少具体 URL 或稳定页面标志`)

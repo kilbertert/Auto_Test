@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { compilePlaywrightSuite } from '../compiler/playwright.js'
 import type { TestSuiteIR } from '../core/types.js'
@@ -7,7 +7,9 @@ import type { TestSuiteIR } from '../core/types.js'
 function valueAfter(args: string[], name: string): string | undefined {
   const index = args.indexOf(name)
   if (index < 0) return undefined
-  return args[index + 1]
+  const value = args[index + 1]
+  if (!value || value.startsWith('--')) throw new Error(`${name} 必须提供取值`)
+  return value
 }
 
 async function main(): Promise<void> {
@@ -19,7 +21,8 @@ async function main(): Promise<void> {
   }
   const input = valueAfter(args, '--ir')
   if (!input) throw new Error('必须提供 --ir')
-  const suite = JSON.parse(await readFile(resolve(input), 'utf8')) as TestSuiteIR
+  const inputPath = resolve(input)
+  const suite = JSON.parse(await readFile(inputPath, 'utf8')) as TestSuiteIR
   const compiled = compilePlaywrightSuite(suite)
   if (compiled.diagnostics.hasErrors) {
     for (const item of compiled.diagnostics.items) {
@@ -29,12 +32,17 @@ async function main(): Promise<void> {
     return
   }
   const output = resolve(valueAfter(args, '--output') ?? `artifacts/compiled/${compiled.fileName}`)
-  const mapOutput = resolve(valueAfter(args, '--map') ?? output.replace(/\.ts$/, '.map.json'))
+  const defaultMapOutput = output.endsWith('.ts') ? output.replace(/\.ts$/, '.map.json') : `${output}.map.json`
+  const mapOutput = resolve(valueAfter(args, '--map') ?? defaultMapOutput)
+  if (output === mapOutput) throw new Error('编译产物与 source map 不能使用同一路径')
+  if (output === inputPath || mapOutput === inputPath) throw new Error('编译输出不能覆盖输入 IR')
   await mkdir(dirname(output), { recursive: true, mode: 0o750 })
   await writeFile(output, compiled.source, { encoding: 'utf8', mode: 0o640 })
+  await chmod(output, 0o640)
   if (!compiled.sourceMap) throw new Error('编译成功但缺少 source map')
   await mkdir(dirname(mapOutput), { recursive: true, mode: 0o750 })
   await writeFile(mapOutput, `${JSON.stringify({ ...compiled.sourceMap, generatedFile: output }, null, 2)}\n`, { encoding: 'utf8', mode: 0o640 })
+  await chmod(mapOutput, 0o640)
   console.log(`Compiled: ${output}`)
   console.log(`Source map: ${mapOutput}`)
 }

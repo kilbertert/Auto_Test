@@ -35,9 +35,11 @@ export function missingTableHeaderLabels(headerText: string, labels: string[]): 
 }
 
 export function selectUniqueEntityRow(rows: string[], matches: string[], idPattern: RegExp, exclusions: string[] = []): SelectedEntityRow {
+  const normalizedMatches = matches.map(normalizedMatchText)
+  const normalizedExclusions = exclusions.map(normalizedMatchText)
   const candidates = rows
-    .map((rowText, rowIndex) => ({ rowText, rowIndex }))
-    .filter((row) => matches.every((match) => row.rowText.includes(match)) && exclusions.every((excluded) => !row.rowText.includes(excluded)))
+    .map((rowText, rowIndex) => ({ rowText, rowIndex, normalized: normalizedMatchText(rowText) }))
+    .filter((row) => normalizedMatches.every((match) => row.normalized.includes(match)) && normalizedExclusions.every((excluded) => !row.normalized.includes(excluded)))
   if (candidates.length !== 1) {
     throw new Error(`Expected exactly one matching entity row; found ${candidates.length}`)
   }
@@ -58,7 +60,8 @@ export function selectUniqueEntityRow(rows: string[], matches: string[], idPatte
 }
 
 export function alignedActionRowIndex(dataRows: string[], actionRows: string[], entityId: string, actionNames: string[]): number {
-  const matching = dataRows.map((row, index) => row.includes(entityId) ? index : -1).filter((index) => index >= 0)
+  const normalizedEntityId = normalizedMatchText(entityId)
+  const matching = dataRows.map((row, index) => normalizedMatchText(row).includes(normalizedEntityId) ? index : -1).filter((index) => index >= 0)
   if (matching.length !== 1) throw new Error(`Expected exactly one data row for entity ${entityId}; found ${matching.length}`)
   const rowIndex = matching[0]!
   const actionText = actionRows[rowIndex]
@@ -76,7 +79,8 @@ export function entityAlreadyStoppedForAction(
   actionNames: string[],
 ): boolean {
   if (!actionNames.some((name) => /停止|强停|stop|force\s*stop/i.test(name))) return false
-  const matching = dataRows.map((row, index) => row.includes(entityId) ? index : -1).filter((index) => index >= 0)
+  const normalizedEntityId = normalizedMatchText(entityId)
+  const matching = dataRows.map((row, index) => normalizedMatchText(row).includes(normalizedEntityId) ? index : -1).filter((index) => index >= 0)
   if (matching.length !== 1) return false
   const rowIndex = matching[0]!
   const dataText = dataRows[rowIndex] ?? ''

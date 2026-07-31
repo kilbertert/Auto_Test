@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { redactReportValue } from '../src/report/redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../src/workflow/acceptance-report.js'
 import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest } from '../src/workflow/types.js'
 
@@ -55,5 +56,29 @@ describe('workflow acceptance report', () => {
     expect(html).toContain('&lt;script&gt;phase&lt;/script&gt;')
     expect(html).not.toContain('<script>phase</script>')
     expect(html).toContain('产品验收阻断项')
+  })
+
+  it('redacts known vault values and sensitive free text before report serialization', () => {
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      accountRef: 'account=private-account',
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{ description: 'ended', passed: true, evidence: 'token: private-token +6590000001' }],
+        observations: ['password: private-password'],
+      }],
+      finalState: { ...evidence.finalState, notes: ['private-token'] },
+    })
+    const redacted = redactReportValue(report, {
+      AUTO_TEST_SECRET_ACCOUNT: 'private-account',
+      AUTO_TEST_SECRET_TOKEN: 'private-token',
+      AUTO_TEST_SECRET_PASSWORD: 'private-password',
+    })
+    const serialized = JSON.stringify(redacted)
+
+    expect(serialized).not.toContain('private-account')
+    expect(serialized).not.toContain('private-token')
+    expect(serialized).not.toContain('private-password')
+    expect(serialized).not.toContain('+6590000001')
   })
 })

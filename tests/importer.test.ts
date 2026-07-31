@@ -1,6 +1,8 @@
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { DiagnosticBag } from '../src/core/diagnostics.js'
 import { importXlsxToIr } from '../src/importer.js'
+import { parseCaseParts } from '../src/ir/parse.js'
 
 const root = resolve(import.meta.dirname, '..')
 
@@ -79,5 +81,31 @@ describe('xlsx importer', () => {
       '列表',
     ])
     expect(result.suite.cases[0]?.title).toBe('查询用户列表')
+  })
+
+  it('keeps checkbox negation and ordinary fractions out of URL assertions', () => {
+    const parts = parseCaseParts({
+      sheetName: 'Cases',
+      sourceRow: 2,
+      values: {
+        steps: '1.打开设置页',
+        expected: '1.协议复选框未选中；2.完成 3/5 项检查',
+      },
+    }, 'case-1', new DiagnosticBag())
+
+    expect(parts.assertions[0]).toMatchObject({ kind: 'checked', expected: false })
+    expect(parts.assertions[1]).toMatchObject({ kind: 'text' })
+  })
+
+  it('reports only the missing sheet root cause', async () => {
+    const result = await importXlsxToIr({
+      filePath: resolve(root, 'templates/test-cases.xlsx'),
+      baseUrl: 'https://example.test/',
+      sheetName: 'Missing Sheet',
+    })
+    const codes = result.report.diagnostics.map((item) => item.code)
+
+    expect(codes).toContain('sheet_not_found')
+    expect(codes).not.toContain('header_not_found')
   })
 })

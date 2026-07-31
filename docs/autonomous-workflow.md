@@ -18,7 +18,7 @@ planning
   -> refining -> exploring
   -> policy_gate
   -> executing
-  -> completed | blocked | failed
+  -> passed | product_failed | blocked
 ```
 
 `autonomous-job.state.json` is written atomically with mode `0600`. Drafts, exploration reports, plans, and Runtime evidence are written separately with mode `0640`.

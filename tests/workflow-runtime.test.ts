@@ -10,6 +10,7 @@ import { alignedActionRowIndex, entityAlreadyStoppedForAction, missingTableHeade
 import type {
   CaptureTableRowRequest,
   ClickAlignedTableActionRequest,
+  WorkflowExecutionResult,
   WorkflowExecutionPlan,
   WorkflowPageSession,
   WorkflowRuntimeDriver,
@@ -43,6 +44,7 @@ interface FakeBehavior {
   pressedKeys?: string[]
   captchaSolves?: string[]
   navigatedUrls?: string[]
+  clickError?: string
 }
 
 class FakeSession implements WorkflowPageSession {
@@ -95,7 +97,7 @@ class FakeSession implements WorkflowPageSession {
       throw new WorkflowPreActionError('Locator resolver found no valid live element: synthetic pre-action failure')
     }
     if (this.shouldFailClick()) {
-      throw new Error('click failed while handling synthetic-secret-phone')
+      throw new Error(this.behavior.clickError ?? 'click failed while handling synthetic-secret-phone')
     }
     if (this.behavior.leaveOriginOnClick) this.currentUrl = 'https://outside.example.test/'
   }
@@ -620,6 +622,23 @@ describe('workflow runtime engine', () => {
     expect(resumed.steps.filter((event) => event.stepId === 'navigate-h5')).toHaveLength(2)
     expect(resumed.steps.some((event) => event.status === 'failed')).toBe(true)
     await expect(access(store.path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('redacts unbound AUTO_TEST_SECRET values from runtime failures', async () => {
+    const plan = basePlan()
+    const result = await executeWorkflow(plan, new FakeDriver({
+      failClickOnce: true,
+      clickError: 'click failed while handling unbound-private-value',
+    }), {
+      allowDestructive: true,
+      environment: {
+        AUTO_TEST_SECRET_WORKFLOW_PHONES: 'synthetic-phone',
+        AUTO_TEST_SECRET_UNUSED: 'unbound-private-value',
+      },
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.error).not.toContain('unbound-private-value')
   })
 
   it('keeps skipped phase failures authoritative after a later safety audit', async () => {
@@ -1248,6 +1267,7 @@ describe('workflow runtime validation and table alignment', () => {
     })
     expect(() => selectUniqueEntityRow(['id phone-a', 'other phone-a'], ['phone-a'], /(id)/)).toThrow(/found 2/i)
     expect(selectUniqueEntityRow(['1 Charging complete', '2 Charging'], ['Charging'], /(\d+)/, ['Charging complete']).id).toBe('2')
+    expect(selectUniqueEntityRow(['ID-A   Charging'], ['id-a charging'], /(ID-A)/i).id).toBe('ID-A')
     expect(selectUniqueEntityRow(
       ['123 回归设备_01 20260713000001 YKC-快充型号'],
       ['20260713000001'],
@@ -1255,8 +1275,42 @@ describe('workflow runtime validation and table alignment', () => {
     ).id).toBe('20260713000001')
     expect(alignedActionRowIndex(['id-a', 'id-b'], ['Details', 'Force Stop'], 'id-b', ['Force Stop'])).toBe(1)
     expect(alignedActionRowIndex(['id-a'], ['删除 修改 详情'], 'id-a', ['delete'])).toBe(0)
+    expect(alignedActionRowIndex(['ID-A'], ['DELETE'], 'id-a', ['delete'])).toBe(0)
     expect(() => alignedActionRowIndex(['id-a'], ['Details'], 'id-a', ['Force Stop'])).toThrow(/allowed action/i)
     expect(entityAlreadyStoppedForAction(['id-a offline'], ['Delete'], 'id-a', ['Force Stop'])).toBe(true)
     expect(entityAlreadyStoppedForAction(['id-a online'], ['Delete'], 'id-a', ['Force Stop'])).toBe(false)
+  })
+})
+
+describe('mutation recovery assessment', () => {
+  it('keeps failed mutation attempts outstanding when a later attempt is retry-ready', () => {
+    const result: WorkflowExecutionResult = {
+      version: '1.0',
+      workflowId: 'fixture',
+      sourceSha256: 'a'.repeat(64),
+      planSha256: 'b'.repeat(64),
+      runId: 'fixture-run',
+      startedAt: '2026-07-31T00:00:00.000Z',
+      finishedAt: '2026-07-31T00:00:01.000Z',
+      status: 'failed',
+      phases: [],
+      steps: [],
+      assertions: [],
+      entityCaptures: [],
+      recoveries: [],
+      entities: {},
+      mutations: [
+        { mutationId: 'g:single:p:1', groupId: 'g', phaseId: 'p', iteration: null, attempt: 1, risk: 'write', status: 'started', recordedAt: '2026-07-31T00:00:00.000Z' },
+        { mutationId: 'g:single:p:1', groupId: 'g', phaseId: 'p', iteration: null, attempt: 1, risk: 'write', status: 'failed', recordedAt: '2026-07-31T00:00:00.000Z' },
+        { mutationId: 'g:single:p:2', groupId: 'g', phaseId: 'p', iteration: null, attempt: 2, risk: 'write', status: 'started', recordedAt: '2026-07-31T00:00:01.000Z' },
+        { mutationId: 'g:single:p:2', groupId: 'g', phaseId: 'p', iteration: null, attempt: 2, risk: 'write', status: 'retry_ready', recordedAt: '2026-07-31T00:00:01.000Z' },
+      ],
+    }
+
+    expect(assessMutationRecovery(result)).toMatchObject({
+      attempted: true,
+      safeToRetry: false,
+      outstandingMutationIds: ['g:single:p:1'],
+    })
   })
 })

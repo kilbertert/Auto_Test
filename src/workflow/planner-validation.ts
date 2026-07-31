@@ -81,10 +81,11 @@ function validateAuthenticatedContextContinuity(input: Record<string, unknown>):
       const dependent = group.phases.slice(index + 1).find((candidate) => (
         isRecord(candidate) && candidate.targetId === phase.targetId && candidate.contextMode === 'shared'
       ))
-      requireCondition(
-        !dependent,
-        `authentication phase ${String(phase.id)} uses freshPhase but later phase ${String((dependent as Record<string, unknown>).id)} expects a shared session on target ${phase.targetId}`,
-      )
+      if (isRecord(dependent)) {
+        throw new Error(
+          `Invalid workflow plan draft: authentication phase ${String(phase.id)} uses freshPhase but later phase ${String(dependent.id)} expects a shared session on target ${phase.targetId}`,
+        )
+      }
     }
   }
 }

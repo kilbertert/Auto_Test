@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { redactReportValue } from '../report/redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../workflow/acceptance-report.js'
-import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest } from '../workflow/types.js'
+import type { WorkflowAcceptanceEvidence, WorkflowAcceptanceReport, WorkflowIntakeManifest } from '../workflow/types.js'
 
 function valueAfter(args: string[], name: string): string | undefined {
   const index = args.indexOf(name)
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
   if (!intakePath || !evidencePath) throw new Error('必须提供 --intake 和 --evidence')
   const workflow = JSON.parse(await readFile(resolve(intakePath), 'utf8')) as WorkflowIntakeManifest
   const evidence = JSON.parse(await readFile(resolve(evidencePath), 'utf8')) as WorkflowAcceptanceEvidence
-  const report = buildWorkflowAcceptanceReport(workflow, evidence)
+  const report = redactReportValue<WorkflowAcceptanceReport>(buildWorkflowAcceptanceReport(workflow, evidence))
   const outputJson = resolve(valueAfter(args, '--output-json') ?? `artifacts/acceptance/${workflow.workflowId}.acceptance.json`)
   const outputHtml = resolve(valueAfter(args, '--output-html') ?? `artifacts/acceptance/${workflow.workflowId}.acceptance.html`)
   await mkdir(dirname(outputJson), { recursive: true, mode: 0o750 })

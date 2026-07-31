@@ -93,6 +93,15 @@ export async function readWorkbookCases(
 
   if (options.sheetName && !sheets.some((sheet) => sheet.sheet === options.sheetName)) {
     diagnostics.error('sheet_not_found', `未找到工作表「${options.sheetName}」`)
+    return {
+      sheetName: null,
+      headerRow: null,
+      headerMap: {},
+      unknownHeaders: [],
+      rows: [],
+      totalDataRows: 0,
+      skippedRows: 0,
+    }
   }
 
   const candidate = findHeaderCandidate(sheets, options.sheetName)

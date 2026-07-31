@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { resolve } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { LocatorIR } from '../src/core/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
-import type { WorkflowPlanDraft } from '../src/workflow/planner-types.js'
+import type { WorkflowPlanDraft, WorkflowPlannerProvider } from '../src/workflow/planner-types.js'
 import { workflowExplorationRefinementPrompt, workflowPlannerPrompt, workflowRecoveryPlanningPrompt } from '../src/workflow/planner-prompt.js'
-import { parseWorkflowPlanJson } from '../src/workflow/planner.js'
+import { parseWorkflowPlanJson, planWorkflow } from '../src/workflow/planner.js'
 import { projectDraftToExecutionPlan, validateWorkflowPlanDraft } from '../src/workflow/planner-validation.js'
+
+const temporaryDirectories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
 
 function draft(): WorkflowPlanDraft {
   return {
@@ -98,6 +107,13 @@ describe('workflow planner validation', () => {
     })
 
     expect(() => validateWorkflowPlanDraft(input)).toThrow(/authentication phase login uses freshPhase.*expects a shared session/i)
+  })
+
+  it('allows a self-contained fresh authentication phase without dereferencing a missing dependent phase', () => {
+    const input = draft()
+    input.groups[0]!.phases[0]!.contextMode = 'freshPhase'
+
+    expect(() => validateWorkflowPlanDraft(input)).not.toThrow()
   })
 
   it('defers only transient success messages when a later phase has a durable entity oracle', () => {
@@ -307,6 +323,42 @@ describe('workflow planner validation', () => {
   it('does not allow an intake manifest type to masquerade as a plan draft', () => {
     const intake = { version: '1.0', kind: 'workflow-intake' } as unknown as WorkflowIntakeManifest
     expect(() => validateWorkflowPlanDraft(intake)).toThrow(/planner metadata/i)
+  })
+
+  it('does not return an earlier draft that failed manifest phase coverage', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-planner-validation-'))
+    temporaryDirectories.push(directory)
+    const input = draft()
+    const { planner: _planner, ...body } = input
+    const manifest: WorkflowIntakeManifest = {
+      version: '1.0',
+      kind: 'workflow-intake',
+      workflowId: input.workflowId,
+      source: { format: 'xlsx', fileName: 'fixture.xlsx', sheetName: 'Cases', sha256: input.sourceSha256 },
+      targetUrls: ['https://app.example.test/'],
+      requiredCapabilities: [],
+      phases: [
+        { id: 'login', title: 'login', sourceRow: 2, risk: 'read', steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] } },
+        { id: 'audit', title: 'audit', sourceRow: 3, risk: 'read', steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] } },
+      ],
+      embeddedImages: [],
+      supplementalImages: [],
+      review: { status: 'draft', reasons: [] },
+    }
+    const provider: WorkflowPlannerProvider = {
+      name: 'fixture',
+      model: null,
+      async generate() { return { planJson: JSON.stringify(body), summary: [] } },
+      async repair() { return { planJson: '{"broken":', summary: [] } },
+    }
+
+    await expect(planWorkflow({
+      manifest,
+      mediaDirectory: directory,
+      workspaceDirectory: directory,
+      provider,
+      initialResponse: { planJson: JSON.stringify(body), summary: [] },
+    })).rejects.toThrow()
   })
 
   it('tells planners to preserve secret input semantics and attribute application errors to their trigger', () => {

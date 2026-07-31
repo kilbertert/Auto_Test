@@ -7,7 +7,10 @@ import { planWorkflowRecoveryContracts } from '../workflow/recovery-planner.js'
 
 function valueAfter(args: string[], name: string): string | undefined {
   const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
+  if (index < 0) return undefined
+  const value = args[index + 1]
+  if (!value || value.startsWith('--')) throw new Error(`${name} 必须提供取值`)
+  return value
 }
 
 function requireValue(args: string[], name: string): string {

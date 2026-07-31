@@ -194,9 +194,12 @@ function stepLines(step: StepIR, indent: string): string[] {
   const inner = `${indent}  `
 
   switch (step.action) {
-    case 'navigate':
-      lines.push(`${inner}await page.goto(String(${value}))`)
+    case 'navigate': {
+      const target = `String(${value})`
+      lines.push(`${inner}assertAllowedOrigin(${target})`)
+      lines.push(`${inner}await page.goto(${target})`)
       break
+    }
     case 'click':
       lines.push(`${inner}await ${locator}.click()`)
       break
@@ -505,7 +508,7 @@ export function compilePlaywrightSuite(input: unknown): CompiledSuite {
     '',
     'function assertAllowedOrigin(url: string): void {',
     '  const parsed = new URL(url)',
-    "  if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && !allowedOrigins.has(parsed.origin)) {",
+    "  if (!['http:', 'https:'].includes(parsed.protocol) || !allowedOrigins.has(parsed.origin)) {",
     '    throw new Error(`Navigation left allowed origins: ${parsed.origin}`)',
     '  }',
     '}',

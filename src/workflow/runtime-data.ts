@@ -11,13 +11,35 @@ function parseStringList(value: string, variableName: string): string[] {
   const trimmed = value.trim()
   if (!trimmed) throw new Error(`Secret list is empty: ${variableName}`)
   if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed) as unknown
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed) as unknown
+    } catch {
+      throw new Error(`Secret list must be valid JSON: ${variableName}`)
+    }
     if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string' || !item.trim())) {
       throw new Error(`Secret list must be a JSON string array: ${variableName}`)
     }
     return parsed.map((item) => item.trim())
   }
   return trimmed.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+export function environmentSecretStrings(environment: NodeJS.ProcessEnv = process.env): string[] {
+  return Object.entries(environment)
+    .filter(([name, value]) => name.startsWith('AUTO_TEST_SECRET_') && Boolean(value))
+    .flatMap(([, value]) => {
+      const raw = value!
+      if (!raw.trim().startsWith('[')) return [raw]
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')
+          ? [raw, ...parsed]
+          : [raw]
+      } catch {
+        return [raw]
+      }
+    })
 }
 
 export function resolveWorkflowBindings(
@@ -27,7 +49,8 @@ export function resolveWorkflowBindings(
   const values: Record<string, WorkflowRuntimeValue> = {}
   for (const binding of bindings) {
     if (binding.source === 'secret') {
-      const variableName = secretEnvironmentName(binding.secretRef ?? '')
+      if (!binding.secretRef) throw new Error(`Workflow binding "${binding.name}" is missing secretRef`)
+      const variableName = secretEnvironmentName(binding.secretRef)
       const value = environment[variableName]
       if (!value) throw new Error(`Missing required secret environment variable: ${variableName}`)
       values[binding.name] = binding.valueType === 'stringList' ? parseStringList(value, variableName) : value

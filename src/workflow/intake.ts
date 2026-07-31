@@ -216,9 +216,24 @@ function cellAddress(workbook: WorkbookReadResult, column: keyof WorkbookReadRes
   return index ? `${utils.encode_col(index - 1)}${row}` : `row:${row}`
 }
 
+function intakeResult(
+  value: Omit<WorkflowIntakeResult, 'secretMaterial'>,
+  secretMaterial: WorkflowIntakeResult['secretMaterial'],
+): WorkflowIntakeResult {
+  const result = value as WorkflowIntakeResult
+  Object.defineProperty(result, 'secretMaterial', {
+    value: secretMaterial,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  })
+  return result
+}
+
 async function intakeStandardTestCases(
   options: WorkflowIntakeOptions,
   workbook: WorkbookReadResult,
+  detectionDiagnostics: DiagnosticBag,
 ): Promise<WorkflowIntakeResult> {
   const targetUrls = [...new Set((options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))]
   if (targetUrls.length === 0) throw new Error('标准测试用例工作流至少需要一个目标 URL')
@@ -230,7 +245,11 @@ async function intakeStandardTestCases(
     destructiveActions: 'requireApproval',
   })
   const diagnostics = new DiagnosticBag()
-  for (const item of imported.report.diagnostics) {
+  const seenDiagnostics = new Set<string>()
+  for (const item of [...detectionDiagnostics.items, ...imported.report.diagnostics]) {
+    const key = JSON.stringify(item)
+    if (seenDiagnostics.has(key)) continue
+    seenDiagnostics.add(key)
     if (item.code === 'plaintext_secret') continue
     if (item.code === 'cleanup_required') {
       const { severity: _severity, code: _code, message: _message, ...context } = item
@@ -328,10 +347,9 @@ async function intakeStandardTestCases(
     review: { status: 'draft', reasons: reviewReasons },
   }
   diagnostics.warning('workflow_review_required', '标准测试用例已进入自治规划链路，但断言、风险和恢复契约仍必须通过 Exploration 与 Policy Gate')
-  return {
+  return intakeResult({
     manifest,
     assets: supplementalAssets,
-    secretMaterial,
     report: {
       sourceFile: options.filePath,
       summary: {
@@ -344,20 +362,20 @@ async function intakeStandardTestCases(
       },
       diagnostics: diagnostics.items,
     },
-  }
+  }, secretMaterial)
 }
 
 export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promise<WorkflowIntakeResult> {
   const diagnostics = new DiagnosticBag()
   if (extname(options.filePath).toLowerCase() !== '.xlsx') throw new Error('工作流 intake 只接受 .xlsx 文件')
+  const file = await readFile(options.filePath)
+  if (file.byteLength > 25 * 1024 * 1024) throw new Error(`XLSX 文件超过 25 MB 上限：${file.byteLength} bytes`)
+  if (file[0] !== 0x50 || file[1] !== 0x4b) throw new Error('文件不是有效的 XLSX/ZIP 容器')
   const standardDiagnostics = new DiagnosticBag()
   const standardWorkbook = await readWorkbookCases(options.filePath, standardDiagnostics, {
     ...(options.sheetName ? { sheetName: options.sheetName } : {}),
   })
-  if (standardWorkbook.headerRow !== null) return intakeStandardTestCases(options, standardWorkbook)
-  const file = await readFile(options.filePath)
-  if (file.byteLength > 25 * 1024 * 1024) throw new Error(`XLSX 文件超过 25 MB 上限：${file.byteLength} bytes`)
-  if (file[0] !== 0x50 || file[1] !== 0x4b) throw new Error('文件不是有效的 XLSX/ZIP 容器')
+  if (standardWorkbook.headerRow !== null) return intakeStandardTestCases(options, standardWorkbook, standardDiagnostics)
 
   const sha256 = createHash('sha256').update(file).digest('hex')
   const workbook = read(file, { type: 'buffer', cellDates: true, cellFormula: true, cellText: true })
@@ -471,10 +489,9 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
   }
 
   diagnostics.warning('workflow_review_required', '工作流 intake 只生成可审核清单，不会绕过断言、风险和图片审核直接执行')
-  return {
+  return intakeResult({
     manifest,
     assets: [...assets, ...supplementalAssets],
-    secretMaterial,
     report: {
       sourceFile: options.filePath,
       summary: {
@@ -487,5 +504,5 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
       },
       diagnostics: diagnostics.items,
     },
-  }
+  }, secretMaterial)
 }

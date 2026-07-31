@@ -25,7 +25,8 @@ describe('text normalization', () => {
   it('redacts credentials and common personal identifiers', () => {
     const redacted = redactSensitiveText('账号：admin，密码：secret123，手机号：+6590000001，key=sk-example987654321')
     expect(redacted).not.toContain('secret123')
-    expect(redacted).not.toContain('94567812')
+    expect(redacted).not.toContain('+6590000001')
+    expect(redacted).toContain('<redacted-phone>')
     expect(redacted).not.toContain('sk-example987654321')
   })
 

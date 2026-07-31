@@ -87,7 +87,7 @@ export async function planWorkflow(options: PlanWorkflowOptions): Promise<Workfl
       const body = draftBodyFromUnknown(bodyInput)
       if (body.workflowId !== options.manifest.workflowId) throw new Error('Planner changed workflowId')
       if (body.sourceSha256 !== options.manifest.source.sha256) throw new Error('Planner changed sourceSha256')
-      validated = validateWorkflowPlanDraft({
+      const candidate = validateWorkflowPlanDraft({
         ...body,
         review: { ...body.review, status: 'draft' },
         planner: {
@@ -99,7 +99,8 @@ export async function planWorkflow(options: PlanWorkflowOptions): Promise<Workfl
           summary: response.summary,
         },
       })
-      requireManifestPhaseCoverage(validated, options.manifest)
+      requireManifestPhaseCoverage(candidate, options.manifest)
+      validated = candidate
       break
     } catch (error) {
       lastError = error

@@ -26,7 +26,7 @@
         }
       ],
       "policy": {
-        "allowWrite": true,
+        "allowWrite": false,
         "allowDestructive": false,
         "maxRefinements": 3,
         "maxEnvironmentRetries": 2

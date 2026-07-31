@@ -27,13 +27,13 @@ export function mergeRefinedDraft(before: WorkflowPlanDraft, candidate: Workflow
         return next as typeof assertion
       })
 
-      const beforeEntitySteps = new Map(phase.steps
-        .filter((step) => step.kind === 'captureTableRow' || step.kind === 'clickAlignedTableAction')
-        .map((step) => [step.id, step]))
-      const candidateStepIds = new Set(candidatePhase.steps.map((step) => step.id))
-      phase.steps = candidatePhase.steps.map((step) => beforeEntitySteps.get(step.id) ?? step)
-      for (const step of beforeEntitySteps.values()) {
-        if (!candidateStepIds.has(step.id)) phase.steps.push(step)
+      const protectedSteps = phase.steps
+        .map((step, index) => ({ step, index }))
+        .filter(({ step }) => step.kind === 'captureTableRow' || step.kind === 'clickAlignedTableAction')
+      const protectedIds = new Set(protectedSteps.map(({ step }) => step.id))
+      phase.steps = candidatePhase.steps.filter((step) => !protectedIds.has(step.id))
+      for (const { step, index } of protectedSteps) {
+        phase.steps.splice(Math.min(index, phase.steps.length), 0, step)
       }
     }
   }

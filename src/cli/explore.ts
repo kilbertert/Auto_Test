@@ -250,6 +250,7 @@ async function actionCommand(args: string[]): Promise<void> {
       value = String(resolveDataBindings([binding])[valueRef])
     }
     if (value === undefined) throw new Error(`${action} 必须提供 --value-ref 或 --value`)
+    if (value.startsWith('-')) throw new Error(`${action} 的输入值不能以 - 开头`)
     await cli.runAction([action, target, value])
   } else if (action === 'press') {
     await cli.runAction(['press', requireValue(args, '--key')])

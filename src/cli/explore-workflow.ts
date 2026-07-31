@@ -12,7 +12,10 @@ import { validateWorkflowPlanDraft } from '../workflow/planner-validation.js'
 
 function valueAfter(args: string[], name: string): string | undefined {
   const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
+  if (index < 0) return undefined
+  const value = args[index + 1]
+  if (!value || value.startsWith('--')) throw new Error(`${name} 必须提供取值`)
+  return value
 }
 
 function requireValue(args: string[], name: string): string {
@@ -54,8 +57,12 @@ async function main(): Promise<void> {
     if (intake.manifest.source.sha256 !== draft.sourceSha256) throw new Error('Secret source XLSX hash does not match the workflow draft source')
     environment = workflowSecretEnvironment(intake.secretMaterial)
   }
-  const maxIterations = valueAfter(args, '--max-iterations') ? Number(valueAfter(args, '--max-iterations')) : undefined
-  const iterationOffset = valueAfter(args, '--iteration-offset') ? Number(valueAfter(args, '--iteration-offset')) : undefined
+  const maxIterationsValue = valueAfter(args, '--max-iterations')
+  const maxIterations = maxIterationsValue === undefined ? undefined : Number(maxIterationsValue)
+  if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations <= 0)) throw new Error('--max-iterations 必须是正整数')
+  const iterationOffsetValue = valueAfter(args, '--iteration-offset')
+  const iterationOffset = iterationOffsetValue === undefined ? undefined : Number(iterationOffsetValue)
+  if (iterationOffset !== undefined && (!Number.isInteger(iterationOffset) || iterationOffset < 0)) throw new Error('--iteration-offset 必须是非负整数')
   const stopBeforeTarget = valueAfter(args, '--stop-before')
   const startFromTarget = valueAfter(args, '--start-from')
   const driver = new PlaywrightWorkflowDriver({

@@ -150,9 +150,16 @@ function allowedOrigins(suite: TestSuiteIR): Set<string> {
   return new Set(suite.target.allowedOrigins.map((value) => new URL(value).origin))
 }
 
+function assertAllowedUrl(value: string, origins: Set<string>): void {
+  const url = new URL(value)
+  if (!['http:', 'https:'].includes(url.protocol) || !origins.has(url.origin)) {
+    throw new Error(`Navigation target is outside allowed origins: ${url.origin}`)
+  }
+}
+
 function assertAllowedOrigin(page: Page, origins: Set<string>): void {
   const url = new URL(page.url())
-  if ((url.protocol === 'http:' || url.protocol === 'https:') && !origins.has(url.origin)) {
+  if (!['http:', 'https:'].includes(url.protocol) || !origins.has(url.origin)) {
     throw new Error(`Navigation left allowed origins: ${url.origin}`)
   }
 }
@@ -285,9 +292,16 @@ async function executeStep(
   } else {
     try {
       switch (step.action) {
-        case 'navigate':
-          await page.goto(String(value))
+        case 'navigate': {
+          const targetUrl = String(value)
+          try {
+            assertAllowedUrl(targetUrl, origins)
+          } catch (error) {
+            throw executionError('origin_violation', targetType, error instanceof Error ? error.message : String(error), step, error)
+          }
+          await page.goto(targetUrl)
           break
+        }
         case 'click':
           await locator!.click()
           break

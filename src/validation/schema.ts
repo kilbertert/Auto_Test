@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
 import formatsPlugin from 'ajv-formats'
 import type { Diagnostic, TestSuiteIR } from '../core/types.js'
 
-const schemaPath = resolve(process.cwd(), 'schemas/test-case-ir.schema.json')
+const schemaPath = fileURLToPath(new URL('../../schemas/test-case-ir.schema.json', import.meta.url))
 const schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as object
 const ajv = new Ajv2020({ allErrors: true, strict: false, allowUnionTypes: true })
 const addFormats = formatsPlugin as unknown as (instance: Ajv2020) => Ajv2020

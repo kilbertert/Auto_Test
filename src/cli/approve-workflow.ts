@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { chmod, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { basename, dirname, resolve } from 'node:path'
 import { approveExploredWorkflowPlan, type WorkflowPlanExplorationReport } from '../workflow/plan-exploration.js'
 
 function valueAfter(args: string[], name: string): string | undefined {
@@ -10,8 +10,17 @@ function valueAfter(args: string[], name: string): string | undefined {
 
 function requireValue(args: string[], name: string): string {
   const value = valueAfter(args, name)
-  if (!value) throw new Error(`必须提供 ${name}`)
+  if (!value || value.startsWith('--')) throw new Error(`必须提供 ${name}`)
   return value
+}
+
+async function canonicalOutputPath(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return resolve(await realpath(dirname(path)), basename(path))
+  }
 }
 
 async function main(): Promise<void> {
@@ -22,12 +31,23 @@ async function main(): Promise<void> {
     return
   }
   if (!args.includes('--approve')) throw new Error('必须显式提供 --approve')
-  const draft = JSON.parse(await readFile(resolve(requireValue(args, '--draft')), 'utf8')) as unknown
-  const report = JSON.parse(await readFile(resolve(requireValue(args, '--exploration')), 'utf8')) as WorkflowPlanExplorationReport
+  const draftPath = resolve(requireValue(args, '--draft'))
+  const explorationPath = resolve(requireValue(args, '--exploration'))
   const output = resolve(requireValue(args, '--output'))
-  const plan = approveExploredWorkflowPlan(draft, report, requireValue(args, '--reviewer'))
   await mkdir(dirname(output), { recursive: true, mode: 0o750 })
+  const [draftIdentity, explorationIdentity, outputIdentity] = await Promise.all([
+    realpath(draftPath),
+    realpath(explorationPath),
+    canonicalOutputPath(output),
+  ])
+  if (outputIdentity === draftIdentity || outputIdentity === explorationIdentity) {
+    throw new Error('--output 不能覆盖 --draft 或 --exploration 审批证据')
+  }
+  const draft = JSON.parse(await readFile(draftPath, 'utf8')) as unknown
+  const report = JSON.parse(await readFile(explorationPath, 'utf8')) as WorkflowPlanExplorationReport
+  const plan = approveExploredWorkflowPlan(draft, report, requireValue(args, '--reviewer'))
   await writeFile(output, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', mode: 0o640 })
+  await chmod(output, 0o640)
   console.log(`Approved workflow execution plan: ${output}`)
 }
 

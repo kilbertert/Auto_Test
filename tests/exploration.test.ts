@@ -4,6 +4,8 @@ import { parsePlaywrightLocator } from '../src/exploration/locator-parser.js'
 import type { LocatorCandidateReport } from '../src/exploration/types.js'
 import type { TestSuiteIR } from '../src/core/types.js'
 import { resolveDataBindings, secretEnvironmentName } from '../src/runtime/data.js'
+import { resolveWorkflowBindings } from '../src/workflow/runtime-data.js'
+import { workflowSecretEnvironment } from '../src/workflow/intake-secrets.js'
 import { locatorExpression } from '../src/runtime/locator.js'
 
 describe('Playwright CLI locator parsing', () => {
@@ -39,6 +41,10 @@ describe('Playwright CLI locator parsing', () => {
     expect(() => parsePlaywrightLocator("getByRole('button').nth(0)")).toThrow(/unsupported/i)
   })
 
+  it('rejects chained locators that would lose their parent scope', () => {
+    expect(() => parsePlaywrightLocator("page.getByRole('dialog').getByText('确定')")).toThrow(/unsupported/i)
+  })
+
   it('rejects trailing statements', () => {
     expect(() => parsePlaywrightLocator("getByRole('button'); doSomething()"))
       .toThrow(/trailing statements/i)
@@ -59,6 +65,29 @@ describe('runtime data resolution', () => {
       [{ name: 'password', source: 'secret', secretRef: 'admin.password' }],
       {},
     )).toThrow('AUTO_TEST_SECRET_ADMIN_PASSWORD')
+  })
+
+  it('rejects empty secret references and redacts malformed secret-list JSON errors', () => {
+    expect(() => secretEnvironmentName('')).toThrow(/must not be empty/i)
+    expect(() => resolveWorkflowBindings(
+      [{ name: 'phones', source: 'secret', valueType: 'stringList', secretRef: 'workflow.phones' }],
+      { AUTO_TEST_SECRET_WORKFLOW_PHONES: '["private-phone"' },
+    )).toThrow('Secret list must be valid JSON: AUTO_TEST_SECRET_WORKFLOW_PHONES')
+    try {
+      resolveWorkflowBindings(
+        [{ name: 'phones', source: 'secret', valueType: 'stringList', secretRef: 'workflow.phones' }],
+        { AUTO_TEST_SECRET_WORKFLOW_PHONES: '["private-phone"' },
+      )
+    } catch (error) {
+      expect(String(error)).not.toContain('private-phone')
+    }
+  })
+
+  it('rejects secret references that normalize to the same environment variable', () => {
+    expect(() => workflowSecretEnvironment({
+      'fixture.a-b': 'first',
+      'fixture.a_b': 'second',
+    }, {})).toThrow(/collide/i)
   })
 })
 

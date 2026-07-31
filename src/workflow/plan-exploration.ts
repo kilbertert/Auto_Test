@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { LocatorIR } from '../core/types.js'
 import { redactSensitiveContent, slugify } from '../input/text.js'
-import { resolveWorkflowBindings } from './runtime-data.js'
+import { environmentSecretStrings, resolveWorkflowBindings } from './runtime-data.js'
 import { executeWorkflow, type WorkflowExecutionOptions } from './runtime-engine.js'
 import type {
   CaptureTableRowRequest,
@@ -191,20 +191,7 @@ function secretStrings(draft: WorkflowPlanDraft, environment: NodeJS.ProcessEnv 
       const value = values[binding.name]
       return Array.isArray(value) ? value : value === undefined ? [] : [String(value)]
     })
-  const environmentSecrets = Object.entries(environment ?? process.env)
-    .filter(([name, value]) => name.startsWith('AUTO_TEST_SECRET_') && Boolean(value))
-    .flatMap(([, value]) => {
-      const raw = value!
-      if (!raw.trim().startsWith('[')) return [raw]
-      try {
-        const parsed = JSON.parse(raw) as unknown
-        return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')
-          ? [raw, ...parsed]
-          : [raw]
-      } catch {
-        return [raw]
-      }
-    })
+  const environmentSecrets = environmentSecretStrings(environment)
   return [...new Set([...boundSecrets, ...environmentSecrets])]
     .filter((value) => value.length > 0)
     .sort((left, right) => right.length - left.length)
@@ -710,21 +697,11 @@ export function workflowExplorationSha256(report: WorkflowPlanExplorationReport)
   return createHash('sha256').update(JSON.stringify(report)).digest('hex')
 }
 
-const liveResolvableAmbiguity = /locator|selector|page route|route transition|auth(?:entication)? preflight|login control|phone number format|country code|conditional cleanup|idempotent cleanup|captcha|验证码|号码格式|国家码|区号|本地号码|页面路由|认证前置|登录控件|条件分支.*(?:清理|删除|停止)|零匹配.*(?:继续|幂等)|已停止.*跳过停止/i
-const readOnlyPresenceCoverageAmbiguity = /does not define which fields.*latest order row.*expected values.*verifies that at least one row exists.*without.*acting/i
-const outOfScopeManifestAmbiguity = /references .*but the supplied workflow intake contains no corresponding manifest.*those cases cannot be added without their source manifests/i
-
 export function remainingWorkflowAmbiguities(
   draft: WorkflowPlanDraft,
-  report: WorkflowPlanExplorationReport,
+  _report: WorkflowPlanExplorationReport,
 ): string[] {
-  if (report.status !== 'passed' || report.runtimeResult.status !== 'passed') return draft.review.unresolvedAmbiguities
-  const readOnlyWorkflow = draft.groups.every((group) => group.phases.every((phase) => phase.risk === 'read'))
-  return draft.review.unresolvedAmbiguities.filter((ambiguity) => (
-    !liveResolvableAmbiguity.test(ambiguity) &&
-    !outOfScopeManifestAmbiguity.test(ambiguity) &&
-    !(readOnlyWorkflow && readOnlyPresenceCoverageAmbiguity.test(ambiguity))
-  ))
+  return [...draft.review.unresolvedAmbiguities]
 }
 
 export function approveExploredWorkflowPlan(

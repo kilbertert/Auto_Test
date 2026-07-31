@@ -32,15 +32,9 @@ function compensationFailedBeforeAction(result: WorkflowExecutionResult, mutatio
 
 export function assessMutationRecovery(result: WorkflowExecutionResult): MutationRecoveryAssessment {
   const latest = new Map<string, WorkflowExecutionResult['mutations'][number]>()
-  for (const event of result.mutations) latest.set(`${event.groupId}:${event.iteration ?? 'single'}:${event.phaseId}`, event)
+  for (const event of result.mutations) latest.set(event.mutationId, event)
   const values = [...latest.values()]
-  const passedPhases = new Set(result.phases.filter((phase) => phase.status === 'passed').map((phase) => (
-    `${phase.groupId}:${phase.iteration ?? 'single'}:${phase.phaseId}`
-  )))
-  const outstanding = values.filter((event) => {
-    if (event.status === 'started' && passedPhases.has(`${event.groupId}:${event.iteration ?? 'single'}:${event.phaseId}`)) return false
-    return ['started', 'committed', 'failed', 'interrupted', 'compensation_started'].includes(event.status)
-  })
+  const outstanding = values.filter((event) => ['started', 'committed', 'failed', 'interrupted', 'compensation_started'].includes(event.status))
   const failed = values.filter((event) => event.status === 'compensation_failed' && !compensationFailedBeforeAction(result, event.mutationId))
   return {
     attempted: result.mutations.some((event) => event.status === 'started'),

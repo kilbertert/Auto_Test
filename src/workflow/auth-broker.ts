@@ -39,6 +39,12 @@ export async function ensureEnvironmentAuthentication(
 ): Promise<EnvironmentAuthenticationResult> {
   const adapters = profile.auth.filter((adapter) => adapter.login)
   if (adapters.length === 0) return { profileId: profile.id, checkedOrigins: [], refreshedOrigins: [] }
+  for (const adapter of adapters) {
+    const login = adapter.login!
+    if (!login.successPathname && !login.successUrlContains) {
+      throw new Error(`Auth adapter for ${adapter.origin} must configure successPathname or successUrlContains`)
+    }
+  }
   const browser = await chromium.launch({ headless: true })
   const checkedOrigins: string[] = []
   const refreshedOrigins: string[] = []

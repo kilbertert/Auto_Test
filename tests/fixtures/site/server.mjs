@@ -4,6 +4,7 @@ process.umask(0o027)
 
 const host = '127.0.0.1'
 const port = Number.parseInt(process.env.AUTO_TEST_FIXTURE_PORT ?? '43117', 10)
+if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('AUTO_TEST_FIXTURE_PORT must be an integer from 1 to 65535')
 const expectedUsername = process.env.AUTO_TEST_SECRET_DEMO_USERNAME
 const expectedPassword = process.env.AUTO_TEST_SECRET_DEMO_PASSWORD
 

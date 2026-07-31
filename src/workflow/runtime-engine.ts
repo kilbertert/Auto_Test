@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { redactSensitiveContent } from '../input/text.js'
-import { resolveOperand, resolveWorkflowBindings } from './runtime-data.js'
+import { environmentSecretStrings, resolveOperand, resolveWorkflowBindings } from './runtime-data.js'
 import type { WorkflowRunCursor, WorkflowRunState } from './runtime-state.js'
 import { WorkflowStateStore } from './runtime-state.js'
 import type {
@@ -70,13 +70,18 @@ function publicEntity(entity: WorkflowRuntimeCapturedEntity): WorkflowCapturedEn
   }
 }
 
-function secretStrings(values: Record<string, WorkflowRuntimeValue>, plan: WorkflowExecutionPlan): string[] {
-  return plan.dataBindings
+function secretStrings(
+  values: Record<string, WorkflowRuntimeValue>,
+  plan: WorkflowExecutionPlan,
+  environment: NodeJS.ProcessEnv | undefined,
+): string[] {
+  const boundSecrets = plan.dataBindings
     .filter((binding) => binding.source === 'secret')
     .flatMap((binding) => {
       const value = values[binding.name]
       return Array.isArray(value) ? value : value === undefined ? [] : [String(value)]
     })
+  return [...new Set([...boundSecrets, ...environmentSecretStrings(environment)])]
     .filter(Boolean)
     .sort((left, right) => right.length - left.length)
 }
@@ -824,7 +829,7 @@ export async function executeWorkflow(
     if (!found) throw new Error(`Unknown stopBeforeTarget: ${options.stopBeforeTarget}`)
   }
   const baseValues = resolveWorkflowBindings(plan.dataBindings, options.environment)
-  const secrets = secretStrings(baseValues, plan)
+  const secrets = secretStrings(baseValues, plan, options.environment)
   const store = options.stateStore
   const existing = await store?.load()
   let state: WorkflowRunState

@@ -73,8 +73,8 @@ Reviewed plan 位于 `artifacts/acceptance/charge/charging.execution-plan.json`�
 - 11/11 phase 通过；
 - 61/61 步骤通过；
 - 14/14 断言通过；
-- 自动捕获并强停充电订单 `2082047687991726081`；
-- 自动关联并结算占位费订单 `2082048252788314114`；
+- 自动捕获并强停本轮新增充电订单；
+- 自动关联并结算本轮新增占位费订单；
 - 独立复查为 `Charging complete`、`Occupancy Ended / Paid`；
 - 活跃目标充电订单和占位费订单均为 0；
 - 新 H5 Context 返回空手机号登录页；
@@ -86,7 +86,7 @@ Reviewed plan 位于 `artifacts/acceptance/charge/charging.execution-plan.json`�
 
 2026-07-28 在进入连续账号验收前，发现枪口复位 phase 位于一次性 bootstrap group。Execution Plan 已修正为在 `account-cycle` 每轮开头自主导航模拟器详情页并执行拔枪/插枪复位。
 
-修正后使用手机号列表索引 2、3 运行连续两账号 batch，Run ID 为 `6d9730b4-60e4-4df2-92ca-1f58efdf694b`：
+修正后运行连续两账号 batch：
 
 - 两轮枪口复位、后台认证和无活跃订单前置检查均通过；
 - 两个账号都完成 H5 登录、PIN、`Get start` 和二次确认，但没有进入充电路由；
@@ -104,8 +104,8 @@ Reviewed plan 位于 `artifacts/acceptance/charge/charging.execution-plan.json`�
 
 余额准备完成后执行两段正式验收：
 
-- 索引 0：Run `9c556290-7df6-4ffd-b712-7f9529b19c6d`，11/11 phase、63/63 步骤、14/14 断言通过；
-- 索引 1..6：连续 batch Run `c156e4ab-9afc-438e-80c6-c8c6139be859`，56/56 phase、348/348 步骤、69/69 断言通过；
+- 单账号 canary：11/11 phase、63/63 步骤、14/14 断言通过；
+- 其余账号连续 batch：56/56 phase、348/348 步骤、69/69 断言通过；
 - 合计 67/67 phase、411/411 步骤、83/83 断言和 28 次实体捕获通过；
 - 7 个账号均完成枪口复位、H5 启动、120 秒计量、充电订单强停、占位费结算和最终审计。
 
@@ -177,15 +177,15 @@ Recovery Planner 基于 `charge.refined12.plan-draft.json` 生成 `artifacts/pla
 
 首次自治 canary 的模拟器 Session 已过期并落到登录页。旧分类器把“登录页没有设备入口”误判为 locator 问题；该次 Job 在进入 Refiner 后被终止，未执行写操作。现已增加登录页/Session 过期分类和 Auth Broker：Profile 使用 Secret 引用与已验证 locator 刷新权限 `0600` 的 `storageState`，严格按 pathname 判定登录成功，并支持登录前置协议复选框。
 
-修复后使用同一 Recovery Draft 和单账号索引运行 `autonomous:workflow`，证据位于 `artifacts/acceptance/charge/autonomous-canary-offset6-v2`：
+修复后使用同一 Recovery Draft 和独立 canary 账号运行 `autonomous:workflow`。完整证据保存在不入 Git 的受限验收目录中，仓库文档仅保留聚合结论：
 
 - 顶层 Job `completed / passed`，round 0，Runtime attempt 1；
 - 新 Draft hash 的 Exploration 为 `passed`：15 phase、88 steps、21 assertions、75 locator、13 table contract、0 unresolved；
-- Policy Gate 由 `policy:cli-autonomy-v1` 自动签发，reasons 为空；
+- Policy Gate 自动批准，reasons 为空；
 - 独立正常 Runtime 为 `passed`：15 phase、88 steps、21 assertions、2 个实体捕获、0 failed phase/step/assertion；
 - `h5-start-charge` mutation 最终为 `compensated`，其余五个非只读 phase 为 `retry_ready`；
 - 充电和占位费每轮及最终零活跃订单审计全部通过；
-- 成功后 Exploration/Runtime 中断状态自动清除；Job state 为 `0600`，其余 JSON 证据为 `0640`；
+- 成功后 Exploration/Runtime 中断状态自动清除；私有 Job state 为 `0600`，其余受限证据为 `0640`；
 - Secret Vault 值、手机号和 OTP 未出现在 Draft、Exploration、Plan、Runtime 或 Job evidence 中。
 
 因此，虚拟充电桩场景已完成一次不依赖聊天代理手动续跑的自治链路验收：Environment Profile → Auth Broker → Recovery Planner Draft → live Exploration → Policy Gate → normal Runtime → final safety audit。

@@ -111,6 +111,24 @@ function candidate(): LocatorCandidateReport {
 }
 
 describe('failure classification', () => {
+  it('classifies locator ambiguity counts of ten or more', () => {
+    const validation = report([null])
+    validation.cases[0]!.status = 'failed'
+    validation.cases[0]!.stableAcrossReplays = false
+    validation.cases[0]!.replays[0] = {
+      replay: 1,
+      status: 'failed',
+      durationMs: 1,
+      checks: [],
+      error: 'locator matched 10 elements',
+    }
+
+    expect(classifyFailures(suite(), validation).failures[0]).toMatchObject({
+      category: 'test_code',
+      failureKind: 'locator_ambiguous',
+    })
+  })
+
   it('classifies assertion mismatches as product defects without repair', () => {
     const failure: RuntimeFailureEvidence = {
       kind: 'assertion_mismatch',

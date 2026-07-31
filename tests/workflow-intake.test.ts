@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { utils, write } from '@e965/xlsx'
@@ -77,7 +77,8 @@ describe('workflow xlsx intake', () => {
       'workflow.模拟充电.verificationCode',
     ]))
     expect(serialized).not.toContain('secret-pass')
-    expect(serialized).not.toContain('94567812')
+    expect(serialized).not.toContain('8888')
+    expect(serialized).not.toContain('+6590000001')
     expect(serialized).not.toContain('tester@example.test')
     expect(serialized).toContain('${secret:workflow.启动模拟桩.username}')
     expect(serialized).toContain('${secret:workflow.模拟充电.verificationCode}')
@@ -93,7 +94,28 @@ describe('workflow xlsx intake', () => {
       'workflow.模拟充电.verificationCode': '8888',
     })
     expect(JSON.stringify({ manifest: result.manifest, report: result.report })).not.toContain('secret-pass')
+    expect(JSON.stringify(result)).not.toContain('secret-pass')
+    expect(JSON.stringify(result)).not.toContain('+6590000001')
     expect(await readFile(filePath)).toBeInstanceOf(Buffer)
+  })
+
+  it('enforces container and size limits before workbook format detection', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-workflow-input-limit-'))
+    temporaryDirectories.push(directory)
+    const invalidPath = resolve(directory, 'invalid.xlsx')
+    const oversizedPath = resolve(directory, 'oversized.xlsx')
+    await writeFile(invalidPath, 'not a zip container')
+    await writeFile(oversizedPath, 'PK')
+    await truncate(oversizedPath, 25 * 1024 * 1024 + 1)
+
+    await expect(intakeWorkflowXlsx({
+      filePath: invalidPath,
+      additionalUrls: ['https://app.example.test/'],
+    })).rejects.toThrow(/XLSX\/ZIP/i)
+    await expect(intakeWorkflowXlsx({
+      filePath: oversizedPath,
+      additionalUrls: ['https://app.example.test/'],
+    })).rejects.toThrow(/25 MB/i)
   })
 
   it('parses WPS cell image relationship metadata', () => {

@@ -364,14 +364,30 @@
           "enum": ["visible", "hidden", "attached", "detached", "url", "response"]
         },
         "expected": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "timeoutMs": {
           "type": "integer",
           "minimum": 1,
           "maximum": 120000
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["url", "response"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["expected"]
+          }
+        }
+      ]
     },
     "assertion": {
       "type": "object",

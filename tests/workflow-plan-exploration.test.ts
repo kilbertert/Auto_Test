@@ -295,7 +295,7 @@ describe('workflow plan exploration and approval', () => {
     expect(() => approveExploredWorkflowPlan(input, report, 'tester')).toThrow(/draft hash/i)
   })
 
-  it('clears verified conditional-cleanup mechanics but preserves missing business oracles', () => {
+  it('keeps all planner ambiguities blocking until a refined draft removes them', () => {
     const input = draft()
     input.review.unresolvedAmbiguities = [
       '当前 DSL 没有条件分支，无法表达零匹配时继续，以及实体已停止时跳过停止。',
@@ -307,11 +307,12 @@ describe('workflow plan exploration and approval', () => {
     } as never
 
     expect(remainingWorkflowAmbiguities(input, report)).toEqual([
+      '当前 DSL 没有条件分支，无法表达零匹配时继续，以及实体已停止时跳过停止。',
       'Expected settlement amount is not defined by the source case.',
     ])
   })
 
-  it('does not block a passed read-only smoke case on conservative coverage notes', () => {
+  it('does not let free-form conservative notes bypass the approval gate', () => {
     const input = draft()
     input.review.unresolvedAmbiguities = [
       'The source does not define which fields from the latest order row must be validated or their expected values; the plan therefore verifies that at least one row exists without capturing, selecting, or acting on an order.',
@@ -324,6 +325,8 @@ describe('workflow plan exploration and approval', () => {
     } as never
 
     expect(remainingWorkflowAmbiguities(input, report)).toEqual([
+      'The source does not define which fields from the latest order row must be validated or their expected values; the plan therefore verifies that at least one row exists without capturing, selecting, or acting on an order.',
+      'The brief references test_02 through test_04, but the supplied workflow intake contains no corresponding manifest phases, steps, preconditions, or immutable expected outcomes; those cases cannot be added without their source manifests.',
       'Expected settlement amount is not defined by the source case.',
     ])
   })
@@ -429,7 +432,7 @@ describe('workflow plan exploration and approval', () => {
     }))
   })
 
-  it('clears only live-resolvable technical ambiguities after a passed exploration', async () => {
+  it('requires a refined draft to remove live-resolvable ambiguity text', async () => {
     const input = draft()
     input.review.unresolvedAmbiguities = [
       '需要确认手机号是本地号码还是已包含国家码，并据此选择区号。',
@@ -441,13 +444,20 @@ describe('workflow plan exploration and approval', () => {
       environment: { AUTO_TEST_SECRET_WORKFLOW_PHONE: 'synthetic-secret-phone' },
     })
 
-    expect(remainingWorkflowAmbiguities(input, report)).toEqual(['需要业务确认退款订单是否应视为通过。'])
+    expect(remainingWorkflowAmbiguities(input, report)).toEqual([
+      '需要确认手机号是本地号码还是已包含国家码，并据此选择区号。',
+      '需要业务确认退款订单是否应视为通过。',
+    ])
     expect(() => approveExploredWorkflowPlan(input, report, 'tester')).toThrow(/unresolved business ambiguities/i)
 
     input.review.unresolvedAmbiguities = ['需要确认手机号是本地号码还是已包含国家码，并据此选择区号。']
     const compatible = { ...report, draftSha256: workflowDraftSha256(input) }
-    expect(remainingWorkflowAmbiguities(input, compatible)).toEqual([])
-    expect(() => approveExploredWorkflowPlan(input, compatible, 'tester')).not.toThrow()
+    expect(remainingWorkflowAmbiguities(input, compatible)).toEqual(input.review.unresolvedAmbiguities)
+    expect(() => approveExploredWorkflowPlan(input, compatible, 'tester')).toThrow(/unresolved business ambiguities/i)
+
+    input.review.unresolvedAmbiguities = []
+    const resolved = { ...report, draftSha256: workflowDraftSha256(input) }
+    expect(() => approveExploredWorkflowPlan(input, resolved, 'tester')).not.toThrow()
   })
 
   it('persists directly validated table evidence into the approved execution plan', async () => {

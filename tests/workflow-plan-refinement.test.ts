@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { refineWorkflowDraftFromExploration, readSanitizedPageEvidence, validateLiveLocatorTextOracleChanges } from '../src/workflow/plan-refinement.js'
+import { mergeRefinedDraft, refineWorkflowDraftFromExploration, readSanitizedPageEvidence, validateLiveLocatorTextOracleChanges } from '../src/workflow/plan-refinement.js'
 import type { CodexCliWorkflowPlanner } from '../src/workflow/planner-provider.js'
 import type { WorkflowPlanDraft } from '../src/workflow/planner-types.js'
 
@@ -116,5 +116,36 @@ describe('workflow plan refinement evidence', () => {
     expect(refined.groups[0]!.phases[0]!.steps.find((step) => step.id === 'capture-device')).toMatchObject({
       idPattern: '\\b(DEVICE-1)\\b',
     })
+  })
+
+  it('keeps protected entity steps at their original execution index', () => {
+    const before = draftWithOracle('stable')
+    before.groups[0]!.phases[0]!.steps.push(
+      {
+        id: 'capture-device',
+        kind: 'captureTableRow',
+        entityName: 'device',
+        table: { headerLabels: ['Device ID'], bodyOffset: 0 },
+        match: [{ literal: 'DEVICE-1' }],
+        idPattern: '\\b(DEVICE-1)\\b',
+        timeoutMs: 1_000,
+        pollIntervalMs: 10,
+        sourceRefs: ['cell:C2'],
+      },
+      { id: 'finish', kind: 'reload', sourceRefs: ['cell:D2'] },
+    )
+    const candidate = structuredClone(before)
+    candidate.groups[0]!.phases[0]!.steps = [
+      candidate.groups[0]!.phases[0]!.steps[0]!,
+      candidate.groups[0]!.phases[0]!.steps[2]!,
+    ]
+
+    const merged = mergeRefinedDraft(before, candidate)
+
+    expect(merged.groups[0]!.phases[0]!.steps.map((step) => step.id)).toEqual([
+      'open',
+      'capture-device',
+      'finish',
+    ])
   })
 })
