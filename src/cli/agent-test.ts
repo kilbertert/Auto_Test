@@ -255,6 +255,10 @@ async function writePreExecutionBlock(outputDirectory: string, manifest: Workflo
 
 export async function runAgentTestCli(options: AgentTestCliOptions): Promise<number> {
   process.umask(0o027)
+  const printProgress = (message: string): void => {
+    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    console.log(`[${time}] ${message}`)
+  }
   const priorStatePath = resolve(options.outputDirectory, 'codex-agent.state.json')
   const priorLedgerPath = resolve(options.outputDirectory, '.agent-private', 'mutation-ledger.json')
   if (options.resume) {
@@ -271,6 +275,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   }
   await mkdir(options.outputDirectory, { recursive: true, mode: 0o700 })
+  printProgress(options.resume ? '正在读取原运行状态和测试输入' : '正在读取测试用例、URL 和图片')
   const inputBundle = await discoverWorkflowInputBundle({
     filePath: options.filePath,
     ...(options.briefPath ? { briefPath: options.briefPath } : {}),
@@ -281,6 +286,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     additionalUrls: options.urls,
     supplementalImagePaths: inputBundle.imagePaths,
   })
+  printProgress(`测试材料解析完成：${intake.manifest.phases.length} 个测试阶段，${intake.assets.length} 个图片资源`)
   if (!options.resume) {
     await writePrivateJson(resolve(options.outputDirectory, 'intake.workflow.json'), intake.manifest)
     await writePrivateJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
@@ -300,6 +306,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   let secrets: Record<string, string | string[]>
   let environmentContext: string
   try {
+    printProgress('正在匹配环境 Profile、权限策略和登录状态')
     const registry = await loadEnvironmentProfileRegistry(options.profileRegistryPath)
     profile = scopeEnvironmentProfile(
       selectEnvironmentProfile(registry, intake.manifest.targetUrls, options.profileId),
@@ -318,6 +325,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       workflowSecretEnvironment(secrets),
       { headless: !options.headed, ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}) },
     )
+    printProgress(`环境“${profile.id}”已就绪，正在启动 Codex-native 测试代理`)
     const environmentSelection = {
       profileId: profile.id,
       origins: profile.origins,
@@ -353,6 +361,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
     ...(options.resume ? { resume: true } : {}),
+    onProgress: (progress) => printProgress(progress.message),
   })
   console.log(`测试状态：${run.state.status}`)
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
