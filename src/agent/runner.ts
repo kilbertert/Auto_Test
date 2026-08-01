@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
+import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues } from './redact.js'
 import { enforceMutationLedger } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
@@ -28,6 +29,8 @@ export interface CodexTestAgentOptions {
   codexHome?: string
   maxFinalizationTurns?: number
   resume?: boolean
+  onProgress?: CodexTestAgentProgressSink
+  progressHeartbeatMs?: number
 }
 
 export interface CodexTestAgentRun {
@@ -229,12 +232,14 @@ async function runTurn(
   input: Input,
   eventsPath: string,
   secrets: string[],
+  progress: CodexTestProgressReporter,
   onThreadStarted?: (threadId: string) => Promise<void>,
 ): Promise<string> {
   const streamed = await thread.runStreamed(input)
   let finalResponse = ''
   for await (const event of streamed.events) {
     await appendEvent(eventsPath, event, secrets)
+    progress.observe(event)
     if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
     if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
     if (event.type === 'turn.failed') throw new Error(event.error.message)
@@ -444,9 +449,14 @@ export async function runCodexTestAgent(
   }
   let mutationLedgerPath: string | undefined
   let activeThread: AgentThread | undefined
+  const progress = new CodexTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
   await writePrivateJson(statePath, state)
   const redactionSecrets = secretValues(options.secrets)
   try {
+    progress.report('stage', options.resume
+      ? '正在恢复原 Codex 线程、浏览器会话和 Mutation Ledger'
+      : '正在检查 Chromium 并准备隔离测试工作区')
+    progress.startHeartbeat()
     const browserExecutablePath = dependencies.browserExecutablePath ?? chromium.executablePath()
     await access(browserExecutablePath).catch(() => {
       throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
@@ -464,6 +474,7 @@ export async function runCodexTestAgent(
       ...(options.resume ? { resume: true } : {}),
     })
     mutationLedgerPath = workspace.mutationLedgerPath
+    progress.report('stage', '隔离测试工作区已准备，正在启动 Codex 测试线程')
     const activeCodexExecutable = await resolveCodexExecutable(options)
     const threadOptions = {
       workspaceDirectory: workspace.workspaceDirectory,
@@ -482,6 +493,9 @@ export async function runCodexTestAgent(
     activeThread = thread
     state = updateCodexTestState(state, { stage: 'executing', ...(resumeThreadId ? { threadId: resumeThreadId } : {}) })
     await writePrivateJson(statePath, state)
+    progress.report('stage', options.resume
+      ? 'Codex 测试代理开始恢复执行，将先核对未完成业务写入的真实状态'
+      : 'Codex 测试代理开始执行，将自主规划、探索页面、操作并验证结果')
     const persistThreadId = async (threadId: string): Promise<void> => {
       if (state.threadId === threadId) return
       state = updateCodexTestState(state, { threadId })
@@ -498,9 +512,10 @@ export async function runCodexTestAgent(
           }) },
           ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
         ]
-    await runTurn(thread, input, eventsPath, redactionSecrets, persistThreadId)
+    await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
+    progress.report('stage', '浏览器执行阶段结束，正在核对 Execution Plan、证据和 Mutation Ledger')
     let ledger = await readMutationLedger(workspace.mutationLedgerPath)
     let evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
     let plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
@@ -509,10 +524,11 @@ export async function runCodexTestAgent(
     for (let turn = 0; turn < maxFinalizationTurns; turn++) {
       const problems = decisionProblems(decisions, options.manifest, evidence, ledger, plan)
       if (problems.length === 0) break
+      progress.report('stage', `交付核对发现 ${problems.length} 项不完整，正在进行第 ${turn + 1}/${maxFinalizationTurns} 轮补齐`)
       await runTurn(thread, [{
         type: 'text',
         text: `The execution delivery contract is incomplete:\n- ${problems.join('\n- ')}\nContinue the same browser session. Repair missing final assertions, evidence, plan status, case_result_record entries, or pending mutation recovery without weakening expected results. Do not repeat already verified business mutations. Finish with a short plain-text summary.`,
-      }], eventsPath, redactionSecrets, persistThreadId)
+      }], eventsPath, redactionSecrets, progress, persistThreadId)
       ledger = await readMutationLedger(workspace.mutationLedgerPath)
       evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
       plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
@@ -532,6 +548,7 @@ export async function runCodexTestAgent(
       problems: finalProblems,
     })
     await writePrivateJson(resultPath, result)
+    progress.report('stage', `结构化测试结果已生成：${result.outcome}`)
     state = updateCodexTestState(state, {
       status: 'completed',
       stage: 'completed',
@@ -544,6 +561,7 @@ export async function runCodexTestAgent(
   } catch (error) {
     const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
     if (isOperationalBlock(message)) {
+      progress.report('warning', '模型、浏览器、网络或测试权限暂时不可用，正在保存可恢复的 blocked 结果')
       const ledger = mutationLedgerPath ? await readMutationLedger(mutationLedgerPath).catch(() => []) : []
       const result = blockedResult(options.manifest, state, message, ledger)
       await writePrivateJson(resultPath, result)
@@ -554,11 +572,14 @@ export async function runCodexTestAgent(
       await writePrivateJson(statePath, state)
       return { state, result }
     }
+    progress.report('warning', '框架执行发生未恢复错误，正在保存失败状态和诊断信息')
     state = updateCodexTestState(state, {
       status: 'failed', stage: 'failed', error: message,
       ...(activeThread?.id ? { threadId: activeThread.id } : {}),
     })
     await writePrivateJson(statePath, state)
     return { state }
+  } finally {
+    progress.close()
   }
 }

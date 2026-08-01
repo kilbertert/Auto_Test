@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Input, ThreadEvent } from '@openai/codex-sdk'
+import { CodexTestProgressReporter, progressFromThreadEvent } from '../src/agent/progress.js'
 import { runCodexTestAgent } from '../src/agent/runner.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
@@ -64,6 +65,46 @@ async function fakeCodexExecutable(directory: string): Promise<string> {
 }
 
 describe('Codex test agent runner', () => {
+  it('reports safe live progress without exposing tool arguments or agent text', () => {
+    const secret = 'private-form-value'
+    const started = progressFromThreadEvent({
+      type: 'item.started',
+      item: {
+        id: 'fill', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_fill_form',
+        arguments: { value: secret }, status: 'in_progress',
+      },
+    } as ThreadEvent)
+    const completed = progressFromThreadEvent({
+      type: 'item.completed',
+      item: {
+        id: 'plan', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'test_plan_update',
+        arguments: { summary: secret }, result: { content: [], structured_content: { secret } }, status: 'completed',
+      },
+    } as ThreadEvent)
+    const agentMessage = progressFromThreadEvent({
+      type: 'item.completed', item: { id: 'message', type: 'agent_message', text: secret },
+    } as ThreadEvent)
+
+    expect(started?.message).toContain('填写页面表单')
+    expect(completed?.message).toContain('Execution Plan')
+    expect(agentMessage?.message).toContain('本轮执行说明')
+    expect(JSON.stringify([started, completed, agentMessage])).not.toContain(secret)
+  })
+
+  it('emits a heartbeat while a long-running model turn is quiet', async () => {
+    vi.useFakeTimers()
+    const messages: string[] = []
+    const reporter = new CodexTestProgressReporter((progress) => messages.push(progress.message), 20_000)
+    reporter.report('activity', '正在读取页面结构')
+    reporter.startHeartbeat()
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    reporter.close()
+    vi.useRealTimers()
+
+    expect(messages).toContain('框架仍在运行（已持续 20 秒）；最近进度：正在读取页面结构')
+  })
+
   it('prefers the explicitly configured current Codex CLI executable', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-current-cli-'))
     directories.push(directory)
@@ -140,6 +181,7 @@ describe('Codex test agent runner', () => {
     await writeFile(browserPath, '')
     const codexExecutable = await fakeCodexExecutable(directory)
     const executionInputs: Input[] = []
+    const progressMessages: string[] = []
     let turn = 0
     let controlConfigPath = ''
     const executionRunStreamed = vi.fn(async (input: Input, options?: { outputSchema?: unknown }) => {
@@ -167,6 +209,7 @@ describe('Codex test agent runner', () => {
       manifest: manifest('https://tasks.example.test'),
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      onProgress: (progress) => progressMessages.push(progress.message),
     }, {
       browserExecutablePath: browserPath,
       startThread: (options) => {
@@ -179,6 +222,8 @@ describe('Codex test agent runner', () => {
     expect(executionRunStreamed).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(executionInputs[0])).toContain('Do not produce the structured final result')
     expect(JSON.stringify(executionInputs[1])).toContain('missing final case decision')
+    expect(progressMessages).toContain('Codex 测试线程已建立；中断后可以从本次结果目录恢复')
+    expect(progressMessages).toContain('结构化测试结果已生成：passed')
     const events = await readFile(resolve(directory, 'run', 'codex-agent.events.jsonl'), 'utf8')
     expect(events.trim().split('\n')).toHaveLength(6)
   })

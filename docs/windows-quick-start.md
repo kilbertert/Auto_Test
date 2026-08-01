@@ -100,6 +100,10 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
+启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、更新动态 Execution Plan、记录证据、核对 Mutation Ledger 和最终化补齐。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示受控动作类别，不显示模型推理正文、表单值、工具参数、Cookie、验证码或 API 信息。
+
+这些进度表示框架仍在工作，不代表测试已经通过。最终结论仍以 `codex-agent.result.json`、Execution Plan、证据和 Mutation Ledger 的终态为准。
+
 结束时直接显示以下三类结果：
 
 - `测试通过`：页面操作、业务断言、证据和最终恢复状态全部通过；
