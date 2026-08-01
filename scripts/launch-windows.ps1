@@ -417,7 +417,7 @@ function Get-CodexProbeFailureHint([string] $Output, [int] $ExitCode) {
 
 function Test-CodexProvider {
   if (-not $script:ApiConfigurationChanged -or $env:AUTO_TEST_SKIP_API_PROBE -eq '1') { return }
-  $codexExecutable = $env:AUTO_TEST_CODEX_BIN
+  $codexExecutable = if ($env:AUTO_TEST_CODEX_PROBE_BIN) { $env:AUTO_TEST_CODEX_PROBE_BIN } else { $env:AUTO_TEST_CODEX_BIN }
   if (-not $codexExecutable -or -not (Test-Path $codexExecutable)) { throw '找不到 Auto-Test 私有 Codex CLI。' }
   $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
   try {

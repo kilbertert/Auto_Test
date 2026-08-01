@@ -125,8 +125,7 @@ jobs:
         run: |
           $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
-          $codexPath = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
-          $originalCodex = [IO.File]::ReadAllBytes($codexPath)
+          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-probe.cmd'
           $stubCodex = @'
           @echo off
           if not "%~1"=="--version" goto :probe
@@ -138,11 +137,13 @@ jobs:
           exit /b 0
           '@
           try {
-            [IO.File]::WriteAllText($codexPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
             .\Auto-Test.cmd --setup-only
             if ($LASTEXITCODE -ne 0) { throw "Expected successful stderr probe handling, got $LASTEXITCODE" }
           } finally {
-            [IO.File]::WriteAllBytes($codexPath, $originalCodex)
+            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
+            Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
           }
 
       - name: Verify no-argument CMD launcher

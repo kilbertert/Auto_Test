@@ -13,6 +13,7 @@ describe('Windows portable launcher', () => {
     expect(script).toContain('x86_64-pc-windows-msvc')
     expect(script).toContain('codex.exe')
     expect(script).toContain('$env:AUTO_TEST_CODEX_BIN = $codexExecutable')
+    expect(script).toContain('AUTO_TEST_CODEX_PROBE_BIN')
     expect(script).toContain("scripts\\check-playwright-browser.cjs")
     expect(script).toContain('& $script:NodeExecutable $playwrightCli install chromium')
     expect(script).toContain('if (Test-PlaywrightChromiumReady)')
