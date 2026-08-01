@@ -78,6 +78,8 @@ describe('Codex agent workspace', () => {
       ],
       policy: { allowWrite: false, allowDestructive: false },
     }
+    const homeKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME'
+    const homeValue = process.platform === 'win32' ? 'C:\\Users\\fixture' : '/home/fixture'
 
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
@@ -89,7 +91,7 @@ describe('Codex agent workspace', () => {
       sourceCodexHome: sourceHome,
       environment: {
         PATH: '/usr/bin',
-        HOME: '/home/fixture',
+        [homeKey]: homeValue,
         FIXTURE_MODEL_KEY: 'provider-key',
         UNRELATED_SERVER_SECRET: 'must-not-forward',
       },
@@ -119,9 +121,9 @@ describe('Codex agent workspace', () => {
     expect(mergedState.origins.find((item: { origin: string }) => item.origin === 'https://two.example.test').indexedDB).toHaveLength(1)
     expect(secrets).toContain('AUTO_TEST_VALUE_001="sensitive-value"')
     expect(workspace.secretAliases[0]?.aliases).toEqual(['AUTO_TEST_VALUE_001'])
-    expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', HOME: '/home/fixture', FIXTURE_MODEL_KEY: 'provider-key' })
+    expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key' })
     expect(workspace.codexEnvironment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
-    expect(workspace.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', HOME: '/home/fixture' })
+    expect(workspace.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
     expect(workspace.mcpEnvironment.FIXTURE_MODEL_KEY).toBe('')
     expect(serializedWorkspace).not.toContain('sensitive-value')
     if (process.platform !== 'win32') {

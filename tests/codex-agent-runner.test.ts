@@ -57,6 +57,12 @@ function reconnectingStreamText(response: string): { events: AsyncGenerator<Thre
   }
 }
 
+async function fakeCodexExecutable(directory: string): Promise<string> {
+  const path = resolve(directory, process.platform === 'win32' ? 'codex.exe' : 'codex')
+  await writeFile(path, '', { mode: 0o700 })
+  return path
+}
+
 describe('Codex test agent runner', () => {
   it('prefers the explicitly configured current Codex CLI executable', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-current-cli-'))
@@ -132,6 +138,7 @@ describe('Codex test agent runner', () => {
     await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
     const executionInputs: Input[] = []
     let turn = 0
     let controlConfigPath = ''
@@ -159,7 +166,7 @@ describe('Codex test agent runner', () => {
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest('https://tasks.example.test'),
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
     }, {
       browserExecutablePath: browserPath,
       startThread: (options) => {
@@ -184,12 +191,13 @@ describe('Codex test agent runner', () => {
     await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest('https://tasks.example.test'),
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
     }, {
       browserExecutablePath: browserPath,
       startThread: () => ({ id: 'thread-fixture', runStreamed: async () => failedStream('429 usage limit reached') }),
@@ -208,13 +216,14 @@ describe('Codex test agent runner', () => {
     await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
     let controlConfigPath = ''
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest('https://tasks.example.test'),
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
     }, {
       browserExecutablePath: browserPath,
       startThread: (options) => {
@@ -246,12 +255,13 @@ describe('Codex test agent runner', () => {
     await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest('https://tasks.example.test'),
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
     }, {
       browserExecutablePath: browserPath,
       startThread: () => { throw new Error('unexpected invariant violation') },
