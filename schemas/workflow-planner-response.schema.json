@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["planJson", "summary"],
+  "properties": {
+    "planJson": {
+      "type": "string",
+      "description": "A JSON-encoded workflow-plan-draft object."
+    },
+    "summary": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

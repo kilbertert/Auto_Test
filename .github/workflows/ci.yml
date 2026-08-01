@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run deterministic checks
+        run: npm run check
+
+      - name: Verify private Windows package assembly
+        env:
+          AUTO_TEST_MODEL_API_KEY: synthetic-private-package-key
+          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.test/v1
+          AUTO_TEST_CODEX_MODEL: synthetic-model
+        run: |
+          scripts/build-private-windows-package.sh
+          package="$(find artifacts/private-release -name 'Auto-Test-Windows-private-*.zip' -print -quit)"
+          test -n "$package"
+          test "$(unzip -p "$package" Auto-Test.private-key)" = 'synthetic-private-package-key'
+          test "$(unzip -p "$package" Auto-Test.private-provider.json | jq -r .baseUrl)" = 'https://model-api.example.test/v1'
+          test "$(unzip -p "$package" Auto-Test.private-provider.json | jq -r .model)" = 'synthetic-model'
+
+  windows-verify:
+    name: Windows Verify
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: .playwright-browsers
+      AUTO_TEST_CODEX_BASE_URL: https://model-api.example.test/v1
+      AUTO_TEST_CODEX_MODEL: synthetic-model
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Windows bootstrap
+        shell: pwsh
+        env:
+          AUTO_TEST_SKIP_API_PROBE: "1"
+          AUTO_TEST_MODEL_API_KEY: synthetic-ci-key
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          .\Auto-Test.cmd --setup-only
+
+      - name: Run deterministic checks
+        run: npm run check
+
+      - name: Verify legacy provider migration
+        shell: pwsh
+        env:
+          AUTO_TEST_SKIP_API_PROBE: "1"
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $legacyConfig = @'
+          model = "legacy-model"
+          model_provider = "cliproxyapi"
+
+          [model_providers.cliproxyapi]
+          name = "CLIProxyAPI"
+          base_url = "http://127.0.0.1:8317/v1"
+          wire_api = "responses"
+          env_key = "CLIPROXYAPI_KEY"
+          '@
+          Set-Content -Path (Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml') -Value $legacyConfig -Encoding UTF8
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          $previousSecret = Get-Content -Raw -Encoding UTF8 $secretPath
+          Set-Content -Path .\Auto-Test.private-key -Value 'synthetic-private-package-key' -NoNewline -Encoding UTF8
+          Set-Content -Path .\Auto-Test.private-provider.json -Value '{"baseUrl":"https://model-api.example.test/v1","model":"synthetic-model"}' -NoNewline -Encoding UTF8
+          .\Auto-Test.cmd --setup-only
+          .\Auto-Test.cmd doctor
+          if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed' }
+          if (Test-Path .\Auto-Test.private-provider.json) { throw 'Private provider bootstrap file was not removed' }
+          if ((Get-Content -Raw -Encoding UTF8 $secretPath) -eq $previousSecret) { throw 'Private package key did not replace the existing DPAPI secret' }
+
+      - name: Verify Windows PowerShell Codex probe stderr handling
+        shell: pwsh
+        env:
+          AUTO_TEST_MODEL_API_KEY: synthetic-stderr-probe-key
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-probe.cmd'
+          $stubCodex = @'
+          @echo off
+          if not "%~1"=="--version" goto :probe
+          echo codex-cli 0.146.0
+          exit /b 0
+          :probe
+          1>&2 echo OpenAI Codex v0.146.0
+          echo AUTO_TEST_API_READY
+          exit /b 0
+          '@
+          try {
+            [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
+            .\Auto-Test.cmd --setup-only
+            if ($LASTEXITCODE -ne 0) { throw "Expected successful stderr probe handling, got $LASTEXITCODE" }
+          } finally {
+            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
+            Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify no-argument CMD launcher
+        shell: pwsh
+        env:
+          AUTO_TEST_SKIP_API_PROBE: "1"
+          AUTO_TEST_MODEL_API_KEY: synthetic-private-package-key
+          AUTO_TEST_NO_PAUSE: "1"
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = cmd.exe /d /c "Auto-Test.cmd < nul" 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
+          if ($output -match 'syntax of the command is incorrect|命令语法不正确') {
+            throw "CMD launcher syntax failed: $output"
+          }
+          if ($exitCode -ne 1) { throw "Expected non-interactive menu exit code 1, got $exitCode" }
+          $global:LASTEXITCODE = 0
+
+      - name: Verify generated Codex provider config
+        shell: pwsh
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
+          if (-not (Test-Path $configPath)) { throw 'Codex config was not created' }
+          $config = Get-Content -Raw -Encoding UTF8 $configPath
+          if ($config -notmatch 'model = "synthetic-model"') { throw 'Configured model was not preserved' }
+          if ($config -notmatch 'model_provider = "auto_test_api"') { throw 'Provider was not configured' }
+          if ($config -notmatch '\[model_providers\.auto_test_api\]') { throw 'Provider section was not configured' }
+          if ($config -notmatch 'base_url = "https://model-api\.example\.test/v1"') { throw 'Configured Base URL was not preserved' }
+          if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
+          if ($config -notmatch 'env_key = "AUTO_TEST_MODEL_API_KEY"') { throw 'Provider API key environment was not configured' }
+          if ($config -notmatch 'requires_openai_auth = false') { throw 'Account login was not disabled' }
+          if ($config -match 'cliproxyapi|CLIProxyAPI|CLIPROXYAPI_KEY') { throw 'Legacy CLIProxyAPI configuration remains' }
+          if ($config -match 'synthetic-ci-key|synthetic-private-package-key') { throw 'API key leaked into config.toml' }
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          if (-not (Test-Path $secretPath)) { throw 'Private package key was not persisted with DPAPI' }
+          if ((Get-Content -Raw -Encoding UTF8 $secretPath) -match 'synthetic-private-package-key') { throw 'DPAPI file contains the plaintext API key' }
+          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
+          if ((& $codex --version) -notmatch '0\.146\.0') { throw 'Unexpected Codex CLI version' }

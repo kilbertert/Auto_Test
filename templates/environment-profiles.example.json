@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "profiles": [
+    {
+      "id": "staging-example",
+      "origins": [
+        "https://app.example.test",
+        "https://admin.example.test"
+      ],
+      "secretVaultPath": "./staging-secrets.json",
+      "plannerContextPath": "./staging-planner-context.txt",
+      "auth": [
+        {
+          "origin": "https://admin.example.test",
+          "storageStatePath": "./admin.storage-state.json",
+          "sessionStoragePath": "./admin.session-storage.json",
+          "login": {
+            "loginUrl": "https://admin.example.test/login?redirect=/index",
+            "successPathname": "/index",
+            "usernameSecretRef": "staging.admin.username",
+            "passwordSecretRef": "staging.admin.password",
+            "usernameLocator": { "strategy": "label", "value": "Username", "source": "manual" },
+            "passwordLocator": { "strategy": "label", "value": "Password", "source": "manual" },
+            "submitLocator": { "strategy": "role", "value": "button", "name": "Sign in", "exact": true, "source": "manual" }
+          }
+        }
+      ],
+      "policy": {
+        "allowWrite": false,
+        "allowDestructive": false,
+        "maxRefinements": 3,
+        "maxEnvironmentRetries": 2
+      }
+    }
+  ]
+}
