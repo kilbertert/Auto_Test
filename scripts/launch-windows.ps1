@@ -17,19 +17,20 @@ $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepositoryRoot
 
 $NodeVersion = '24.15.0'
-$CodexVersion = '0.144.5'
-$DefaultBaseUrl = 'https://api.psydo.top/v1'
-$DefaultModel = 'gpt-5.6-sol'
+$CodexVersion = '0.146.0'
 $ProviderId = 'auto_test_api'
 $ProviderName = 'Auto-Test Model API'
 $ProviderKeyEnvironment = 'AUTO_TEST_MODEL_API_KEY'
 $LegacyProviderId = 'cliproxyapi'
 $BootstrapSecretFileName = 'Auto-Test.private-key'
+$BootstrapProviderFileName = 'Auto-Test.private-provider.json'
 $script:ApiConfigurationChanged = $false
 $script:ProviderConfigPath = ''
 $script:ProviderSecretPath = ''
 $script:BootstrapSecretPath = ''
+$script:BootstrapProviderPath = ''
 $script:BootstrapSecretUsed = $false
+$script:BootstrapProviderUsed = $false
 $script:PreviousConfigExists = $false
 $script:PreviousConfigContent = ''
 $script:PreviousSecretExists = $false
@@ -123,10 +124,14 @@ function Get-CodexVersion([string] $Executable) {
 
 function Ensure-CodexCli {
   $toolsHome = Resolve-ToolsHome
-  $codexExecutable = Join-Path $toolsHome 'node_modules\.bin\codex.cmd'
-  $installed = Get-CodexVersion $codexExecutable
+  $codexCommand = Join-Path $toolsHome 'node_modules\.bin\codex.cmd'
+  $targetTriple = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+  $platformPackage = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'codex-win32-arm64' } else { 'codex-win32-x64' }
+  $codexExecutable = Join-Path $toolsHome "node_modules\@openai\$platformPackage\vendor\$targetTriple\bin\codex.exe"
+  $installed = Get-CodexVersion $codexCommand
   if ($installed -eq $CodexVersion) {
-    $env:Path = "$(Split-Path -Parent $codexExecutable);$env:Path"
+    if (-not (Test-Path $codexExecutable)) { throw 'Codex CLI 缺少 Windows 原生 codex.exe。' }
+    $env:Path = "$(Split-Path -Parent $codexCommand);$env:Path"
     $env:AUTO_TEST_CODEX_BIN = $codexExecutable
     Write-Host "[OK] Codex CLI $installed"
     return
@@ -136,9 +141,10 @@ function Ensure-CodexCli {
   New-Item -ItemType Directory -Force -Path $toolsHome | Out-Null
   & $script:NodeExecutable $script:NpmCliPath install --prefix $toolsHome "@openai/codex@$CodexVersion" --no-save --no-package-lock --no-fund --no-audit
   if ($LASTEXITCODE -ne 0) { throw 'Codex CLI 安装失败。请检查 npm 网络或代理配置。' }
-  $env:Path = "$(Split-Path -Parent $codexExecutable);$env:Path"
+  $env:Path = "$(Split-Path -Parent $codexCommand);$env:Path"
   $env:AUTO_TEST_CODEX_BIN = $codexExecutable
-  $installed = Get-CodexVersion $codexExecutable
+  $installed = Get-CodexVersion $codexCommand
+  if (-not (Test-Path $codexExecutable)) { throw 'Codex CLI 安装后缺少 Windows 原生 codex.exe。' }
   if ($installed -ne $CodexVersion) { throw "Codex CLI 版本验证失败，期望 $CodexVersion，实际 $installed。" }
   Write-Host "[OK] Codex CLI $installed"
 }
@@ -214,9 +220,11 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   $configPath = Join-Path $codexHome 'config.toml'
   $secretPath = Join-Path $codexHome 'provider-key.dpapi'
   $bootstrapSecretPath = Join-Path $RepositoryRoot $BootstrapSecretFileName
+  $bootstrapProviderPath = Join-Path $RepositoryRoot $BootstrapProviderFileName
   $script:ProviderConfigPath = $configPath
   $script:ProviderSecretPath = $secretPath
   $script:BootstrapSecretPath = $bootstrapSecretPath
+  $script:BootstrapProviderPath = $bootstrapProviderPath
   $script:PreviousConfigExists = Test-Path $configPath
   $script:PreviousConfigContent = if ($script:PreviousConfigExists) { Get-Content -Raw -Encoding UTF8 $configPath } else { '' }
   $script:PreviousSecretExists = Test-Path $secretPath
@@ -244,6 +252,16 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
 
   $baseUrl = $env:AUTO_TEST_CODEX_BASE_URL
   $model = $env:AUTO_TEST_CODEX_MODEL
+  if (-not $ForcePrompt -and (Test-Path $bootstrapProviderPath)) {
+    try {
+      $bootstrapProvider = Get-Content -Raw -Encoding UTF8 $bootstrapProviderPath | ConvertFrom-Json
+    } catch {
+      throw '私有安装包中的模型 Provider 配置不是有效 JSON。'
+    }
+    if (-not $baseUrl) { $baseUrl = [string] $bootstrapProvider.baseUrl }
+    if (-not $model) { $model = [string] $bootstrapProvider.model }
+    $script:BootstrapProviderUsed = $true
+  }
   $apiKey = [Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process')
   $apiKeyFromProcess = -not [string]::IsNullOrWhiteSpace($apiKey)
   if (-not $apiKeyFromProcess) { $apiKey = '' }
@@ -268,7 +286,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
       throw '已保存的 API Key 无法由当前 Windows 用户解密，请使用 --reconfigure-api 重新配置。'
     }
   }
-  $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or $apiKeyFromBootstrap -or -not $providerReady -or
+  $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or $apiKeyFromBootstrap -or $script:BootstrapProviderUsed -or -not $providerReady -or
     $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
   if ($baseUrl -and $existingBaseUrl -and $baseUrl -ne $existingBaseUrl) {
     $script:ApiConfigurationChanged = $true
@@ -278,6 +296,8 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
   }
 
   if ($ForcePrompt) {
+    $baseUrl = ''
+    $model = ''
     $apiKey = ''
     $apiKeyFromProcess = $false
     $providerReady = $false
@@ -296,12 +316,18 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $model = $existingModel
   }
   if (-not $baseUrl) {
-    $baseUrl = $DefaultBaseUrl
+    if ([Console]::IsInputRedirected) {
+      throw '缺少模型 API Base URL。请设置 AUTO_TEST_CODEX_BASE_URL，或使用包含私有 Provider 配置的安装包。'
+    }
+    $baseUrl = (Read-Host 'API Base URL').Trim()
   }
   if (-not (Test-HttpUrl $baseUrl)) { throw "API Base URL 无效：$baseUrl" }
 
   if (-not $model) {
-    $model = $DefaultModel
+    if ([Console]::IsInputRedirected) {
+      throw '缺少模型 ID。请设置 AUTO_TEST_CODEX_MODEL，或使用包含私有 Provider 配置的安装包。'
+    }
+    $model = (Read-Host '模型 ID').Trim()
   }
   if ([string]::IsNullOrWhiteSpace($model) -or $model -match '[\r\n]') {
     throw '模型 ID 无效。'
@@ -344,10 +370,17 @@ requires_openai_auth = false
   Write-Host "     配置目录：$codexHome"
 }
 
-function Complete-BootstrapSecretImport {
-  if (-not $script:BootstrapSecretUsed -or -not $script:BootstrapSecretPath) { return }
-  Remove-Item -Force $script:BootstrapSecretPath -ErrorAction Stop
-  Write-Host '[OK] 私有模型凭据已导入当前 Windows 用户并清除明文引导文件'
+function Complete-BootstrapImport {
+  $removed = $false
+  if ($script:BootstrapSecretUsed -and $script:BootstrapSecretPath) {
+    Remove-Item -Force $script:BootstrapSecretPath -ErrorAction Stop
+    $removed = $true
+  }
+  if ($script:BootstrapProviderUsed -and $script:BootstrapProviderPath) {
+    Remove-Item -Force $script:BootstrapProviderPath -ErrorAction Stop
+    $removed = $true
+  }
+  if ($removed) { Write-Host '[OK] 私有模型配置已导入当前 Windows 用户并清除引导文件' }
 }
 
 function Restore-PreviousProviderConfig {
@@ -531,7 +564,7 @@ try {
   Ensure-CodexCli
   Ensure-ApiProvider -ForcePrompt:$reconfigureApi
   Test-CodexProvider
-  Complete-BootstrapSecretImport
+  Complete-BootstrapImport
   Ensure-ProjectRuntime
 
   if ($setupOnly) {

@@ -48,7 +48,7 @@ interface SanitizedText {
 const phonePattern = /\+?65[\s-]?\d{8}\b/g
 const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
 const credentialPattern = /\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\/([^\s,，;；]+)/i
-const labeledCredentialPattern = /(?:账号|用户名|user(?:name)?)\s*[:：]\s*([^\s,，;；]+)[\s,，;；]*(?:密码|password|passwd|pwd)\s*[:：]\s*([^\s,，;；]+)/gi
+const labeledCredentialPattern = /(?:账号|用户名|user(?:name)?)\s*[:：]?\s*([^\s,，;；]+)[\s,，;；]*(?:密码|password|passwd|pwd)\s*[:：]?\s*([^\s,，;；]+)/gi
 const verificationPattern = /(验证码|verification\s*code)\s*[‘'"：:]?\s*([A-Za-z0-9]{4,8})\s*[’'"]?/gi
 const urlPattern = /https?:\/\/[^\s,，;；]+/gi
 
@@ -123,18 +123,34 @@ function addBinding(bindings: WorkflowSecretBinding[], phaseId: string, suffix: 
   return `\${secret:${secretRef}}`
 }
 
+function assignSecretMaterial(
+  target: Record<string, string | string[]>,
+  source: Record<string, string | string[]>,
+  label: string,
+): void {
+  for (const [secretRef, value] of Object.entries(source)) {
+    const previous = target[secretRef]
+    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(value)) {
+      throw new Error(`${label} 为 secretRef ${secretRef} 提供了冲突值`)
+    }
+    target[secretRef] = value
+  }
+}
+
 function sanitizeText(value: string, phaseId: string, sourceCell: string): SanitizedText {
   const bindings: WorkflowSecretBinding[] = []
   const secretMaterial: Record<string, string | string[]> = {}
   let safe = value
-  safe = safe.replace(labeledCredentialPattern, (_match, rawUsername: string, rawPassword: string) => {
+  safe = safe.replace(labeledCredentialPattern, (match, rawUsername: string, rawPassword: string) => {
+    if (rawUsername.includes('${secret:') || rawPassword.includes('${secret:')) return match
     const username = addBinding(bindings, phaseId, 'username', '登录用户名', sourceCell)
     const password = addBinding(bindings, phaseId, 'password', '登录密码', sourceCell)
     secretMaterial[`workflow.${phaseId}.username`] = rawUsername
     secretMaterial[`workflow.${phaseId}.password`] = rawPassword
     return `账号：${username} 密码：${password}`
   })
-  safe = safe.replace(credentialPattern, (_match, rawUsername: string, rawPassword: string) => {
+  safe = safe.replace(credentialPattern, (match, rawUsername: string, rawPassword: string) => {
+    if (rawUsername.includes('${secret:') || rawPassword.includes('${secret:')) return match
     const username = addBinding(bindings, phaseId, 'username', '登录用户名', sourceCell)
     const password = addBinding(bindings, phaseId, 'password', '登录密码', sourceCell)
     secretMaterial[`workflow.${phaseId}.username`] = rawUsername
@@ -234,8 +250,12 @@ async function intakeStandardTestCases(
   options: WorkflowIntakeOptions,
   workbook: WorkbookReadResult,
   detectionDiagnostics: DiagnosticBag,
+  embeddedAssets: ReturnType<typeof extractWpsCellImages>,
 ): Promise<WorkflowIntakeResult> {
-  const targetUrls = [...new Set((options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))]
+  const targetUrls = [...new Set([
+    ...(options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)),
+    ...workbook.rows.flatMap((row) => Object.values(row.values).flatMap((value) => extractUrls(value ?? ''))),
+  ])]
   if (targetUrls.length === 0) throw new Error('标准测试用例工作流至少需要一个目标 URL')
   const imported = await importXlsxToIr({
     filePath: options.filePath,
@@ -258,6 +278,13 @@ async function intakeStandardTestCases(
     }
     diagnostics.items.push(item)
   }
+  for (const asset of embeddedAssets) {
+    diagnostics.warning('embedded_image_review_required', `单元格 ${asset.metadata.sourceCell} 包含内嵌图片，必须完成视觉语义审核`, {
+      sheet: asset.metadata.sheetName,
+      row: asset.metadata.sourceRow,
+      column: asset.metadata.sourceCell.replace(/\d+$/, ''),
+    })
+  }
   const sourceRows = new Map(workbook.rows.map((row) => [row.sourceRow, row]))
   const secretMaterial: Record<string, string | string[]> = {}
   const phases = imported.suite.cases.map((testCase): WorkflowPhaseDraft => {
@@ -267,12 +294,43 @@ async function intakeStandardTestCases(
     const dataCell = cellAddress(workbook, 'testData', sourceRow)
     const expectedCell = cellAddress(workbook, 'expected', sourceRow)
     const preconditionCell = cellAddress(workbook, 'precondition', sourceRow)
+    const titleCell = cellAddress(workbook, 'title', sourceRow)
+    const stepsCell = cellAddress(workbook, 'steps', sourceRow)
+    const cleanupCell = cellAddress(workbook, 'cleanup', sourceRow)
+    const title = sanitizeText(source?.values.title ?? testCase.title, phaseId, titleCell)
+    const steps = sanitizeText(source?.values.steps ?? testCase.steps.map((step) => step.sourceText).join('\n'), phaseId, stepsCell)
+    const cleanup = sanitizeText(source?.values.cleanup ?? testCase.cleanupSteps?.map((step) => step.sourceText).join('\n') ?? '', phaseId, cleanupCell)
     const data = sanitizeText(source?.values.testData ?? '', phaseId, dataCell)
     const expected = sanitizeText(source?.values.expected ?? '', phaseId, expectedCell)
     const preconditions = sanitizeText(source?.values.precondition ?? '', phaseId, preconditionCell)
-    Object.assign(secretMaterial, data.secretMaterial, expected.secretMaterial, preconditions.secretMaterial)
+    for (const [label, material] of [
+      [titleCell, title.secretMaterial],
+      [stepsCell, steps.secretMaterial],
+      [cleanupCell, cleanup.secretMaterial],
+      [dataCell, data.secretMaterial],
+      [expectedCell, expected.secretMaterial],
+      [preconditionCell, preconditions.secretMaterial],
+    ] as Array<[string, Record<string, string | string[]>]>) {
+      assignSecretMaterial(secretMaterial, material, `单元格 ${label}`)
+    }
+    const explicitBindings: WorkflowSecretBinding[] = (testCase.dataBindings ?? [])
+      .filter((binding) => binding.source === 'secret' && Boolean(binding.secretRef) && !binding.secretRef?.startsWith('unresolved.'))
+      .map((binding) => ({
+        name: binding.name,
+        secretRef: binding.secretRef!,
+        purpose: `测试数据：${binding.name}`,
+        sourceCell: dataCell,
+      }))
     const secretBindings = [...new Map(
-      [...data.bindings, ...expected.bindings, ...preconditions.bindings].map((binding) => [binding.secretRef, binding]),
+      [
+        ...title.bindings,
+        ...steps.bindings,
+        ...cleanup.bindings,
+        ...data.bindings,
+        ...expected.bindings,
+        ...preconditions.bindings,
+        ...explicitBindings,
+      ].map((binding) => [binding.secretRef, binding]),
     ).values()]
     for (const binding of secretBindings) {
       diagnostics.warning('secret_moved_to_reference', `单元格 ${binding.sourceCell} 的${binding.purpose}已转换为 secretRef`, {
@@ -291,6 +349,7 @@ async function intakeStandardTestCases(
       ...(preconditions.text ? [{ sourceCell: preconditionCell, text: `前置条件：${preconditions.text}`, urls: extractUrls(preconditions.text) }] : []),
       ...(data.text ? [{ sourceCell: dataCell, text: `测试数据：${data.text}`, urls: extractUrls(data.text) }] : []),
       { sourceCell: expectedCell, text: `预期结果：${expected.text}`, urls: extractUrls(expected.text) },
+      ...(cleanup.text ? [{ sourceCell: cleanupCell, text: `清理步骤：${cleanup.text}`, urls: extractUrls(cleanup.text) }] : []),
       ...(testCase.dependencies?.length ? [{
         sourceCell: cellAddress(workbook, 'dependencies', sourceRow),
         text: `依赖用例：${testCase.dependencies.join(', ')}`,
@@ -299,32 +358,35 @@ async function intakeStandardTestCases(
     ]
     const ambiguities = testCase.review.ambiguities
       .filter((item) => !/必须映射到正式 secretRef/.test(item))
+    const imageIds = embeddedAssets.filter((asset) => asset.metadata.sourceRow === sourceRow).map((asset) => asset.metadata.id)
+    if (imageIds.length > 0) ambiguities.push('内嵌图片需要 AI 或测试工程师确认其操作语义')
     if (testCase.risk !== 'read' && (testCase.cleanupSteps?.length ?? 0) === 0) {
       ambiguities.push('写入用例没有源测试用例提供的清理步骤；自动执行前必须建立可验证恢复契约')
     }
     return {
       id: phaseId,
-      title: testCase.title,
+      title: title.text,
       sourceRow,
       risk: testCase.risk,
       ...(testCase.preconditions?.length ? { summary: testCase.preconditions.join('；') } : {}),
-      steps: testCase.steps.map((step) => ({ id: `${phaseId}-${step.id}`, sourceText: step.sourceText, confidence: step.confidence })),
+      steps: splitNumberedItems(steps.text).map((step, index) => ({ id: `${phaseId}-step-${index + 1}`, sourceText: step, confidence: 0.85 })),
       resources,
       secretBindings,
-      imageIds: [],
+      imageIds,
       review: { status: 'draft', ambiguities },
     }
   })
   const supplementalAssets = await Promise.all((options.supplementalImagePaths ?? []).map(supplementalImage))
   const capabilities = new Set<WorkflowCapability>()
   if (targetUrls.length > 1) capabilities.add('multiOrigin')
-  if (supplementalAssets.length) capabilities.add('embeddedImageUnderstanding')
+  if (embeddedAssets.length || supplementalAssets.length) capabilities.add('embeddedImageUnderstanding')
   const sourceText = phases.flatMap((phase) => [phase.title, ...phase.steps.map((step) => step.sourceText), ...phase.resources.map((resource) => resource.text)]).join('\n')
   if (/验证码|captcha|verification\s*code/i.test(sourceText)) capabilities.add('otpOrCaptcha')
   if (/设备.*在线|模拟|socket|websocket|ip\s*端口/i.test(sourceText)) capabilities.add('externalPhysicalState')
   if (phases.some((phase) => phase.risk === 'destructive')) capabilities.add('destructiveApproval')
   const reviewReasons = [
     '标准测试用例表已自动桥接为 Workflow Intake；Planner 必须保留测试工程师定义的预期结果',
+    ...(embeddedAssets.length || supplementalAssets.length ? ['所有内嵌和补充图片必须完成视觉语义审核'] : []),
     ...(phases.some((phase) => phase.risk !== 'read' && phase.review.ambiguities.some((item) => item.includes('恢复契约')))
       ? ['存在没有源清理步骤的写入用例，Policy Gate 必须 fail closed 或验证 Recovery Planner 契约']
       : []),
@@ -342,20 +404,20 @@ async function intakeStandardTestCases(
     targetUrls,
     requiredCapabilities: [...capabilities],
     phases,
-    embeddedImages: [],
+    embeddedImages: embeddedAssets.map((asset) => asset.metadata),
     supplementalImages: supplementalAssets.map((asset) => asset.metadata),
     review: { status: 'draft', reasons: reviewReasons },
   }
   diagnostics.warning('workflow_review_required', '标准测试用例已进入自治规划链路，但断言、风险和恢复契约仍必须通过 Exploration 与 Policy Gate')
   return intakeResult({
     manifest,
-    assets: supplementalAssets,
+    assets: [...embeddedAssets, ...supplementalAssets],
     report: {
       sourceFile: options.filePath,
       summary: {
         sheetName: workbook.sheetName,
         phases: phases.length,
-        images: supplementalAssets.length,
+        images: embeddedAssets.length + supplementalAssets.length,
         secretBindings: phases.reduce((sum, phase) => sum + phase.secretBindings.length, 0),
         errors: diagnostics.count('error'),
         warnings: diagnostics.count('warning'),
@@ -375,10 +437,15 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
   const standardWorkbook = await readWorkbookCases(options.filePath, standardDiagnostics, {
     ...(options.sheetName ? { sheetName: options.sheetName } : {}),
   })
-  if (standardWorkbook.headerRow !== null) return intakeStandardTestCases(options, standardWorkbook, standardDiagnostics)
-
   const sha256 = createHash('sha256').update(file).digest('hex')
   const workbook = read(file, { type: 'buffer', cellDates: true, cellFormula: true, cellText: true })
+  if (standardWorkbook.headerRow !== null) {
+    const embeddedAssets = extractWpsCellImages(file, formulaImageCells(workbook))
+      .filter((asset) => asset.metadata.sheetName === standardWorkbook.sheetName)
+      .sort((a, b) => a.metadata.sourceRow - b.metadata.sourceRow || a.metadata.sourceCell.localeCompare(b.metadata.sourceCell))
+    return intakeStandardTestCases(options, standardWorkbook, standardDiagnostics, embeddedAssets)
+  }
+
   const sheetNames = options.sheetName ? [options.sheetName] : workbook.SheetNames
   const selected = sheetNames
     .map((sheetName) => ({ sheetName, sheet: workbook.Sheets[sheetName] }))
@@ -422,11 +489,11 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
     while (phaseIds.has(phaseId)) phaseId = `${baseId}-${suffix++}`
     phaseIds.add(phaseId)
     const instruction = sanitizeText(source.instruction.text, phaseId, source.instruction.address)
-    Object.assign(secretMaterial, instruction.secretMaterial)
+    assignSecretMaterial(secretMaterial, instruction.secretMaterial, `单元格 ${source.instruction.address}`)
     const parts = instructionParts(instruction.text)
     const resources = source.resources.map((resource) => {
       const sanitized = sanitizeText(resource.text, phaseId, resource.address)
-      Object.assign(secretMaterial, sanitized.secretMaterial)
+      assignSecretMaterial(secretMaterial, sanitized.secretMaterial, `单元格 ${resource.address}`)
       for (const binding of sanitized.bindings) instruction.bindings.push(binding)
       const urls = extractUrls(resource.text)
       for (const url of urls) targetUrls.add(url)

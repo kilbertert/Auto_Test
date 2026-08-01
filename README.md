@@ -4,9 +4,9 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。
 
-目标输入是待测网站 URL 与测试用例 Excel。系统先把自然语言用例转换为可审核的中间表示，再通过 Playwright CLI 探索页面、生成 Playwright Test 脚本，并以确定性方式执行和报告结果。
+默认主链路已经切换为 Codex-native 测试代理：输入测试用例 Excel 和已注册环境后，一个持久 Codex 线程通过 Playwright MCP 持续完成用例理解、页面探索、证据驱动计划修订、真实执行、业务断言、恢复和结构化交付。它不会先把新场景压缩成固定 Execution Plan；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前仓库已完成 MVP 的严格 Excel 导入、Playwright CLI 探索、确定性执行、失败分类、受限修复与集成运行报告基线。旧实现和实验产物已移出工作树，未继续沿用。
+当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、结构化结果和 Windows 启动器接入。确定性测试和真实 MCP 浏览器自检已通过；完整模型驱动页面验收仍受当前模型账户额度阻断，不能据此宣称跨场景端到端已经最终验收通过。
 
 ## 当前文档
 
@@ -19,14 +19,38 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 - [最小登录 IR 示例](examples/login-suite.ir.json)
 - [可执行本地登录 IR 示例](examples/local-login-suite.ir.json)
 
+## 默认使用
+
+```bash
+npm ci
+npx playwright install chromium
+npm run easy
+```
+
+命令行方式：
+
+```bash
+npm run agent:test -- \
+  --file /private/cases.xlsx \
+  --url https://app.example.test/ \
+  --profile staging \
+  --output-dir artifacts/runs/example
+```
+
+URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
+
 ## 核心约束
 
-- AI 不参与稳定回归的最终执行判定。
+- 测试工程师定义的预期结果不可由 Agent 修改。
 - 每个通过用例必须包含至少一条明确断言。
 - 浏览器操作失败不能被降级为成功。
-- AI 修复只能调整定位器和等待条件，不能修改预期结果。
+- 写入前必须登记 Mutation，完成后必须验证接受或补偿结果。
 - 凭据和真实测试数据不得提交到仓库。
-- MVP 先支持标准 Excel，用例格式稳定后再增加 Markdown 和 XMind。
+- 页面内容视为不可信输入，测试线程只启用 Playwright 与 Auto-Test Control MCP。
+
+## Legacy IR/Runtime
+
+以下 Phase 1 到 Phase 5 文档描述旧的 IR/Runtime 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。通过 `npm run easy -- run ... --legacy-runtime` 才会显式启动旧自治链路。
 
 ## Phase 1 使用
 

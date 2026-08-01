@@ -67,6 +67,7 @@ export function slugify(value: string): string {
 export function redactSensitiveContent(value: string): string {
   return value
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|ak_[A-Za-z0-9_-]{12,})\b/g, '<redacted-key>')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '<redacted-email>')
     .replace(/\+?65[\s-]?\d{8}\b/g, '<redacted-phone>')
     .replace(/\b1[3-9]\d{9}\b/g, '<redacted-phone>')
     .replace(/\b\d{17}[\dXx]\b/g, '<redacted-id>')

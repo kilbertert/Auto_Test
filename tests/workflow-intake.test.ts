@@ -36,6 +36,61 @@ describe('workflow xlsx intake', () => {
     expect(result.report.summary.errors).toBe(0)
   })
 
+  it('discovers target URLs from a standard test-case workbook without requiring --url', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-standard-url-'))
+    try {
+      const filePath = resolve(directory, 'cases.xlsx')
+      const workbook = utils.book_new()
+      const sheet = utils.aoa_to_sheet([
+        ['用例ID', '用例标题', '测试步骤', '预期结果', '前置条件'],
+        ['catalog-001', '筛选目录', '选择 Lighting 并点击筛选', '只显示两个 Lighting 商品', '打开 https://catalog.example.test/catalog'],
+      ])
+      utils.book_append_sheet(workbook, sheet, 'Cases')
+      await writeFile(filePath, write(workbook, { type: 'buffer', bookType: 'xlsx' }))
+
+      const result = await intakeWorkflowXlsx({ filePath })
+
+      expect(result.manifest.targetUrls).toContain('https://catalog.example.test/catalog')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('moves plaintext secrets from standard titles and steps into secret bindings', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-standard-secret-'))
+    try {
+      const filePath = resolve(directory, 'secrets.xlsx')
+      const workbook = utils.book_new()
+      const sheet = utils.aoa_to_sheet([
+        ['用例ID', '用例标题', '测试步骤', '预期结果', '测试数据'],
+        ['login-001', '使用账号 demo@example.test 密码 secret-pass 登录', '1.输入账号 demo@example.test 密码 secret-pass 2.输入验证码：8888', '页面显示登录成功', '账号=${secret:staging.username};密码=${secret:staging.password}'],
+      ])
+      utils.book_append_sheet(workbook, sheet, 'Cases')
+      await writeFile(filePath, write(workbook, { type: 'buffer', bookType: 'xlsx' }))
+
+      const result = await intakeWorkflowXlsx({ filePath, additionalUrls: ['https://app.example.test/login'] })
+      const serialized = JSON.stringify(result.manifest)
+
+      expect(serialized).not.toContain('demo@example.test')
+      expect(serialized).not.toContain('secret-pass')
+      expect(serialized).not.toContain('8888')
+      expect(result.manifest.phases[0]?.secretBindings.map((binding) => binding.secretRef)).toEqual(expect.arrayContaining([
+        'workflow.login-001.username',
+        'workflow.login-001.password',
+        'workflow.login-001.verificationCode',
+        'staging.username',
+        'staging.password',
+      ]))
+      expect(result.secretMaterial).toMatchObject({
+        'workflow.login-001.username': 'demo@example.test',
+        'workflow.login-001.password': 'secret-pass',
+        'workflow.login-001.verificationCode': '8888',
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('turns a phase table into a secret-safe review manifest', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-workflow-'))
     temporaryDirectories.push(directory)

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "easy": "tsx src/cli/easy.ts",
+    "agent:test": "tsx src/cli/agent-test.ts",
     "import": "tsx src/cli/import-xlsx.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
     "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
@@ -38,11 +39,15 @@
   },
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@openai/codex-sdk": "^0.146.0",
+    "@playwright/mcp": "^0.0.78",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "cross-spawn": "^7.0.6",
     "fast-xml-parser": "^5.10.1",
-    "he": "^1.2.0"
+    "he": "^1.2.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",

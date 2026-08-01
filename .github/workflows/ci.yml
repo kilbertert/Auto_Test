@@ -41,11 +41,17 @@ jobs:
         run: npm run check
 
       - name: Verify private Windows package assembly
+        env:
+          AUTO_TEST_MODEL_API_KEY: synthetic-private-package-key
+          AUTO_TEST_CODEX_BASE_URL: https://model-api.example.test/v1
+          AUTO_TEST_CODEX_MODEL: synthetic-model
         run: |
-          printf '%s\n' 'synthetic-private-package-key' | scripts/build-private-windows-package.sh
+          scripts/build-private-windows-package.sh
           package="$(find artifacts/private-release -name 'Auto-Test-Windows-private-*.zip' -print -quit)"
           test -n "$package"
           test "$(unzip -p "$package" Auto-Test.private-key)" = 'synthetic-private-package-key'
+          test "$(unzip -p "$package" Auto-Test.private-provider.json | jq -r .baseUrl)" = 'https://model-api.example.test/v1'
+          test "$(unzip -p "$package" Auto-Test.private-provider.json | jq -r .model)" = 'synthetic-model'
 
   windows-verify:
     name: Windows Verify
@@ -53,6 +59,8 @@ jobs:
     timeout-minutes: 25
     env:
       PLAYWRIGHT_BROWSERS_PATH: .playwright-browsers
+      AUTO_TEST_CODEX_BASE_URL: https://model-api.example.test/v1
+      AUTO_TEST_CODEX_MODEL: synthetic-model
 
     steps:
       - name: Check out repository
@@ -103,9 +111,11 @@ jobs:
           $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
           $previousSecret = Get-Content -Raw -Encoding UTF8 $secretPath
           Set-Content -Path .\Auto-Test.private-key -Value 'synthetic-private-package-key' -NoNewline -Encoding UTF8
+          Set-Content -Path .\Auto-Test.private-provider.json -Value '{"baseUrl":"https://model-api.example.test/v1","model":"synthetic-model"}' -NoNewline -Encoding UTF8
           .\Auto-Test.cmd --setup-only
           .\Auto-Test.cmd doctor
           if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed' }
+          if (Test-Path .\Auto-Test.private-provider.json) { throw 'Private provider bootstrap file was not removed' }
           if ((Get-Content -Raw -Encoding UTF8 $secretPath) -eq $previousSecret) { throw 'Private package key did not replace the existing DPAPI secret' }
 
       - name: Verify Windows PowerShell Codex probe stderr handling
@@ -120,10 +130,10 @@ jobs:
           $stubCodex = @'
           @echo off
           if not "%~1"=="--version" goto :probe
-          echo codex-cli 0.144.5
+          echo codex-cli 0.146.0
           exit /b 0
           :probe
-          1>&2 echo OpenAI Codex v0.144.5
+          1>&2 echo OpenAI Codex v0.146.0
           echo AUTO_TEST_API_READY
           exit /b 0
           '@
@@ -166,10 +176,10 @@ jobs:
           $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
           if (-not (Test-Path $configPath)) { throw 'Codex config was not created' }
           $config = Get-Content -Raw -Encoding UTF8 $configPath
-          if ($config -notmatch 'model = "gpt-5\.6-sol"') { throw 'Default model was not configured' }
+          if ($config -notmatch 'model = "synthetic-model"') { throw 'Configured model was not preserved' }
           if ($config -notmatch 'model_provider = "auto_test_api"') { throw 'Provider was not configured' }
           if ($config -notmatch '\[model_providers\.auto_test_api\]') { throw 'Provider section was not configured' }
-          if ($config -notmatch 'base_url = "https://api\.psydo\.top/v1"') { throw 'Default Base URL was not configured' }
+          if ($config -notmatch 'base_url = "https://model-api\.example\.test/v1"') { throw 'Configured Base URL was not preserved' }
           if ($config -notmatch 'wire_api = "responses"') { throw 'Responses API was not configured' }
           if ($config -notmatch 'env_key = "AUTO_TEST_MODEL_API_KEY"') { throw 'Provider API key environment was not configured' }
           if ($config -notmatch 'requires_openai_auth = false') { throw 'Account login was not disabled' }
@@ -179,4 +189,4 @@ jobs:
           if (-not (Test-Path $secretPath)) { throw 'Private package key was not persisted with DPAPI' }
           if ((Get-Content -Raw -Encoding UTF8 $secretPath) -match 'synthetic-private-package-key') { throw 'DPAPI file contains the plaintext API key' }
           $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
-          if ((& $codex --version) -notmatch '0\.144\.5') { throw 'Unexpected Codex CLI version' }
+          if ((& $codex --version) -notmatch '0\.146\.0') { throw 'Unexpected Codex CLI version' }

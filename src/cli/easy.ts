@@ -6,6 +6,7 @@ import { basename, delimiter, dirname, extname, resolve } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium } from '@playwright/test'
 import crossSpawn from 'cross-spawn'
+import { runAgentTestCli } from './agent-test.js'
 import {
   environmentProfileMatches,
   normalizeTargetUrls,
@@ -22,11 +23,15 @@ import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '
 interface EasyRunOptions {
   filePath: string
   urls: string[]
+  images?: string[]
+  briefPath?: string
   profileId?: string
   maxIterations?: number
   outputDirectory?: string
+  model?: string
   headed?: boolean
   slowMo?: number
+  legacyRuntime?: boolean
 }
 
 const rl = createInterface({ input, output })
@@ -248,23 +253,43 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   const outputDirectory = resolve(options.outputDirectory ?? defaultRunDirectory(filePath))
   await mkdir(outputDirectory, { recursive: true, mode: 0o750 })
   console.log(`\n本次结果目录：${outputDirectory}`)
-  const args = [
-    'run', 'autonomous:workflow', '--',
-    '--file', filePath,
-    ...urls.flatMap((url) => ['--url', url]),
-    ...(profileId ? ['--profile', profileId] : []),
-    ...(options.maxIterations ? ['--max-iterations', String(options.maxIterations)] : []),
-    options.headed ? '--headed' : '--headless',
-    ...(options.slowMo !== undefined ? ['--slow-mo', String(options.slowMo)] : []),
-    '--output-dir', outputDirectory,
-  ]
-  const exitCode = await spawnInherited(npmExecutable(), args)
-  const statePath = resolve(outputDirectory, 'autonomous-job.state.json')
+  let exitCode: number
+  let statePath: string
+  if (options.legacyRuntime) {
+    const args = [
+      'run', 'autonomous:workflow', '--',
+      '--file', filePath,
+      ...urls.flatMap((url) => ['--url', url]),
+      ...(profileId ? ['--profile', profileId] : []),
+      ...(options.maxIterations ? ['--max-iterations', String(options.maxIterations)] : []),
+      options.headed ? '--headed' : '--headless',
+      ...(options.slowMo !== undefined ? ['--slow-mo', String(options.slowMo)] : []),
+      '--output-dir', outputDirectory,
+    ]
+    exitCode = await spawnInherited(npmExecutable(), args)
+    statePath = resolve(outputDirectory, 'autonomous-job.state.json')
+  } else {
+    exitCode = await runAgentTestCli({
+      filePath,
+      urls,
+      images: options.images ?? [],
+      ...(options.briefPath ? { briefPath: resolve(options.briefPath) } : {}),
+      ...(profileId ? { profileId } : {}),
+      profileRegistryPath: defaultEnvironmentProfileRegistryPath(),
+      outputDirectory,
+      ...(options.model ? { model: options.model } : {}),
+      headed: options.headed === true,
+      ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
+      ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+      ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
+    })
+    statePath = resolve(outputDirectory, 'codex-agent.state.json')
+  }
   try {
     await printSummary(statePath)
   } catch {
     console.log('\n框架未能生成结果摘要，请查看上方错误信息。')
-    console.log(`运行诊断：${resolve(outputDirectory, 'run-events.jsonl')}`)
+    console.log(`运行诊断：${resolve(outputDirectory, options.legacyRuntime ? 'run-events.jsonl' : 'codex-agent.events.jsonl')}`)
   }
   return exitCode
 }
@@ -301,7 +326,7 @@ async function latestStatePath(): Promise<string | undefined> {
   try {
     const entries = await readdir(root, { recursive: true, withFileTypes: true })
     const candidates = await Promise.all(entries
-      .filter((entry) => entry.isFile() && entry.name === 'autonomous-job.state.json')
+      .filter((entry) => entry.isFile() && ['codex-agent.state.json', 'autonomous-job.state.json'].includes(entry.name))
       .map(async (entry) => {
         const path = resolve(entry.parentPath, entry.name)
         return { path, modified: (await stat(path)).mtimeMs }
@@ -436,7 +461,7 @@ async function main(): Promise<void> {
   if (command === 'run') {
     const filePath = valueAfter(args, '--file')
     const urls = valuesAfter(args, '--url')
-    if (!filePath || urls.length === 0) throw new Error('run 必须提供 --file 和至少一个 --url')
+    if (!filePath) throw new Error('run 必须提供 --file；URL 可以通过 --url 提供，也可以写在 Excel 中')
     if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
@@ -444,11 +469,15 @@ async function main(): Promise<void> {
     const code = await runEasyWorkflow({
       filePath,
       urls,
+      images: valuesAfter(args, '--image'),
+      ...(valueAfter(args, '--brief') ? { briefPath: valueAfter(args, '--brief')! } : {}),
       ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
       ...(args.includes('--one') ? { maxIterations: 1 } : {}),
       ...(valueAfter(args, '--output-dir') ? { outputDirectory: valueAfter(args, '--output-dir')! } : {}),
+      ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
+      legacyRuntime: args.includes('--legacy-runtime'),
     })
     process.exitCode = code
     return
@@ -461,7 +490,8 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--headed|--headless] [--slow-mo 150]')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150]')
+    console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')
     console.log('      npm run easy -- doctor')

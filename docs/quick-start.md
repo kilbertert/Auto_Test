@@ -1,30 +1,12 @@
-# 跨场景 AI 自动化测试快速操作指南
+# Codex-native 跨场景测试快速指南
 
-本框架用于把“目标网站 URL + 测试用例 Excel”自动转换为可执行测试：
+默认流程是：
 
-`Intake -> AI Planner -> 页面探索 -> Refiner -> Policy Gate -> Runtime -> 测试结果`
+`Excel Intake -> 环境与认证 -> 持久 Codex 线程 -> 页面探索与动态计划 -> 执行与断言 -> 恢复 -> 结构化结果`
 
-测试工程师不需要编写或修改 Execution Plan。登录、权限和业务前置条件需要在首次接入环境时注册一次。
+测试工程师不需要编写 Execution Plan。Codex 在同一线程里根据实际页面证据持续修订工作计划，并直接使用 Playwright MCP 操作网站。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
 
-## 推荐方式：交互入口
-
-Windows 用户使用内部私有包时，双击仓库根目录的 `Auto-Test.cmd`。启动器会自动安装 Node.js、固定版本 Codex CLI、项目依赖和 Chromium，并导入包内预置的直连 Responses API 配置，不需要填写模型信息或执行 `codex login`。公开源码包不包含私有 API Key。
-
-其他系统执行：
-
-```bash
-npm ci
-npx playwright install chromium
-npm run easy
-```
-
-中文菜单会完成环境检查、浏览器登录会话注册、Excel 选择、URL 输入、自动输出目录和结果摘要。详细操作见 [Windows 双击使用指南](windows-quick-start.md)。
-
-下文是适合 CI、脚本接入或高级故障排查的完整命令行方式，日常测试不需要手工操作这些文件。
-
-## 1. 高级准备
-
-高级命令行方式要求 Node.js 24 或更高版本，并确保 Codex CLI 已配置可用的自定义 API Provider。首次使用先安装依赖和浏览器：
+## 1. 首次准备
 
 ```bash
 npm ci
@@ -32,138 +14,102 @@ npx playwright install chromium
 npm run check
 ```
 
-每次执行准备以下输入：
+还需要一个可工作的 Codex CLI Provider。Windows 私有包会自动安装固定版本 Codex CLI、配置 Provider 并验证最小请求；Linux/macOS 复用当前用户已经可用的 Codex 配置。
 
-- 必填：测试用例 `.xlsx` 文件；
-- 必填：所有待访问网站的 URL；
-- 可选：测试工程师的补充说明文件，通过 `--brief` 提供；
-- 可选：Excel 外的步骤截图，通过多个 `--image` 提供。
+## 2. 注册测试环境
 
-Excel 可以是标准测试用例表，也可以是“阶段标题 + 操作说明 + 图片”的流程表。Excel 内嵌图片会自动提取。
-
-不要把账号、密码、验证码、手机号列表或 Token 写入 Git、命令行参数和补充说明文件。
-
-## 2. 高级环境配置
-
-公开且无需登录的只读网站可以跳过本节。登录网站或包含写操作的网站，应先创建环境 Profile。
-
-默认配置位置：
-
-```text
-Linux/macOS: ~/.config/auto-test/environment-profiles.json
-Windows:     %APPDATA%\auto-test\environment-profiles.json
-```
-
-可以从模板开始：
+日常推荐运行：
 
 ```bash
-mkdir -p ~/.config/auto-test
-cp templates/environment-profiles.example.json ~/.config/auto-test/environment-profiles.json
-chmod 600 ~/.config/auto-test/environment-profiles.json
+npm run easy
 ```
 
-修改 Profile 时只登记以下内容：
+选择“注册或更新测试环境”，登记所有可能访问的网站、登录会话和本环境允许的最高风险：
 
-- `origins`：允许访问的网站 origin；
-- `auth`：登录页、登录成功判据和已验证的登录控件；
-- `secretVaultPath`：私有账号和测试数据文件；
-- `plannerContextPath`：不含秘密的业务规则和环境说明；
-- `policy`：是否允许写入、删除及自动修订次数。
+- `read`：只读查看和断言；
+- `write`：允许新增、修改、提交、启动等操作；
+- `destructive`：还允许对授权测试数据执行删除、停止、结算或回滚。
 
-完整字段见 [Environment Profile 模板](../templates/environment-profiles.example.json)。
+登录成功后的 Cookie、LocalStorage、IndexedDB 和 SessionStorage 保存在当前用户私有目录。环境只需注册一次，登录失效时再更新。
 
-Secret Vault 示例：
+## 3. 准备 Excel
 
-```json
-{
-  "staging.admin.username": "your-test-user",
-  "staging.admin.password": "your-test-password"
-}
-```
+支持标准测试用例表和“阶段标题 + 详细说明”的流程表。用例至少应明确：
 
-所有 Secret Vault、`storageState`、`sessionStorage` 和 Planner Context 文件都必须位于仓库外，并设置为当前用户私有。Linux/macOS 使用：
+- 操作步骤；
+- 可观察的预期结果；
+- 测试数据与业务实体匹配规则；
+- 写入后的保留或清理要求；
+- 必要 URL、账号角色、权限和外部前置条件。
+
+URL 可以通过运行参数提供，也可以写在 Excel 单元格中。Excel 内嵌图片和同名 `.auto-test/images/` 目录中的补充图片会作为视觉输入交给同一 Codex 线程。
+
+账号、验证码和手机号等值会在 Intake 时替换为 secretRef，真实值只进入私有 Secret Vault 或本次进程，不写入 Manifest、事件日志或工作区。
+
+## 4. 执行
+
+交互菜单选择“开始一次新测试”，或运行：
 
 ```bash
-chmod 600 /private/path/to/file
-```
-
-Windows 使用用户目录的 NTFS ACL，具体操作见 [Windows 快速操作指南](windows-quick-start.md)。
-
-默认保持 `allowWrite: false`、`allowDestructive: false`。只有获得明确授权且用例包含恢复或清理步骤时才开启对应权限。
-
-## 3. 高级命令行执行
-
-推荐先跑单条数据 canary：
-
-```bash
-npm run autonomous:workflow -- \
+npm run easy -- run \
   --file /private/cases.xlsx \
   --url https://app.example.test/ \
   --url https://admin.example.test/ \
-  --profile staging-example \
-  --brief /private/test-brief.txt \
-  --image /private/extra-step.png \
-  --max-iterations 1 \
-  --iteration-offset 0 \
-  --output-dir artifacts/runs/example-canary
+  --profile staging \
+  --headed \
+  --slow-mo 150 \
+  --one
 ```
 
-只有一个 Profile 能匹配全部 URL 时，可以省略 `--profile`。没有补充说明或图片时，删除对应参数即可。
-
-canary 通过后执行完整数据集：
+直接调用底层入口：
 
 ```bash
-npm run autonomous:workflow -- \
+npm run agent:test -- \
   --file /private/cases.xlsx \
-  --url https://app.example.test/ \
-  --url https://admin.example.test/ \
-  --profile staging-example \
-  --output-dir artifacts/runs/example-full
+  --profile staging \
+  --output-dir artifacts/runs/example
 ```
 
-运行过程中框架会自动生成并迭代 Draft，使用真实页面证据修复定位器和流程，再通过 Policy Gate 生成 Execution Plan。不要手工修改生成的 Plan。
+常用选项：
 
-## 4. 查看结果
+- `--image <path>`：补充截图，可重复；
+- `--brief <path>`：不含秘密的业务补充说明；
+- `--model <id>`：覆盖当前 Provider 的默认模型；
+- `--max-iterations <N>`：列表型数据先执行 N 条 canary；
+- `--headed` / `--headless`：显示或隐藏浏览器。
 
-首先查看 Job 终态：
+## 5. 运行机制
 
-```bash
-jq '{status, outcome, stage, round, executionAttempts, humanInputRequestPath, runtimeResultPath}' \
-  artifacts/runs/example-full/autonomous-job.state.json
-```
+每次运行使用独立 Codex Home 和只读 Agent 工作区。Shell、Web Search、插件、Apps、Memory、Hooks 和多 Agent 均关闭，只启用：
+
+- Playwright MCP：页面导航、可访问性快照、表单、点击、刷新、存储和确定性页面验证；
+- Auto-Test Control MCP：不可变测试契约、动态计划、证据索引和 Mutation Ledger。
+
+Agent 必须在业务写入前登记 Mutation，结束前验证其已补偿或被用例明确接受。仍有 pending Mutation 时，结果必定是 `blocked`。
+
+## 6. 结果
+
+主要文件：
+
+- `codex-agent.state.json`：运行状态、Codex 线程 ID 和结果路径；
+- `codex-agent.result.json`：`passed`、`product_failed` 或 `blocked` 的结构化交付；
+- `codex-agent.events.jsonl`：脱敏后的 Codex 事件；
+- `agent-workspace/execution-plan.json`：页面证据驱动的动态工作计划；
+- `agent-workspace/evidence-index.json`：业务断言证据索引；
+- `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
+- `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
 
 终态含义：
 
-| outcome | 含义 | 后续处理 |
-|---|---|---|
-| `passed` | 执行计划、步骤和业务断言全部通过 | 保存报告并进入回归使用 |
-| `product_failed` | 页面操作完成，但业务断言仍失败 | 按产品缺陷或测试数据问题处理，不要修改预期结果规避失败 |
-| `blocked` | 缺少认证、权限、业务规则、数据、恢复能力或环境条件 | 查看 `human-input-request.json` 和诊断信息，补充后重新执行 |
+- `passed`：所有用例、断言和最终状态均已验证通过；
+- `product_failed`：操作完成，但测试工程师定义的业务预期未成立；
+- `blocked`：缺少数据、权限、认证、恢复能力，或模型/MCP/浏览器等执行依赖不可用；
+- `failed`：未知框架编程异常，没有被误分类为业务阻断。
 
-主要产物位于本次 `--output-dir`：
+修复外部条件后，用相同 Excel 和环境、但新的输出目录重新执行。Codex-native MVP 当前不覆盖或恢复已有运行目录，以免重置未恢复的 Mutation Ledger。不要删除 Ledger 或放宽预期结果来规避阻断。
 
-- `intake.workflow.json`：从 Excel 解析出的工作流清单；
-- `run-events.jsonl`：脱敏后的阶段进度、模型轮次、心跳、结构规范化和失败诊断；
-- `round-N.plan-draft.json`：第 N 轮 AI Draft；
-- `round-N.exploration.json`：真实页面探索证据；
-- `workflow.execution-plan.json`：Policy Gate 批准的执行计划；
-- `runtime-attempt-N.result.json`：Runtime 步骤、断言、实体和 Mutation 结果；
-- `autonomous-job.state.json`：整个任务的最终状态；
-- `human-input-request.json`：需要人员补充的结构化问题，仅在阻断时生成。
+## 7. 当前验收状态
 
-## 阻断后怎么继续
+以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Secret 隔离、Storage State 合并、同线程结果修正、Mutation Ledger、Windows 启动器，以及真实 Playwright MCP + Control MCP 启动和本地页面快照。
 
-1. 阅读 `human-input-request.json`，确认缺少的是账号、权限、业务规则、测试数据还是环境能力。
-2. 将账号和测试数据补入 Secret Vault；将非秘密业务规则补入 Planner Context；按授权调整 Profile policy。
-3. 如果此前发生写入，先确认目标系统已恢复或本轮创建的数据已清理。
-4. 只更新凭据、租户状态或权限策略时，使用相同 `--output-dir` 重新运行，Controller 会读取持久化状态继续处理。
-5. 如果修改了 URL、`--brief`、图片、Profile ID 或 Planner Context，请改用新的 `--output-dir` 启动新任务，因为请求内容已经改变。
-
-不要删除状态文件来掩盖未恢复的 Mutation，也不要手工放宽断言或伪造页面证据。
-
-## 使用边界
-
-- 框架已经支持只读巡检、后台 CRUD、多网站业务闭环、批量数据隔离和补偿清理。
-- 新登录环境仍需一次性注册凭据、认证控件和成功判据。
-- OTP 来源、租户权限、真实设备状态和第三方系统授权无法只从 URL 推断，缺失时会主动阻断并要求补充。
-- 写入和删除测试只允许操作本轮授权范围内的测试数据，并必须有可验证的恢复或清理结果。
+完整的“Codex 自主探索并执行两个无关业务场景”验收在 2026-08-01 因当前模型账户 `429 usage limit` 被正确交付为 `blocked`。额度恢复后必须重新运行只读目录场景和写入后恢复场景，二者都得到 `passed` 后，才能声称 Codex-native 跨场景 MVP 完成真实端到端验收。

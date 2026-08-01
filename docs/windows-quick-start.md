@@ -10,28 +10,28 @@
 
 1. 从 Node.js 官方发布包安装 Auto-Test 私有的固定版本 Node.js 24，并校验官方 SHA-256；
 2. 在 Auto-Test 私有工具目录安装与服务器一致的 Codex CLI 固定版本；
-3. 使用内置的模型 API 配置准备 Auto-Test 独立的 Codex API Provider；
+3. 从私有安装包读取模型 Provider 配置，或在公开源码首次使用时提示输入；
 4. 发送一次最小模型请求，验证 API 地址、Key 和模型真实可用；
 5. 安装项目依赖和 Chromium；
 6. 打开中文操作菜单。
 
 不需要执行 `codex login`，也不使用 ChatGPT 账号额度。
 
-内部私有 Windows 包已经内置：
+内部私有 Windows 包会携带一次性引导配置：
 
-- `API Base URL`：`https://api.psydo.top/v1`；
-- `模型 ID`：`gpt-5.6-sol`；
+- API Base URL；
+- 模型 ID；
 - 私有 API Key：首次双击时自动导入当前 Windows 用户的 DPAPI，然后删除解压目录中的明文引导文件。
 
 因此测试工程师不需要填写任何模型信息。Windows 会直接调用上述 API，不需要连接或暴露 Auto-Test 服务器，也不要求安装 CLIProxyAPI。安装器使用通用的直接 API Provider：
 
 ```toml
-model = "gpt-5.6-sol"
+model = "your-model-id"
 model_provider = "auto_test_api"
 
 [model_providers.auto_test_api]
 name = "Auto-Test Model API"
-base_url = "https://api.psydo.top/v1"
+base_url = "https://model-api.example.test/v1"
 wire_api = "responses"
 env_key = "AUTO_TEST_MODEL_API_KEY"
 requires_openai_auth = false
@@ -52,7 +52,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 如果旧安装包在下载前立即显示 `Could not determine Node.js install directory`，这不是 Chromium 网络错误，而是旧启动器调用 `npx.ps1` 时的 Node 安装目录探测失败。请改用包含便携 Playwright 调用修复的新安装包；无需清理已经导入的 API 配置。
 
-公开 GitHub 源码和公开 Release 不包含 API Key。只有服务器生成、私下交付的 `Auto-Test-Windows-private-*.zip` 才能零输入启动；该 ZIP 本身属于敏感凭据载体，分发后应从聊天工具、网盘和下载目录删除。更推荐为 Auto-Test 使用独立、限额、可随时撤销的 Key，而不是长期共享个人或服务器主 Key。
+公开 GitHub 源码和公开 Release 不包含 API Key、内部 API 地址或内部模型 ID。首次使用公开源码时，需要输入这三项，或提前设置 `AUTO_TEST_CODEX_BASE_URL`、`AUTO_TEST_CODEX_MODEL` 和 `AUTO_TEST_MODEL_API_KEY`。只有服务器生成、私下交付的 `Auto-Test-Windows-private-*.zip` 才能零输入启动；该 ZIP 本身属于敏感凭据载体，分发后应从聊天工具、网盘和下载目录删除。更推荐为 Auto-Test 使用独立、限额、可随时撤销的 Key，而不是长期共享个人或服务器主 Key。
 
 准备完成后会打开中文菜单：
 
@@ -94,11 +94,13 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架会先解析 Excel，并把单元格中出现但没有手工输入的网站 URL 自动加入本次目标范围。如果已有环境只覆盖其中一部分，菜单会明确列出缺少的网站并进入环境更新向导；直接使用向导默认值会保留原环境的登录状态和权限范围。环境完整后，框架会自动选择并复用登录状态。每次运行的输出目录也会自动创建。
 
-Planner、页面探索、Refiner 和 Runtime 在运行期间会持续显示当前轮次和等待时间，不再长时间静默。每次运行目录中的 `run-events.jsonl` 保存了脱敏后的阶段、模型轮次、结构规范化、校验失败和耗时记录；测试阻断或异常结束时，中文结果摘要会直接给出该诊断文件的位置。
+默认执行主体是一个持久 Codex 测试线程。它通过 Playwright MCP 查看真实页面、持续更新动态计划、执行操作、验证业务结果并完成恢复；测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
+
+每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
 结束时直接显示以下三类结果：
 
-- `测试通过`：Execution Plan、页面操作和业务断言全部通过；
+- `测试通过`：页面操作、业务断言、证据和最终恢复状态全部通过；
 - `发现产品或业务结果不符合预期`：测试操作完成，但预期结果没有成立；
 - `测试暂时无法继续`：框架会用中文列出需要补充的账号、权限、业务规则或测试数据。
 
@@ -116,7 +118,13 @@ Planner、页面探索、Refiner 和 Runtime 在运行期间会持续显示当�
   --one
 ```
 
-`--headed` 会显示页面探索、认证刷新和最终 Runtime 的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，截图、Trace 和结果报告仍保存在本次结果目录中。
+`--headed` 会显示认证刷新和 Codex 测试代理的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据和结构化结果仍保存在本次结果目录中。
+
+只有排查旧链路兼容性时才使用：
+
+```powershell
+.\Auto-Test.cmd run --file "C:/TestData/cases.xlsx" --url "https://app.example.test/" --legacy-runtime
+```
 
 其他命令：
 

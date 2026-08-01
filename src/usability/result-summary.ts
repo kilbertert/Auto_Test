@@ -1,5 +1,6 @@
 import { access, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import type { CodexTestAgentResult, CodexTestAgentState } from '../agent/types.js'
 import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../workflow/autonomy-types.js'
 
 const questionLabels: Record<string, string> = {
@@ -26,13 +27,66 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, '')) as T
 }
 
-async function diagnosticLine(statePath: string): Promise<string | undefined> {
-  const path = resolve(dirname(statePath), 'run-events.jsonl')
+async function diagnosticLine(statePath: string, fileName = 'run-events.jsonl'): Promise<string | undefined> {
+  const path = resolve(dirname(statePath), fileName)
   return access(path).then(() => `运行诊断：${path}`, () => undefined)
 }
 
+async function codexAgentSummary(statePath: string, state: CodexTestAgentState): Promise<FriendlyRunSummary> {
+  const result = state.resultPath
+    ? await readJson<CodexTestAgentResult>(state.resultPath).catch(() => undefined)
+    : undefined
+  const diagnostics = await diagnosticLine(statePath, 'codex-agent.events.jsonl')
+  if (result?.outcome === 'passed') {
+    return {
+      title: '测试通过',
+      outcome: 'passed',
+      lines: [
+        `Codex 测试代理已完成 ${result.cases.length} 个用例，并验证全部业务结果。`,
+        `详细结果和证据索引：${state.resultPath}`,
+      ],
+    }
+  }
+  if (result?.outcome === 'product_failed') {
+    return {
+      title: '发现产品或业务结果不符合预期',
+      outcome: 'product_failed',
+      lines: [
+        ...(result.productDefects.length > 0 ? result.productDefects : [result.summary]),
+        `详细结果和证据索引：${state.resultPath}`,
+        ...(diagnostics ? [diagnostics] : []),
+      ],
+    }
+  }
+  if (result?.outcome === 'blocked') {
+    return {
+      title: '测试暂时无法继续',
+      outcome: 'blocked',
+      lines: [
+        ...(result.blockers.length > 0 ? result.blockers : [result.summary]),
+        `详细结果和证据索引：${state.resultPath}`,
+        ...(diagnostics ? [diagnostics] : []),
+      ],
+    }
+  }
+  if (state.status === 'running') {
+    return {
+      title: '测试仍在运行',
+      outcome: 'running',
+      lines: [`当前阶段：${state.stage}${state.threadId ? `，Codex 线程：${state.threadId}` : ''}。`],
+    }
+  }
+  return {
+    title: '测试执行异常结束',
+    outcome: 'failed',
+    lines: [state.error ?? 'Codex 测试代理没有生成有效结果。', ...(diagnostics ? [diagnostics] : [])],
+  }
+}
+
 export async function friendlyRunSummary(statePath: string): Promise<FriendlyRunSummary> {
-  const state = await readJson<AutonomousWorkflowJobState>(statePath)
+  const input = await readJson<AutonomousWorkflowJobState | CodexTestAgentState>(statePath)
+  if ('workflowId' in input && !('jobId' in input)) return codexAgentSummary(statePath, input)
+  const state = input
   const diagnostics = await diagnosticLine(statePath)
   if (state.outcome === 'passed') {
     return {

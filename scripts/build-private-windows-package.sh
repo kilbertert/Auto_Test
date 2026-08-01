@@ -7,11 +7,21 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 model_api_key="${AUTO_TEST_MODEL_API_KEY:-}"
+model_base_url="${AUTO_TEST_CODEX_BASE_URL:-}"
+model_id="${AUTO_TEST_CODEX_MODEL:-}"
 if [[ -z "$model_api_key" && ! -t 0 ]]; then
   IFS= read -r model_api_key
 fi
 if [[ -z "$model_api_key" ]]; then
   echo "缺少模型 API Key；请通过标准输入或私有构建进程环境提供。" >&2
+  exit 1
+fi
+if [[ -z "$model_base_url" || ! "$model_base_url" =~ ^https?:// ]]; then
+  echo "缺少有效的模型 API Base URL；请通过 AUTO_TEST_CODEX_BASE_URL 提供。" >&2
+  exit 1
+fi
+if [[ -z "$model_id" ]]; then
+  echo "缺少模型 ID；请通过 AUTO_TEST_CODEX_MODEL 提供。" >&2
   exit 1
 fi
 
@@ -34,9 +44,14 @@ mkdir -p "$output_directory"
 git archive --format=zip --output="$output_path" HEAD
 printf '%s' "$model_api_key" >"$temporary_directory/Auto-Test.private-key"
 unset model_api_key
-zip -q -j "$output_path" "$temporary_directory/Auto-Test.private-key"
+node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ baseUrl: process.argv[2], model: process.argv[3] }))' \
+  "$temporary_directory/Auto-Test.private-provider.json" "$model_base_url" "$model_id"
+unset model_base_url model_id
+zip -q -j "$output_path" \
+  "$temporary_directory/Auto-Test.private-key" \
+  "$temporary_directory/Auto-Test.private-provider.json"
 chmod 600 "$output_path"
 
 echo "私有 Windows 包已生成：$output_path"
 echo "SHA-256：$(sha256sum "$output_path" | cut -d' ' -f1)"
-echo "该文件包含可提取的模型 API Key；禁止上传 GitHub、网盘或公开制品库。"
+echo "该文件包含可提取的模型 API Key 和私有 Provider 元数据；禁止上传 GitHub、网盘或公开制品库。"

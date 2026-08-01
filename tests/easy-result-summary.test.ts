@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { friendlyRunSummary } from '../src/usability/result-summary.js'
+import type { CodexTestAgentResult, CodexTestAgentState } from '../src/agent/types.js'
 import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../src/workflow/autonomy-types.js'
 
 function state(overrides: Partial<AutonomousWorkflowJobState>): AutonomousWorkflowJobState {
@@ -63,6 +64,33 @@ describe('friendly autonomous result summary', () => {
       expect(result.lines).toContain('缺少账号、验证码来源或其他私有测试数据。')
       expect(result.lines.some((line) => line.includes('run-events.jsonl'))).toBe(true)
       expect(result.lines).not.toContain('internal prompt')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('summarizes a Codex-native product failure from the structured result', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-result-'))
+    try {
+      const resultPath = resolve(directory, 'codex-agent.result.json')
+      const statePath = resolve(directory, 'codex-agent.state.json')
+      const result: CodexTestAgentResult = {
+        version: '1.0', workflowId: 'catalog', sourceSha256: 'b'.repeat(64), outcome: 'product_failed',
+        summary: 'The catalog did not match the expected result.', startedAt: '2026-08-01T00:00:00.000Z', finishedAt: '2026-08-01T00:01:00.000Z',
+        cases: [{ caseId: 'filter', title: 'Filter', outcome: 'product_failed', summary: 'Wrong count', evidence: [{ kind: 'observation', description: 'Three rows remained.' }] }],
+        mutations: [], blockers: [], productDefects: ['Filtering by Lighting returned three rows instead of two.'], nextActions: [],
+      }
+      const agentState: CodexTestAgentState = {
+        version: '1.0', status: 'completed', stage: 'completed', workflowId: 'catalog', sourceSha256: 'b'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', outcome: 'product_failed', resultPath,
+      }
+      await writeFile(resultPath, JSON.stringify(result))
+      await writeFile(statePath, JSON.stringify(agentState))
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.outcome).toBe('product_failed')
+      expect(summary.lines).toContain('Filtering by Lighting returned three rows instead of two.')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

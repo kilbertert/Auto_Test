@@ -1,10 +1,15 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
 import formatsPlugin from 'ajv-formats'
 import type { Diagnostic, TestSuiteIR } from '../core/types.js'
 
-const schemaPath = fileURLToPath(new URL('../../schemas/test-case-ir.schema.json', import.meta.url))
+const schemaPath = [
+  new URL('../../schemas/test-case-ir.schema.json', import.meta.url),
+  new URL('../../../schemas/test-case-ir.schema.json', import.meta.url),
+].map((url) => fileURLToPath(url)).find(existsSync)
+if (!schemaPath) throw new Error('Cannot locate schemas/test-case-ir.schema.json from source or build output')
 const schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as object
 const ajv = new Ajv2020({ allErrors: true, strict: false, allowUnionTypes: true })
 const addFormats = formatsPlugin as unknown as (instance: Ajv2020) => Ajv2020
