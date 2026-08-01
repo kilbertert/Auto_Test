@@ -120,6 +120,8 @@ npm run easy -- run \
 
 ## 7. 当前验收状态
 
-以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Secret 隔离、Storage State 合并、同线程结果修正、Mutation Ledger、Windows 启动器，以及真实 Playwright MCP + Control MCP 启动和本地页面快照。
+以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Secret 隔离、Storage State 合并、持久线程恢复、动态计划、Mutation Ledger、Windows 启动器，以及真实 Playwright MCP + Control MCP 执行。
 
-完整的“Codex 自主探索并执行两个无关业务场景”验收在 2026-08-01 因当前模型账户 `429 usage limit` 被正确交付为 `blocked`。额度恢复后必须重新运行只读目录场景和写入后恢复场景，二者都得到 `passed` 后，才能声称 Codex-native 跨场景 MVP 完成真实端到端验收。
+2026-08-01 的真实 Windows 充电闭环使用原始 Excel、三个目标 URL 和一次环境 Profile 注册完成 3 个用例、12 个动态计划步骤和 6 个业务 Mutation。执行期间主机离线、模型并发限制和 `429` 均未通过人工业务操作绕过；框架复用同一 Codex thread、输出目录、证据和 Ledger 恢复，最终验证活动充电订单与占位费订单均为零、模拟器连接器恢复安全状态，并交付 `passed`。
+
+该结果证明当前架构可以在一个复杂、多站点、含真实写入与清理的 Windows 场景中自主闭环并安全恢复，但不构成对任意未知网站的无条件保证。新业务首次接入仍应从一条授权 canary 开始，根据 `passed`、`product_failed` 或 `blocked` 的结构化证据决定是否扩大测试范围。Windows 从全新目录复现时按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作。

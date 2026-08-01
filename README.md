@@ -6,12 +6,13 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 默认主链路已经切换为 Codex-native 测试代理：输入测试用例 Excel 和已注册环境后，一个持久 Codex 线程通过 Playwright MCP 持续完成用例理解、页面探索、证据驱动计划修订、真实执行、业务断言、恢复和结构化交付。它不会先把新场景压缩成固定 Execution Plan；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、结构化结果和 Windows 启动器接入。确定性测试和真实 MCP 浏览器自检已通过；完整模型驱动页面验收仍受当前模型账户额度阻断，不能据此宣称跨场景端到端已经最终验收通过。
+当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、结构化结果、同 thread 中断恢复和 Windows 启动器接入。真实 Windows 充电闭环已经仅使用 Excel、三个目标 URL 和一次环境注册完成自主执行，并在主机离线与模型限流后从原 run 恢复到 `passed`；任意新业务场景仍应先执行一条安全 canary，不能把单个复杂场景通过等同于所有网站天然兼容。
 
 ## 当前文档
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)
 - [Windows 快速操作指南](docs/windows-quick-start.md)
+- [Windows 从零验收清单](docs/windows-acceptance-runbook.md)
 - [仓库与历史方案审计](docs/repository-audit.md)
 - [MVP 规格与执行链路](docs/mvp-spec.md)
 - [测试用例 IR JSON Schema](schemas/test-case-ir.schema.json)

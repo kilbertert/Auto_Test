@@ -2,6 +2,8 @@
 
 日常使用不需要编辑 JSON、不需要创建 `storageState`，也不需要记住长命令。
 
+准备在新 Windows 目录中完整复现一次真实验收时，直接按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作；本文保留安装原理、私有 Provider 和高级命令细节。
+
 ## 第一次使用
 
 直接双击仓库根目录的 `Auto-Test.cmd`。
