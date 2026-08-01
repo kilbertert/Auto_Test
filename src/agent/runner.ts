@@ -147,7 +147,7 @@ function startSdkThread(options: {
           cwd: options.workspaceDirectory,
           env: options.mcpEnvironment,
           required: true,
-          startup_timeout_sec: 30,
+          startup_timeout_sec: 60,
           tool_timeout_sec: 180,
           default_tools_approval_mode: 'approve',
           enabled_tools: [
@@ -193,7 +193,7 @@ function startSdkThread(options: {
           cwd: options.workspaceDirectory,
           env: options.mcpEnvironment,
           required: true,
-          startup_timeout_sec: 20,
+          startup_timeout_sec: 60,
           tool_timeout_sec: 60,
           default_tools_approval_mode: 'approve',
         },
