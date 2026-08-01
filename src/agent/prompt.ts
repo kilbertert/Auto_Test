@@ -48,3 +48,19 @@ Test manifest:
 ${JSON.stringify(options.manifest, null, 2)}
 `
 }
+
+export function codexTestAgentResumePrompt(): string {
+  return `Resume the interrupted Auto-Test execution in this same persistent Codex thread.
+
+The external model, browser, or MCP process was interrupted. The browser process is new, but the immutable test contract, dynamic execution plan, evidence index, case results, and Mutation Ledger in the existing workspace are authoritative and must be preserved.
+
+Mandatory recovery protocol:
+1. Call auto-test-control.test_contract and mutation_list before any browser action.
+2. Treat every pending mutation as unresolved business state. Re-observe the live application and determine its actual post-interruption state before clicking, submitting, starting, stopping, settling, deleting, paying, or approving anything.
+3. Do not repeat a pending or previously verified business mutation merely because the browser session was lost. Continue or compensate it only when live evidence uniquely identifies the entity created or selected by this run.
+4. Recreate browser tabs and authentication as needed from the registered environment, then continue from the earliest unfinished plan step. Refresh the dynamic plan when interruption evidence changes its status.
+5. Preserve immutable expected results and all prior evidence. Add new recovery evidence instead of weakening or deleting earlier findings.
+6. Resolve every pending Mutation Ledger entry only after verified compensation or an explicitly expected safe accepted state.
+7. Complete all remaining case_result_record entries and final safety assertions. Finish with a short plain-text summary; do not emit JSON.
+`
+}

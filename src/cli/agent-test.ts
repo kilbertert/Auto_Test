@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, chmod, mkdir, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
@@ -35,6 +35,7 @@ export interface AgentTestCliOptions {
   maxFinalizationTurns?: number
   codexExecutable?: string
   codexHome?: string
+  resume?: boolean
 }
 
 function timestamp(): string {
@@ -77,6 +78,7 @@ function help(): string {
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
+    '  --resume                    恢复同一输出目录中的中断 run、Codex thread 与 Mutation Ledger',
   ].join('\n')
 }
 
@@ -135,6 +137,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     outputDirectory: resolve(valueAfter(args, '--output-dir') ?? defaultAgentRunDirectory(resolvedFilePath)),
     ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
     headed: args.includes('--headed'),
+    resume: args.includes('--resume'),
     ...(slowMo !== undefined ? { slowMo } : {}),
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
@@ -254,9 +257,17 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   process.umask(0o027)
   const priorStatePath = resolve(options.outputDirectory, 'codex-agent.state.json')
   const priorLedgerPath = resolve(options.outputDirectory, '.agent-private', 'mutation-ledger.json')
-  for (const path of [priorStatePath, priorLedgerPath]) {
-    if (await access(path).then(() => true, () => false)) {
-      throw new Error(`输出目录包含已有测试状态，已拒绝覆盖：${path}。请为本次运行使用新的 --output-dir。`)
+  if (options.resume) {
+    for (const path of [priorStatePath, priorLedgerPath]) {
+      if (!await access(path).then(() => true, () => false)) {
+        throw new Error(`恢复运行缺少已有测试状态：${path}`)
+      }
+    }
+  } else {
+    for (const path of [priorStatePath, priorLedgerPath]) {
+      if (await access(path).then(() => true, () => false)) {
+        throw new Error(`输出目录包含已有测试状态，已拒绝覆盖：${path}。请为本次运行使用新的 --output-dir。`)
+      }
     }
   }
   await mkdir(options.outputDirectory, { recursive: true, mode: 0o700 })
@@ -270,15 +281,18 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     additionalUrls: options.urls,
     supplementalImagePaths: inputBundle.imagePaths,
   })
-  await writePrivateJson(resolve(options.outputDirectory, 'intake.workflow.json'), intake.manifest)
-  await writePrivateJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
-  await writePrivateJson(resolve(options.outputDirectory, 'input-bundle.json'), {
-    briefSha256: inputBundle.briefSha256,
-    imageSha256s: inputBundle.imageSha256s,
-    sidecarDirectory: inputBundle.sidecarDirectory,
-  })
-  const imagePaths = await persistAssets(options.outputDirectory, intake.assets)
+  if (!options.resume) {
+    await writePrivateJson(resolve(options.outputDirectory, 'intake.workflow.json'), intake.manifest)
+    await writePrivateJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
+    await writePrivateJson(resolve(options.outputDirectory, 'input-bundle.json'), {
+      briefSha256: inputBundle.briefSha256,
+      imageSha256s: inputBundle.imageSha256s,
+      sidecarDirectory: inputBundle.sidecarDirectory,
+    })
+  }
+  const imagePaths = options.resume ? [] : await persistAssets(options.outputDirectory, intake.assets)
   if (intake.report.summary.errors > 0) {
+    if (options.resume) throw new Error(`恢复输入解析发现 ${intake.report.summary.errors} 个阻塞问题`)
     return writePreExecutionBlock(options.outputDirectory, intake.manifest, `测试用例解析发现 ${intake.report.summary.errors} 个阻塞问题`)
   }
 
@@ -304,13 +318,23 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       workflowSecretEnvironment(secrets),
       { headless: !options.headed, ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}) },
     )
-    await writePrivateJson(resolve(options.outputDirectory, 'environment-selection.json'), {
+    const environmentSelection = {
       profileId: profile.id,
       origins: profile.origins,
       policy: profile.policy,
       authenticatedOrigins: profile.auth.map((adapter) => adapter.origin),
-    })
+    }
+    const environmentSelectionPath = resolve(options.outputDirectory, 'environment-selection.json')
+    if (options.resume) {
+      const existingSelection = JSON.parse(await readFile(environmentSelectionPath, 'utf8')) as typeof environmentSelection
+      if (JSON.stringify(existingSelection) !== JSON.stringify(environmentSelection)) {
+        throw new Error('恢复运行所选环境与原运行不一致')
+      }
+    } else {
+      await writePrivateJson(environmentSelectionPath, environmentSelection)
+    }
   } catch (error) {
+    if (options.resume) throw error
     return writePreExecutionBlock(options.outputDirectory, intake.manifest, error)
   }
 
@@ -328,6 +352,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexExecutable ? { codexExecutable: options.codexExecutable } : {}),
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
+    ...(options.resume ? { resume: true } : {}),
   })
   console.log(`测试状态：${run.state.status}`)
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)

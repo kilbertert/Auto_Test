@@ -106,7 +106,17 @@ Agent 必须在业务写入前登记 Mutation，结束前验证其已补偿或�
 - `blocked`：缺少数据、权限、认证、恢复能力，或模型/MCP/浏览器等执行依赖不可用；
 - `failed`：未知框架编程异常，没有被误分类为业务阻断。
 
-修复外部条件后，用相同 Excel 和环境、但新的输出目录重新执行。Codex-native MVP 当前不覆盖或恢复已有运行目录，以免重置未恢复的 Mutation Ledger。不要删除 Ledger 或放宽预期结果来规避阻断。
+模型、网络、浏览器或 MCP 在执行中断后，使用相同 Excel、URL、环境 Profile 和原输出目录显式恢复：
+
+```bash
+npm run easy -- run \
+  --file /private/cases.xlsx \
+  --profile staging \
+  --output-dir artifacts/runs/interrupted-run \
+  --resume
+```
+
+恢复会复用原 Codex thread、动态计划、证据、用例结论和 Mutation Ledger，只重建浏览器与 MCP 进程。框架会校验工作流来源哈希、目标 URL、环境身份和权限策略；任何不一致都会 fail closed。恢复 Agent 必须先重新观察 pending Mutation 的真实业务状态，不会把浏览器断线当成重复写操作的理由。不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 

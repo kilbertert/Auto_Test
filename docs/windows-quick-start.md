@@ -120,6 +120,21 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 `--headed` 会显示认证刷新和 Codex 测试代理的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据和结构化结果仍保存在本次结果目录中。
 
+如果电脑睡眠、网络、模型连接、浏览器或 MCP 导致运行中断，恢复网络后复用原命令、原 Excel、原环境和原结果目录，并增加 `--resume`：
+
+```powershell
+.\Auto-Test.cmd run `
+  --file "C:/TestData/cases.xlsx" `
+  --url "https://app.example.test/" `
+  --url "https://admin.example.test/" `
+  --profile staging `
+  --output-dir "D:/Auto-Test-results/interrupted-run" `
+  --resume `
+  --headed
+```
+
+恢复继续使用同一个 Codex thread 和 Mutation Ledger。它只重建浏览器/MCP 进程，并先根据页面证据核对未完成业务写入；Excel、URL、环境或权限与原 run 不一致时会拒绝恢复。
+
 只有排查旧链路兼容性时才使用：
 
 ```powershell

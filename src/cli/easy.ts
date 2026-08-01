@@ -32,6 +32,7 @@ interface EasyRunOptions {
   headed?: boolean
   slowMo?: number
   legacyRuntime?: boolean
+  resume?: boolean
 }
 
 const rl = createInterface({ input, output })
@@ -282,6 +283,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
+      ...(options.resume ? { resume: true } : {}),
     })
     statePath = resolve(outputDirectory, 'codex-agent.state.json')
   }
@@ -463,6 +465,8 @@ async function main(): Promise<void> {
     const urls = valuesAfter(args, '--url')
     if (!filePath) throw new Error('run 必须提供 --file；URL 可以通过 --url 提供，也可以写在 Excel 中')
     if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
+    if (args.includes('--resume') && !valueAfter(args, '--output-dir')) throw new Error('--resume 必须同时提供原运行的 --output-dir')
+    if (args.includes('--resume') && args.includes('--legacy-runtime')) throw new Error('--resume 仅适用于 Codex-native 测试代理')
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
     if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
@@ -478,6 +482,7 @@ async function main(): Promise<void> {
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
+      resume: args.includes('--resume'),
     })
     process.exitCode = code
     return
@@ -491,6 +496,7 @@ async function main(): Promise<void> {
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
     console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150]')
+    console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')

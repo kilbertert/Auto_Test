@@ -17,6 +17,13 @@ describe('Codex agent CLI', () => {
     expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--max-iterations', '0'])).toThrow(/正整数/)
   })
 
+  it('accepts explicit recovery of an existing output directory', () => {
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--output-dir', 'artifacts/recovery', '--resume'])
+
+    expect(options.resume).toBe(true)
+    expect(options.outputDirectory).toMatch(/artifacts[\\/]recovery$/)
+  })
+
   it('fails closed when environment and workbook secrets disagree', () => {
     expect(() => mergeAgentSecrets(
       { 'fixture.username': 'environment-user' },

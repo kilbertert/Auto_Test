@@ -158,12 +158,28 @@ export async function prepareCodexAgentWorkspace(options: {
   slowMo?: number
   sourceCodexHome: string
   environment?: NodeJS.ProcessEnv
+  resume?: boolean
 }): Promise<CodexAgentWorkspace> {
   const outputDirectory = resolve(options.outputDirectory)
   const workspaceDirectory = resolve(outputDirectory, 'agent-workspace')
   const privateDirectory = resolve(outputDirectory, '.agent-private')
   const evidenceDirectory = resolve(workspaceDirectory, 'evidence')
   const agentHome = resolve(privateDirectory, 'codex-home')
+  const manifestPath = resolve(workspaceDirectory, 'test-manifest.json')
+  const playwrightConfigPath = resolve(privateDirectory, 'playwright-mcp.json')
+  const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
+  const controlConfigPath = resolve(privateDirectory, 'control-config.json')
+  const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
+  const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
+  const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
+  const planPath = resolve(workspaceDirectory, 'execution-plan.json')
+  const workspaceHashPath = resolve(workspaceDirectory, 'workspace.sha256')
+  const workspaceHash = createHash('sha256').update(JSON.stringify({
+    workflowId: options.manifest.workflowId,
+    sourceSha256: options.manifest.source.sha256,
+    profileId: options.profile.id,
+    origins: options.profile.origins,
+  })).digest('hex')
   await Promise.all([
     mkdir(workspaceDirectory, { recursive: true, mode: 0o750 }),
     mkdir(privateDirectory, { recursive: true, mode: 0o700 }),
@@ -174,8 +190,36 @@ export async function prepareCodexAgentWorkspace(options: {
   const mcpEnvironment = codexProcessEnvironment(options.environment ?? process.env)
   if (providerEnvironmentName) mcpEnvironment[providerEnvironmentName] = ''
 
-  const manifestPath = resolve(workspaceDirectory, 'test-manifest.json')
-  await writePrivateJson(manifestPath, options.manifest)
+  if (options.resume) {
+    const existingManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WorkflowIntakeManifest
+    if (existingManifest.workflowId !== options.manifest.workflowId || existingManifest.source.sha256 !== options.manifest.source.sha256) {
+      throw new Error('Resume input does not match the existing Auto-Test workflow identity')
+    }
+    const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
+    if (existingHash !== workspaceHash) throw new Error('Resume environment does not match the existing Auto-Test workspace identity')
+    const existingControl = JSON.parse(await readFile(controlConfigPath, 'utf8')) as CodexTestControlConfig
+    const expectedControl = {
+      workflowId: options.manifest.workflowId,
+      sourceSha256: options.manifest.source.sha256,
+      allowedRisk: riskFor(options.profile),
+      targetUrls: options.manifest.targetUrls,
+      caseIds: options.manifest.phases.map((phase) => phase.id),
+      caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
+    }
+    const actualControl = {
+      workflowId: existingControl.workflowId,
+      sourceSha256: existingControl.sourceSha256,
+      allowedRisk: existingControl.allowedRisk,
+      targetUrls: existingControl.targetUrls,
+      caseIds: existingControl.caseIds,
+      caseRisks: existingControl.caseRisks,
+    }
+    if (JSON.stringify(actualControl) !== JSON.stringify(expectedControl)) {
+      throw new Error('Resume contract or environment policy does not match the existing Auto-Test run')
+    }
+  } else {
+    await writePrivateJson(manifestPath, options.manifest)
+  }
   await writePrivateText(resolve(workspaceDirectory, 'AGENTS.md'), [
     '# Auto-Test Agent Workspace',
     '',
@@ -202,10 +246,8 @@ export async function prepareCodexAgentWorkspace(options: {
     values.forEach((item, itemIndex) => secretLines.push(`${names[itemIndex]}=${dotenvValue(item)}`))
     aliases.push({ secretRef, purpose: bindingPurpose(bindings, secretRef), aliases: names })
   })
-  const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
   await writePrivateText(playwrightSecretsPath, `${secretLines.join('\n')}\n`)
 
-  const playwrightConfigPath = resolve(privateDirectory, 'playwright-mcp.json')
   await writePrivateJson(playwrightConfigPath, {
     browser: {
       browserName: 'chromium',
@@ -232,14 +274,11 @@ export async function prepareCodexAgentWorkspace(options: {
     codegen: 'none',
   })
 
-  const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
-  const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
-  const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
-  const planPath = resolve(workspaceDirectory, 'execution-plan.json')
-  await writePrivateJson(mutationLedgerPath, [])
-  await writePrivateJson(evidenceIndexPath, [])
-  await writePrivateJson(caseResultsPath, [])
-  const controlConfigPath = resolve(privateDirectory, 'control-config.json')
+  if (!options.resume) {
+    await writePrivateJson(mutationLedgerPath, [])
+    await writePrivateJson(evidenceIndexPath, [])
+    await writePrivateJson(caseResultsPath, [])
+  }
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
     workflowId: options.manifest.workflowId,
@@ -256,12 +295,7 @@ export async function prepareCodexAgentWorkspace(options: {
   }
   await writePrivateJson(controlConfigPath, controlConfig)
 
-  await writePrivateText(resolve(workspaceDirectory, 'workspace.sha256'), `${createHash('sha256').update(JSON.stringify({
-    workflowId: options.manifest.workflowId,
-    sourceSha256: options.manifest.source.sha256,
-    profileId: options.profile.id,
-    origins: options.profile.origins,
-  })).digest('hex')}\n`)
+  await writePrivateText(workspaceHashPath, `${workspaceHash}\n`)
 
   return {
     workspaceDirectory,

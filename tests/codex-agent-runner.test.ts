@@ -13,13 +13,13 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
-function manifest(origin: string): WorkflowIntakeManifest {
+function manifest(origin: string, risk: 'read' | 'write' = 'read'): WorkflowIntakeManifest {
   return {
     version: '1.0', kind: 'workflow-intake', workflowId: 'runner-fixture',
     source: { format: 'xlsx', fileName: 'runner.xlsx', sheetName: 'Cases', sha256: 'c'.repeat(64) },
     targetUrls: [`${origin}/tasks`], requiredCapabilities: [],
     phases: [{
-      id: 'inspect-task', title: 'Inspect task', sourceRow: 2, risk: 'read',
+      id: 'inspect-task', title: 'Inspect task', sourceRow: 2, risk,
       steps: [{ id: 'step-1', sourceText: 'Open task details', confidence: 1 }],
       resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
     }],
@@ -37,10 +37,10 @@ function streamedResponse(response: string): { events: AsyncGenerator<ThreadEven
   }
 }
 
-function failedStream(message: string): { events: AsyncGenerator<ThreadEvent> } {
+function failedStream(message: string, threadId = 'thread-fixture'): { events: AsyncGenerator<ThreadEvent> } {
   return {
     events: (async function* () {
-      yield { type: 'thread.started', thread_id: 'thread-fixture' } as ThreadEvent
+      yield { type: 'thread.started', thread_id: threadId } as ThreadEvent
       yield { type: 'error', message } as ThreadEvent
     })(),
   }
@@ -203,9 +203,104 @@ describe('Codex test agent runner', () => {
       startThread: () => ({ id: 'thread-fixture', runStreamed: async () => failedStream('429 usage limit reached') }),
     })
 
-    expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked' })
+    expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked', threadId: 'thread-fixture' })
     expect(run.result?.blockers).toContain('429 usage limit reached')
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
+  })
+
+  it('resumes the same persistent thread and preserves pending mutation recovery state', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-resume-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test', 'write')
+    const profile = {
+      id: 'fixture', origins: ['https://tasks.example.test'], auth: [],
+      policy: { allowWrite: true, allowDestructive: false },
+    }
+
+    const interrupted = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({ id: 'thread-resume', runStreamed: async () => failedStream('network connection lost', 'thread-resume') }),
+    })
+    expect(interrupted.result?.outcome).toBe('blocked')
+
+    const statePath = resolve(outputDirectory, 'codex-agent.state.json')
+    const interruptedState = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+    delete interruptedState.threadId
+    await writeFile(statePath, JSON.stringify(interruptedState))
+
+    const ledgerPath = resolve(outputDirectory, '.agent-private', 'mutation-ledger.json')
+    const evidencePath = resolve(outputDirectory, 'agent-workspace', 'evidence-index.json')
+    const planPath = resolve(outputDirectory, 'agent-workspace', 'execution-plan.json')
+    const caseResultsPath = resolve(outputDirectory, 'agent-workspace', 'case-results.json')
+    await writeFile(ledgerPath, JSON.stringify([{
+      id: 'pending-action', caseId: 'inspect-task', description: 'Recover exact task update', risk: 'write', status: 'pending',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', evidence: [],
+    }]))
+    await writeFile(evidencePath, JSON.stringify([{
+      caseId: 'inspect-task', kind: 'observation', description: 'Evidence recorded before interruption.',
+    }]))
+    await writeFile(planPath, JSON.stringify({
+      summary: 'Recover pending action',
+      steps: [{ id: 'recover', title: 'Recover pending action', status: 'in_progress', evidenceRequired: 'Terminal state' }],
+    }))
+
+    let resumedThreadId = ''
+    let recoveryPrompt = ''
+    const resumed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      resume: true,
+    }, {
+      browserExecutablePath: browserPath,
+      resumeThread: (options) => {
+        resumedThreadId = options.threadId
+        return {
+          id: options.threadId,
+          runStreamed: async (input) => {
+            recoveryPrompt = JSON.stringify(input)
+            await writeFile(ledgerPath, JSON.stringify([{
+              id: 'pending-action', caseId: 'inspect-task', description: 'Recover exact task update', risk: 'write', status: 'compensated',
+              createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', evidence: ['Verified restored state'],
+            }]))
+            await writeFile(evidencePath, JSON.stringify([
+              { caseId: 'inspect-task', kind: 'observation', description: 'Evidence recorded before interruption.' },
+              { caseId: 'inspect-task', kind: 'mutation', description: 'Verified restored state.' },
+            ]))
+            await writeFile(planPath, JSON.stringify({
+              summary: 'Recovered',
+              steps: [{ id: 'recover', title: 'Recover pending action', status: 'passed', evidenceRequired: 'Terminal state' }],
+            }))
+            await writeFile(caseResultsPath, JSON.stringify([{
+              caseId: 'inspect-task', outcome: 'passed', summary: 'Recovered and verified.', blockers: [], productDefects: [],
+              recordedAt: '2026-08-01T00:01:00.000Z',
+            }]))
+            return streamedResponse('Recovery complete.')
+          },
+        }
+      },
+    })
+
+    expect(resumedThreadId).toBe('thread-resume')
+    expect(recoveryPrompt).toContain('Resume the interrupted Auto-Test execution')
+    expect(recoveryPrompt).not.toContain('initial evidence-driven plan')
+    expect(resumed.result?.outcome).toBe('passed')
+    expect(resumed.result?.mutations).toContainEqual(expect.objectContaining({ id: 'pending-action', status: 'compensated' }))
+    const evidence = JSON.parse(await readFile(evidencePath, 'utf8')) as Array<{ description: string }>
+    expect(evidence.map((item) => item.description)).toContain('Evidence recorded before interruption.')
   })
 
   it('lets the Codex CLI finish its own reconnect sequence', async () => {

@@ -131,4 +131,47 @@ describe('Codex agent workspace', () => {
       await chmod(workspace.playwrightSecretsPath, 0o600)
     }
   })
+
+  it('refreshes ephemeral browser configuration without resetting persisted recovery state', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-resume-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const profile: EnvironmentProfile = {
+      id: 'workspace-fixture',
+      origins: ['https://one.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+    const options = {
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: { 'fixture.accessCode': 'first-value' },
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: sourceHome,
+    }
+    const initial = await prepareCodexAgentWorkspace(options)
+    const ledger = [{
+      id: 'pending-action', caseId: 'inspect-board', description: 'Pending recovery', risk: 'write', status: 'pending',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', evidence: [],
+    }]
+    const evidence = [{ caseId: 'inspect-board', kind: 'observation', description: 'Prior evidence' }]
+    const decisions = [{ caseId: 'inspect-board', outcome: 'blocked', summary: 'Interrupted', blockers: ['network'], productDefects: [], recordedAt: '2026-08-01T00:00:00.000Z' }]
+    const plan = { summary: 'Recover', steps: [{ id: 'recover', status: 'in_progress' }] }
+    await writeFile(initial.mutationLedgerPath, JSON.stringify(ledger))
+    await writeFile(initial.evidenceIndexPath, JSON.stringify(evidence))
+    await writeFile(initial.caseResultsPath, JSON.stringify(decisions))
+    await writeFile(initial.planPath, JSON.stringify(plan))
+
+    const resumed = await prepareCodexAgentWorkspace({ ...options, secrets: { 'fixture.accessCode': 'rotated-value' }, resume: true })
+
+    expect(JSON.parse(await readFile(resumed.mutationLedgerPath, 'utf8'))).toEqual(ledger)
+    expect(JSON.parse(await readFile(resumed.evidenceIndexPath, 'utf8'))).toEqual(evidence)
+    expect(JSON.parse(await readFile(resumed.caseResultsPath, 'utf8'))).toEqual(decisions)
+    expect(JSON.parse(await readFile(resumed.planPath, 'utf8'))).toEqual(plan)
+    expect(await readFile(resumed.playwrightSecretsPath, 'utf8')).toContain('rotated-value')
+  })
 })

@@ -6,7 +6,7 @@ import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { codexTestAgentPrompt } from './prompt.js'
+import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { redactAgentValue, secretValues } from './redact.js'
 import { enforceMutationLedger } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
@@ -27,6 +27,7 @@ export interface CodexTestAgentOptions {
   codexExecutable?: string
   codexHome?: string
   maxFinalizationTurns?: number
+  resume?: boolean
 }
 
 export interface CodexTestAgentRun {
@@ -52,6 +53,7 @@ interface AgentPlan {
 
 export interface CodexTestAgentDependencies {
   startThread?: (options: { workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string> }) => AgentThread
+  resumeThread?: (options: { threadId: string; workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string> }) => AgentThread
   browserExecutablePath?: string
 }
 
@@ -119,6 +121,7 @@ function startSdkThread(options: {
   controlConfigPath: string
   codexEnvironment: Record<string, string>
   mcpEnvironment: Record<string, string>
+  threadId?: string
 }): Thread {
   const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
   const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
@@ -200,7 +203,7 @@ function startSdkThread(options: {
       },
     },
   })
-  return codex.startThread({
+  const threadOptions = {
     ...(options.model ? { model: options.model } : {}),
     sandboxMode: 'read-only',
     workingDirectory: options.workspaceDirectory,
@@ -209,7 +212,10 @@ function startSdkThread(options: {
     networkAccessEnabled: false,
     webSearchMode: 'disabled',
     approvalPolicy: 'never',
-  })
+  } as const
+  return options.threadId
+    ? codex.resumeThread(options.threadId, threadOptions)
+    : codex.startThread(threadOptions)
 }
 
 async function appendEvent(path: string, event: ThreadEvent, secrets: string[]): Promise<void> {
@@ -223,11 +229,13 @@ async function runTurn(
   input: Input,
   eventsPath: string,
   secrets: string[],
+  onThreadStarted?: (threadId: string) => Promise<void>,
 ): Promise<string> {
   const streamed = await thread.runStreamed(input)
   let finalResponse = ''
   for await (const event of streamed.events) {
     await appendEvent(eventsPath, event, secrets)
+    if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
     if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
     if (event.type === 'turn.failed') throw new Error(event.error.message)
     if (event.type === 'error' && !/^Reconnecting\.\.\. \d+\/\d+/i.test(event.message)) throw new Error(event.message)
@@ -384,6 +392,19 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function threadIdFromEvents(path: string): Promise<string | undefined> {
+  const content = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return ''
+    throw error
+  })
+  for (const line of content.split(/\r?\n/)) {
+    if (!line) continue
+    const event = JSON.parse(line) as { type?: string; thread_id?: string }
+    if (event.type === 'thread.started' && event.thread_id) return event.thread_id
+  }
+  return undefined
+}
+
 export async function runCodexTestAgent(
   options: CodexTestAgentOptions,
   dependencies: CodexTestAgentDependencies = {},
@@ -392,13 +413,35 @@ export async function runCodexTestAgent(
   const statePath = resolve(outputDirectory, 'codex-agent.state.json')
   const resultPath = resolve(outputDirectory, 'codex-agent.result.json')
   const eventsPath = resolve(outputDirectory, 'codex-agent.events.jsonl')
-  for (const path of [statePath, resolve(outputDirectory, '.agent-private', 'mutation-ledger.json')]) {
-    await access(path).then(
-      () => { throw new Error(`Output directory already contains Codex agent state: ${path}. Use a new output directory.`) },
-      (error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error },
-    )
+  const existingLedgerPath = resolve(outputDirectory, '.agent-private', 'mutation-ledger.json')
+  let state: CodexTestAgentState
+  let resumeThreadId: string | undefined
+  if (options.resume) {
+    state = JSON.parse(await readFile(statePath, 'utf8')) as CodexTestAgentState
+    await access(existingLedgerPath)
+    if (state.workflowId !== options.manifest.workflowId || state.sourceSha256 !== options.manifest.source.sha256) {
+      throw new Error('Resume input does not match the existing Codex test state')
+    }
+    if (state.status === 'completed' && state.outcome !== 'blocked') {
+      throw new Error(`Completed ${state.outcome ?? 'terminal'} Codex test runs cannot be resumed`)
+    }
+    resumeThreadId = state.threadId ?? await threadIdFromEvents(eventsPath)
+    if (!resumeThreadId) throw new Error('Existing Codex test run has no recoverable persistent thread id')
+    const { resultPath: _resultPath, outcome: _outcome, error: _error, ...unfinishedState } = state
+    state = updateCodexTestState(unfinishedState, {
+      status: 'running',
+      stage: 'preparing',
+      threadId: resumeThreadId,
+    })
+  } else {
+    for (const path of [statePath, existingLedgerPath]) {
+      await access(path).then(
+        () => { throw new Error(`Output directory already contains Codex agent state: ${path}. Use a new output directory.`) },
+        (error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error },
+      )
+    }
+    state = initialCodexTestState(options.manifest.workflowId, options.manifest.source.sha256)
   }
-  let state = initialCodexTestState(options.manifest.workflowId, options.manifest.source.sha256)
   let mutationLedgerPath: string | undefined
   let activeThread: AgentThread | undefined
   await writePrivateJson(statePath, state)
@@ -418,11 +461,11 @@ export async function runCodexTestAgent(
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       sourceCodexHome: options.codexHome ?? process.env.CODEX_HOME ?? process.env.AUTO_TEST_CODEX_HOME ?? resolve(process.env.HOME ?? '.', '.codex'),
       environment: process.env,
+      ...(options.resume ? { resume: true } : {}),
     })
     mutationLedgerPath = workspace.mutationLedgerPath
     const activeCodexExecutable = await resolveCodexExecutable(options)
-    const startThread = dependencies.startThread ?? ((input) => startSdkThread(input))
-    const thread = startThread({
+    const threadOptions = {
       workspaceDirectory: workspace.workspaceDirectory,
       agentHome: workspace.agentHome,
       ...(options.model ? { model: options.model } : {}),
@@ -432,21 +475,30 @@ export async function runCodexTestAgent(
       controlConfigPath: workspace.controlConfigPath,
       codexEnvironment: workspace.codexEnvironment,
       mcpEnvironment: workspace.mcpEnvironment,
-    })
+    }
+    const thread = options.resume
+      ? (dependencies.resumeThread ?? ((input) => startSdkThread(input)))({ threadId: resumeThreadId!, ...threadOptions })
+      : (dependencies.startThread ?? ((input) => startSdkThread(input)))(threadOptions)
     activeThread = thread
-    state = updateCodexTestState(state, { stage: 'executing' })
+    state = updateCodexTestState(state, { stage: 'executing', ...(resumeThreadId ? { threadId: resumeThreadId } : {}) })
     await writePrivateJson(statePath, state)
-    const prompt = codexTestAgentPrompt({
-      manifest: options.manifest,
-      environmentContext: options.environmentContext,
-      secretAliases: workspace.secretAliases,
-      ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
-    })
-    const input: Input = [
-      { type: 'text', text: prompt },
-      ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
-    ]
-    await runTurn(thread, input, eventsPath, redactionSecrets)
+    const persistThreadId = async (threadId: string): Promise<void> => {
+      if (state.threadId === threadId) return
+      state = updateCodexTestState(state, { threadId })
+      await writePrivateJson(statePath, state)
+    }
+    const input: Input = options.resume
+      ? [{ type: 'text', text: codexTestAgentResumePrompt() }]
+      : [
+          { type: 'text', text: codexTestAgentPrompt({
+            manifest: options.manifest,
+            environmentContext: options.environmentContext,
+            secretAliases: workspace.secretAliases,
+            ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+          }) },
+          ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
+        ]
+    await runTurn(thread, input, eventsPath, redactionSecrets, persistThreadId)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
     let ledger = await readMutationLedger(workspace.mutationLedgerPath)
@@ -460,7 +512,7 @@ export async function runCodexTestAgent(
       await runTurn(thread, [{
         type: 'text',
         text: `The execution delivery contract is incomplete:\n- ${problems.join('\n- ')}\nContinue the same browser session. Repair missing final assertions, evidence, plan status, case_result_record entries, or pending mutation recovery without weakening expected results. Do not repeat already verified business mutations. Finish with a short plain-text summary.`,
-      }], eventsPath, redactionSecrets)
+      }], eventsPath, redactionSecrets, persistThreadId)
       ledger = await readMutationLedger(workspace.mutationLedgerPath)
       evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
       plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
