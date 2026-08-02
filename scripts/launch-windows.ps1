@@ -423,7 +423,7 @@ function Parse-ApiKeyOverride([string[]] $Arguments) {
     }
     if ($argument.StartsWith('--api-key=')) {
       $candidate = $argument.Substring('--api-key='.Length)
-      if ([string]::IsNullOrWhiteSpace($candidate)) { throw '--api-key 的值无效。' }
+      if ([string]::IsNullOrWhiteSpace($candidate) -or $candidate.StartsWith('-')) { throw '--api-key 的值无效。' }
       if ($apiKey) { throw '--api-key 只能指定一次。' }
       $apiKey = $candidate
       continue
