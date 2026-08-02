@@ -96,17 +96,17 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架会先解析 Excel，并把单元格中出现但没有手工输入的网站 URL 自动加入本次目标范围。如果已有环境只覆盖其中一部分，菜单会明确列出缺少的网站并进入环境更新向导；直接使用向导默认值会保留原环境的登录状态和权限范围。环境完整后，框架会自动选择并复用登录状态。每次运行的输出目录也会自动创建。
 
-默认执行主体是一个持久 Codex 测试线程。它通过 Playwright MCP 查看真实页面、持续更新动态计划、执行操作、验证业务结果并完成恢复；测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
+默认执行主体是一个持久 Codex 测试线程。原始 Excel、测试说明、图片和本轮环境值会复制到隔离的可写 run 工作区；Codex 可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
-一个逻辑测试值如果在页面上被拆成选择器、输入框、显示前缀或其他组件，代理必须在提交前通过通用的复合字段输入 Gate。当前默认使用 execution-first：模型可以按需读取本次 Excel/Profile 中的测试值，自主派生各页面组件所需的值；它仍无法通过该接口读取模型 API Key、Cookie、浏览器存储或宿主机凭据。Gate 会根据组件的 `segment/context/none` 关系私下重建原始逻辑值，并从持久化记录中删除派生明文；重复、遗漏、未知表示或缺少填充后证据会直接阻断提交。只有 Gate 已通过、应用仍拒绝正确表示时，结果才能记为产品缺陷；代理填错必须记为 `blocked/agent_execution`。需要恢复严格别名模式时，在命令行加入 `--opaque-test-data`。
+框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。复合字段 Gate、动态计划和逐用例 checkpoint 仍可作为诊断记录，但都不是提交或通过门禁。
 
-每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据，`.agent-private/field-compositions.json` 保存复合字段 Gate。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
-如果测试材料或页面证据提出了环境 Profile 未注册的新网站 origin，代理不会直接访问或猜测替代路由，而会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充 origin。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。
+完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果新 origin 缺少登录、权限或业务授权，Codex 会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充条件。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
 
-启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、更新动态 Execution Plan、记录证据、核对 Mutation Ledger 和最终化补齐。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示受控动作类别，不显示模型推理正文、表单值、工具参数、Cookie、验证码或 API 信息。
+启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
 
-这些进度表示框架仍在工作，不代表测试已经通过。最终结论仍以 `codex-agent.result.json`、Execution Plan、证据、Environment Requirements 和 Mutation Ledger 的终态为准。
+这些进度表示 Codex 仍在工作，不代表测试已经通过。最终结论以 `codex-agent.result.json`、其中引用的实际证据以及 Mutation Ledger 的终态为准；Execution Plan 和字段 Gate 不再是必需产物。
 
 结束时直接显示以下三类结果：
 
@@ -130,7 +130,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 `--headed` 会显示认证刷新和 Codex 测试代理的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据和结构化结果仍保存在本次结果目录中。
 
-默认 direct 测试数据模式只扩大模型对本次运行测试值的可见性，不放开 origin allowlist、Mutation Ledger、身份匹配、清理和最终结果门禁。
+默认模式给予 Codex 原始测试材料、可写 run 工作区、shell、网络、Web Search 和完整 Playwright。它只能在 run 工作区写文件，不应修改 Auto-Test 或被测应用源码。需要恢复旧的只读、MCP-only、origin 受限模式时显式加入 `--opaque-test-data`。
 
 如果电脑睡眠、网络、模型连接、浏览器或 MCP 导致运行中断，恢复网络后复用原命令、原 Excel、原环境和原结果目录，并增加 `--resume`：
 

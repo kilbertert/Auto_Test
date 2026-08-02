@@ -18,7 +18,7 @@ function manifest(): WorkflowIntakeManifest {
 }
 
 describe('Codex test agent prompt safety rules', () => {
-  it('declares origin access requests and generic composite-field evidence handling', () => {
+  it('makes Codex the primary test engineer with raw inputs and full execution tools', () => {
     const prompt = codexTestAgentPrompt({
       manifest: manifest(),
       environmentContext: '',
@@ -26,15 +26,20 @@ describe('Codex test agent prompt safety rules', () => {
         secretRef: 'workflow.value', purpose: 'sensitive value', aliases: ['AUTO_TEST_VALUE_001'],
       }],
       testDataAccess: 'direct',
+      inputDirectory: '/run/input',
+      sourceFilePath: '/run/input/original/fixture.xlsx',
+      runValuesPath: '/run/input/run-values.json',
     })
 
-    expect(prompt).toContain('request_environment_access')
-    expect(prompt).toContain('Registered target origins (strict browser allowlist)')
+    expect(prompt).toContain('primary test engineer')
+    expect(prompt).toContain('shell commands')
+    expect(prompt).toContain('browser_run_code_unsafe')
+    expect(prompt).toContain('/run/input/original/fixture.xlsx')
+    expect(prompt).toContain('/run/input/run-values.json')
+    expect(prompt).toContain('context, not a browser network allowlist')
+    expect(prompt).toContain('test_plan_update is optional')
     expect(prompt).toContain('field_composition_check')
-    expect(prompt).toContain('failureSource agent_execution')
-    expect(prompt).toContain('malformed or unverified representation')
-    expect(prompt).toContain('test_value_get')
-    expect(prompt).toContain('at most one evidence-driven correction')
+    expect(prompt).toContain('optional diagnostic helpers, not execution gates')
     expect(prompt).not.toContain('659')
     expect(prompt).not.toContain('+65')
   })

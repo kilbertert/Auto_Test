@@ -6,14 +6,13 @@ import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { blockedNavigationOriginsFromEvents, reconcileEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
-import { decisionFieldContractProblem } from './decision-contract.js'
-import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
+import { reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { enforceMutationLedger } from './result.js'
+import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestCaseDecision, CodexTestEnvironmentRequirement, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry } from './types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareCodexAgentWorkspace } from './workspace.js'
 
 export interface CodexTestAgentOptions {
@@ -22,6 +21,8 @@ export interface CodexTestAgentOptions {
   profile: EnvironmentProfile
   secrets: Record<string, string | string[]>
   environmentContext: string
+  sourceFilePath?: string
+  briefFilePath?: string
   imagePaths: string[]
   headed: boolean
   slowMo?: number
@@ -46,20 +47,9 @@ interface AgentThread {
   runStreamed(input: Input, options?: { outputSchema?: unknown }): Promise<{ events: AsyncGenerator<ThreadEvent> }>
 }
 
-interface AgentEvidenceNote {
-  caseId: string
-  kind: CodexTestAgentResult['cases'][number]['evidence'][number]['kind']
-  description: string
-  path?: string
-}
-
-interface AgentPlan {
-  steps?: Array<{ id: string; status: 'pending' | 'in_progress' | 'passed' | 'failed' | 'blocked' }>
-}
-
 export interface CodexTestAgentDependencies {
-  startThread?: (options: { workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string> }) => AgentThread
-  resumeThread?: (options: { threadId: string; workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string> }) => AgentThread
+  startThread?: (options: { workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string>; fullAgentAccess: boolean }) => AgentThread
+  resumeThread?: (options: { threadId: string; workspaceDirectory: string; agentHome: string; model?: string; codexExecutable: string; playwrightConfigPath: string; playwrightSecretsPath: string; controlConfigPath: string; codexEnvironment: Record<string, string>; mcpEnvironment: Record<string, string>; fullAgentAccess: boolean }) => AgentThread
   browserExecutablePath?: string
 }
 
@@ -128,10 +118,58 @@ function startSdkThread(options: {
   codexEnvironment: Record<string, string>
   mcpEnvironment: Record<string, string>
   threadId?: string
+  fullAgentAccess: boolean
 }): Thread {
   const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
   const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
   const controlServer = controlServerPath()
+  const restrictedPlaywrightTools = [
+    'browser_click',
+    'browser_check',
+    'browser_close',
+    'browser_console_messages',
+    'browser_drag',
+    'browser_drop',
+    'browser_file_upload',
+    'browser_fill_form',
+    'browser_find',
+    'browser_handle_dialog',
+    'browser_hover',
+    'browser_navigate',
+    'browser_navigate_back',
+    'browser_navigate_forward',
+    'browser_network_request',
+    'browser_network_requests',
+    'browser_press_key',
+    'browser_reload',
+    'browser_resize',
+    'browser_select_option',
+    'browser_snapshot',
+    'browser_tabs',
+    'browser_take_screenshot',
+    'browser_type',
+    'browser_uncheck',
+    'browser_verify_element_visible',
+    'browser_verify_list_visible',
+    'browser_verify_text_visible',
+    'browser_verify_value',
+    'browser_wait_for',
+    'browser_cookie_clear',
+    'browser_localstorage_clear',
+    'browser_sessionstorage_clear',
+    'browser_set_storage_state',
+  ]
+  const playwrightServer = {
+    command: process.execPath,
+    args: [playwrightCli, '--config', options.playwrightConfigPath, '--secrets', options.playwrightSecretsPath],
+    cwd: options.workspaceDirectory,
+    env: options.mcpEnvironment,
+    required: true,
+    startup_timeout_sec: 60,
+    tool_timeout_sec: 180,
+    default_tools_approval_mode: 'approve',
+    ...(!options.fullAgentAccess ? { enabled_tools: restrictedPlaywrightTools } : {}),
+  }
   const codex = new Codex({
     codexPathOverride: options.codexExecutable,
     env: {
@@ -139,63 +177,20 @@ function startSdkThread(options: {
       CODEX_HOME: options.agentHome,
     },
     config: {
-      developer_instructions: 'Operate only as the Auto-Test web testing agent. Follow the workspace AGENTS.md and configured MCP instructions. Do not modify source code.',
+      developer_instructions: options.fullAgentAccess
+        ? 'Act as the primary test engineer. Use the raw run inputs, shell, writable workspace, network, and full Playwright MCP autonomously. Follow workspace AGENTS.md. Do not edit files outside the run workspace.'
+        : 'Operate only as the Auto-Test web testing agent. Follow the workspace AGENTS.md and configured MCP instructions. Do not modify source code.',
       features: {
-        shell_tool: false,
+        shell_tool: options.fullAgentAccess,
         apps: false,
-        multi_agent: false,
+        multi_agent: options.fullAgentAccess,
         remote_plugin: false,
         hooks: false,
         memories: false,
       },
-      tools: { web_search: false },
+      tools: { web_search: options.fullAgentAccess },
       mcp_servers: {
-        playwright: {
-          command: process.execPath,
-          args: [playwrightCli, '--config', options.playwrightConfigPath, '--secrets', options.playwrightSecretsPath],
-          cwd: options.workspaceDirectory,
-          env: options.mcpEnvironment,
-          required: true,
-          startup_timeout_sec: 60,
-          tool_timeout_sec: 180,
-          default_tools_approval_mode: 'approve',
-          enabled_tools: [
-            'browser_click',
-            'browser_check',
-            'browser_close',
-            'browser_console_messages',
-            'browser_drag',
-            'browser_drop',
-            'browser_file_upload',
-            'browser_fill_form',
-            'browser_find',
-            'browser_handle_dialog',
-            'browser_hover',
-            'browser_navigate',
-            'browser_navigate_back',
-            'browser_navigate_forward',
-            'browser_network_request',
-            'browser_network_requests',
-            'browser_press_key',
-            'browser_reload',
-            'browser_resize',
-            'browser_select_option',
-            'browser_snapshot',
-            'browser_tabs',
-            'browser_take_screenshot',
-            'browser_type',
-            'browser_uncheck',
-            'browser_verify_element_visible',
-            'browser_verify_list_visible',
-            'browser_verify_text_visible',
-            'browser_verify_value',
-            'browser_wait_for',
-            'browser_cookie_clear',
-            'browser_localstorage_clear',
-            'browser_sessionstorage_clear',
-            'browser_set_storage_state',
-          ],
-        },
+        playwright: playwrightServer,
         'auto-test-control': {
           command: process.execPath,
           args: [tsxCli, controlServer, options.controlConfigPath],
@@ -211,12 +206,12 @@ function startSdkThread(options: {
   })
   const threadOptions = {
     ...(options.model ? { model: options.model } : {}),
-    sandboxMode: 'read-only',
+    sandboxMode: options.fullAgentAccess ? 'workspace-write' : 'read-only',
     workingDirectory: options.workspaceDirectory,
     skipGitRepoCheck: true,
     modelReasoningEffort: 'xhigh',
-    networkAccessEnabled: false,
-    webSearchMode: 'disabled',
+    networkAccessEnabled: options.fullAgentAccess,
+    webSearchMode: options.fullAgentAccess ? 'live' : 'disabled',
     approvalPolicy: 'never',
   } as const
   return options.threadId
@@ -237,8 +232,9 @@ async function runTurn(
   secrets: string[],
   progress: CodexTestProgressReporter,
   onThreadStarted?: (threadId: string) => Promise<void>,
+  outputSchema?: unknown,
 ): Promise<string> {
-  const streamed = await thread.runStreamed(input)
+  const streamed = await thread.runStreamed(input, outputSchema ? { outputSchema } : undefined)
   let finalResponse = ''
   for await (const event of streamed.events) {
     await appendEvent(eventsPath, event, secrets)
@@ -252,133 +248,56 @@ async function runTurn(
   return finalResponse
 }
 
-function decisionProblems(
-  decisions: CodexTestCaseDecision[],
-  manifest: WorkflowIntakeManifest,
-  evidence: AgentEvidenceNote[],
-  ledger: CodexTestMutationLedgerEntry[],
-  fieldGates: CodexTestFieldCompositionGate[],
-  plan?: AgentPlan,
-): string[] {
-  const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
-  const returnedCases = new Set(decisions.map((item) => item.caseId))
-  const evidenceCases = new Set(evidence.map((item) => item.caseId))
+function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowIntakeManifest): string[] {
   const problems: string[] = []
-  if (returnedCases.size !== decisions.length) problems.push('duplicate case decisions are not allowed')
-  for (const caseId of requiredCases) if (!returnedCases.has(caseId)) problems.push(`missing final case decision for ${caseId}`)
-  for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case decision for ${caseId}`)
-  for (const caseId of requiredCases) if (!evidenceCases.has(caseId)) problems.push(`case ${caseId} has no Control MCP evidence`)
-  for (const phase of manifest.phases) {
-    if (phase.risk !== 'read' && !ledger.some((entry) => entry.caseId === phase.id)) {
-      problems.push(`non-read case ${phase.id} has no Mutation Ledger entry`)
-    }
+  if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
+  if (result.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
+  const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
+  const returnedCases = result.cases.map((item) => item.caseId)
+  if (new Set(returnedCases).size !== returnedCases.length) problems.push('duplicate case results are not allowed')
+  for (const caseId of requiredCases) if (!returnedCases.includes(caseId)) problems.push(`missing final case result for ${caseId}`)
+  for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case result for ${caseId}`)
+  for (const item of result.cases) {
+    if (item.evidence.length === 0) problems.push(`case ${item.caseId} has no execution evidence`)
+    if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`passed case ${item.caseId} contains a failure classification`)
+    if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
+    if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`product-failed case ${item.caseId} is not classified as product-sourced`)
+    if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`blocked case ${item.caseId} is incorrectly classified as product-sourced`)
   }
-  if (!plan?.steps?.length) problems.push('dynamic execution plan is missing')
-  else if (plan.steps.some((step) => ['pending', 'in_progress'].includes(step.status))) problems.push('dynamic execution plan contains unfinished steps')
-  if (decisions.length > 0 && decisions.every((item) => item.outcome === 'passed') && plan?.steps?.some((step) => step.status !== 'passed')) {
-    problems.push('passed case decisions conflict with a non-passed execution plan step')
-  }
-  for (const decision of decisions) {
-    if (decision.outcome === 'passed' && (decision.blockers.length > 0 || decision.productDefects.length > 0)) {
-      problems.push(`passed case decision ${decision.caseId} contains blockers or product defects`)
-    }
-    if (decision.outcome === 'blocked' && decision.blockers.length === 0) problems.push(`blocked case decision ${decision.caseId} has no blocker`)
-    if (decision.outcome === 'product_failed' && decision.productDefects.length === 0) problems.push(`product-failed case decision ${decision.caseId} has no product defect`)
-    const fieldProblem = decisionFieldContractProblem(decision, fieldGates)
-    if (fieldProblem) problems.push(`case ${decision.caseId} ${fieldProblem}`)
-  }
-  if (ledger.some((entry) => entry.status === 'pending')) problems.push('Mutation Ledger contains pending entries')
+  const expectedOutcome = result.cases.some((item) => item.outcome === 'blocked')
+    ? 'blocked'
+    : result.cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+  if (result.outcome !== expectedOutcome) problems.push(`top-level outcome must be ${expectedOutcome}`)
+  if (result.outcome === 'passed' && (result.blockers.length > 0 || result.productDefects.length > 0)) problems.push('passed result contains blockers or product defects')
+  if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
+  if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
   return problems
 }
 
-function outcomeFor(decisions: CodexTestCaseDecision[]): CodexTestAgentResult['outcome'] {
-  if (decisions.some((item) => item.outcome === 'blocked')) return 'blocked'
-  if (decisions.some((item) => item.outcome === 'product_failed')) return 'product_failed'
-  return 'passed'
-}
-
-function resultFromDecisions(options: {
-  manifest: WorkflowIntakeManifest
-  state: CodexTestAgentState
-  decisions: CodexTestCaseDecision[]
-  evidence: AgentEvidenceNote[]
-  ledger: CodexTestMutationLedgerEntry[]
-  environmentRequirements: CodexTestEnvironmentRequirement[]
-  fieldGates: CodexTestFieldCompositionGate[]
-  problems: string[]
-}): CodexTestAgentResult {
-  const pendingEnvironmentRequirements = options.environmentRequirements.filter((item) => item.status === 'pending')
-  const environmentBlockers = pendingEnvironmentRequirements.map((item) => `Environment origin is not registered: ${item.origin}`)
-  const effectiveProblems = [...options.problems, ...environmentBlockers]
-  const decisionByCase = new Map(options.decisions.map((item) => [item.caseId, item]))
-  const evidenceByCase = new Map<string, AgentEvidenceNote[]>()
-  for (const note of options.evidence) evidenceByCase.set(note.caseId, [...(evidenceByCase.get(note.caseId) ?? []), note])
-  const missingMessage = effectiveProblems.length > 0
-    ? `The execution delivery contract is incomplete: ${effectiveProblems.join('; ')}`
-    : 'The execution agent did not record a final case decision.'
-  const cases = options.manifest.phases.map((phase) => {
-    const decision = decisionByCase.get(phase.id)
-    const fieldProblem = decision ? decisionFieldContractProblem(decision, options.fieldGates) : undefined
-    const failureSource = fieldProblem ? 'agent_execution' as const : decision?.failureSource
-    const failureKind = fieldProblem
-      ? (decision?.failureKind === 'validation' ? 'validation' as const : 'execution' as const)
-      : decision?.failureKind
-    const outcome = fieldProblem ? 'blocked' as const : decision?.outcome ?? 'blocked' as const
-    return {
-      caseId: phase.id,
-      title: phase.title,
-      outcome,
-      summary: fieldProblem ? `${decision?.summary ?? missingMessage} Composite-field contract: ${fieldProblem}.` : decision?.summary ?? missingMessage,
-      ...(outcome !== 'passed' ? { failureSource: failureSource ?? 'agent_execution' as const } : {}),
-      ...(outcome !== 'passed' ? { failureKind: failureKind ?? 'execution' as const } : {}),
-      ...(decision?.fieldGateIds?.length ? { fieldGateIds: decision.fieldGateIds } : {}),
-      evidence: (evidenceByCase.get(phase.id) ?? []).map((note) => ({
-        kind: note.kind,
-        description: note.description,
-        ...(note.path ? { path: note.path } : {}),
-      })),
-    }
-  })
-  const blockers = [...new Set([
-    ...options.decisions.flatMap((item) => item.blockers),
-    ...effectiveProblems,
-  ])]
-  const productDefects = [...new Set(options.decisions.flatMap((item) => (
-    decisionFieldContractProblem(item, options.fieldGates) ? [] : item.productDefects
-  )))]
-  const decisionOutcome = outcomeFor(options.decisions)
-  const outcome = effectiveProblems.length > 0 ? 'blocked' : decisionOutcome
-  const result: CodexTestAgentResult = {
-    version: '1.0',
-    workflowId: options.manifest.workflowId,
-    sourceSha256: options.manifest.source.sha256,
-    outcome,
-    summary: outcome === 'passed'
-      ? 'All immutable test cases and final safety assertions passed.'
-      : outcome === 'product_failed'
-        ? 'The test execution completed and verified one or more product defects.'
-        : 'The test execution could not satisfy the complete delivery contract.',
-    startedAt: options.state.startedAt,
-    finishedAt: new Date().toISOString(),
-    cases,
-    mutations: [],
-    environmentRequirements: options.environmentRequirements,
-    blockers,
-    productDefects,
-    nextActions: outcome === 'blocked'
-      ? [
-        ...pendingEnvironmentRequirements.map((item) => `Register ${item.origin} in the Environment Profile, then resume the same run.`),
-        'Resolve the recorded blockers or incomplete execution evidence, then rerun the same input.',
-      ]
-      : outcome === 'product_failed'
-        ? ['Triage the verified product defects and rerun after the product fix.']
-        : [],
+function enforceEnvironmentRequirements(
+  result: CodexTestAgentResult,
+  requirements: CodexTestEnvironmentRequirement[],
+): CodexTestAgentResult {
+  const byOrigin = new Map(result.environmentRequirements.map((item) => [item.origin, item]))
+  for (const item of requirements) byOrigin.set(item.origin, item)
+  const environmentRequirements = [...byOrigin.values()]
+  const pending = environmentRequirements.filter((item) => item.status === 'pending')
+  if (pending.length === 0) return { ...result, environmentRequirements }
+  return {
+    ...result,
+    outcome: 'blocked',
+    summary: `${result.summary} Required environment access remains unavailable.`,
+    environmentRequirements,
+    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.reason)])],
+    nextActions: [...new Set([
+      ...result.nextActions,
+      ...pending.map((item) => `Provide the required access or authentication for ${item.origin}, then resume the same run.`),
+    ])],
   }
-  return enforceMutationLedger(result, options.ledger)
 }
 
 function isOperationalBlock(message: string): boolean {
-  return /usage limit|quota|credit|rate.?limit|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response|schema validation/i.test(message)
+  return /usage limit|quota|credit|rate.?limit|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response/i.test(message)
 }
 
 function blockedResult(
@@ -414,6 +333,38 @@ function blockedResult(
   return enforceMutationLedger(result, ledger)
 }
 
+function deliveryBlockedResult(
+  manifest: WorkflowIntakeManifest,
+  state: CodexTestAgentState,
+  message: string,
+  ledger: CodexTestMutationLedgerEntry[],
+  environmentRequirements: CodexTestEnvironmentRequirement[],
+): CodexTestAgentResult {
+  return enforceMutationLedger({
+    version: '1.0',
+    workflowId: manifest.workflowId,
+    sourceSha256: manifest.source.sha256,
+    outcome: 'blocked',
+    summary: 'Codex completed the execution turn but did not produce a complete evidence-based delivery result.',
+    startedAt: state.startedAt,
+    finishedAt: new Date().toISOString(),
+    cases: manifest.phases.map((phase) => ({
+      caseId: phase.id,
+      title: phase.title,
+      outcome: 'blocked',
+      summary: message,
+      failureSource: 'agent_execution',
+      failureKind: 'execution',
+      evidence: [{ kind: 'observation', description: 'Structured delivery validation did not complete.' }],
+    })),
+    mutations: [],
+    environmentRequirements,
+    blockers: [message],
+    productDefects: [],
+    nextActions: ['Resume the same Codex thread and complete the structured evidence-based result without repeating verified writes.'],
+  }, ledger)
+}
+
 async function readMutationLedger(path: string): Promise<CodexTestMutationLedgerEntry[]> {
   return JSON.parse(await readFile(path, 'utf8')) as CodexTestMutationLedgerEntry[]
 }
@@ -424,26 +375,6 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
     throw error
-  }
-}
-
-async function captureBlockedNavigationRequirements(
-  eventsPath: string,
-  requirementsPath: string,
-  allowedOrigins: string[],
-): Promise<void> {
-  const events = await readFile(eventsPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return ''
-    throw error
-  })
-  for (const origin of blockedNavigationOriginsFromEvents(events, allowedOrigins)) {
-    await requestEnvironmentAccess({
-      allowedOrigins,
-      requirementsPath,
-      origin,
-      reason: 'Playwright blocked navigation to an origin outside the registered Environment Profile allowlist.',
-      evidence: ['codex-agent.events.jsonl: browser_navigate returned ERR_BLOCKED_BY_CLIENT'],
-    })
   }
 }
 
@@ -517,6 +448,9 @@ export async function runCodexTestAgent(
       manifest: options.manifest,
       profile: options.profile,
       secrets: options.secrets,
+      ...(options.sourceFilePath ? { sourceFilePath: options.sourceFilePath } : {}),
+      ...(options.briefFilePath ? { briefFilePath: options.briefFilePath } : {}),
+      inputImagePaths: options.imagePaths,
       headed: options.headed,
       browserExecutablePath,
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
@@ -540,6 +474,7 @@ export async function runCodexTestAgent(
       controlConfigPath: workspace.controlConfigPath,
       codexEnvironment: workspace.codexEnvironment,
       mcpEnvironment: workspace.mcpEnvironment,
+      fullAgentAccess: (options.testDataAccess ?? 'direct') === 'direct',
     }
     const thread = options.resume
       ? (dependencies.resumeThread ?? ((input) => startSdkThread(input)))({ threadId: resumeThreadId!, ...threadOptions })
@@ -555,8 +490,9 @@ export async function runCodexTestAgent(
       state = updateCodexTestState(state, { threadId })
       await writePrivateJson(statePath, state)
     }
+    const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
     const input: Input = options.resume
-      ? [{ type: 'text', text: codexTestAgentResumePrompt() }]
+      ? [{ type: 'text', text: codexTestAgentResumePrompt(fullAgentAccess) }]
       : [
           { type: 'text', text: codexTestAgentPrompt({
             manifest: options.manifest,
@@ -564,59 +500,66 @@ export async function runCodexTestAgent(
             secretAliases: workspace.secretAliases,
             allowedOrigins: options.profile.origins,
             testDataAccess: options.testDataAccess ?? 'direct',
+            inputDirectory: workspace.inputDirectory,
+            ...(workspace.sourceFilePath ? { sourceFilePath: workspace.sourceFilePath } : {}),
+            ...(workspace.briefFilePath ? { briefFilePath: workspace.briefFilePath } : {}),
+            ...(workspace.runValuesPath ? { runValuesPath: workspace.runValuesPath } : {}),
             ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
           }) },
-          ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
+          ...(workspace.inputImagePaths.length > 0 ? workspace.inputImagePaths : options.imagePaths)
+            .map((path) => ({ type: 'local_image' as const, path })),
         ]
     await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId)
-    await captureBlockedNavigationRequirements(eventsPath, workspace.environmentRequirementsPath, options.profile.origins)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
-    progress.report('stage', '浏览器执行阶段结束，正在核对 Execution Plan、证据和 Mutation Ledger')
-    let ledger = await readMutationLedger(workspace.mutationLedgerPath)
-    let environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-    let fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
-    let evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
-    let plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
-    let decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
+    progress.report('stage', '浏览器执行阶段结束，正在让 Codex 直接生成结构化测试交付')
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
-    for (let turn = 0; turn < maxFinalizationTurns; turn++) {
-      const problems = decisionProblems(decisions, options.manifest, evidence, ledger, fieldGates, plan)
-      if (problems.length === 0) break
-      progress.report('stage', `交付核对发现 ${problems.length} 项不完整，正在进行第 ${turn + 1}/${maxFinalizationTurns} 轮补齐`)
-      await runTurn(thread, [{
-        type: 'text',
-        text: `The execution delivery contract is incomplete:\n- ${problems.join('\n- ')}\nContinue the same browser session. Repair missing final assertions, evidence, plan status, case_result_record entries, or pending mutation recovery without weakening expected results. Do not repeat already verified business mutations. Finish with a short plain-text summary.`,
-      }], eventsPath, redactionSecrets, progress, persistThreadId)
-      await captureBlockedNavigationRequirements(
-        eventsPath,
-        workspace.environmentRequirementsPath,
-        options.profile.origins,
-      )
-      ledger = await readMutationLedger(workspace.mutationLedgerPath)
-      environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-      fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
-      evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
-      plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
-      decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
+    let result: CodexTestAgentResult | undefined
+    let deliveryProblems: string[] = []
+    for (let turn = 0; turn <= maxFinalizationTurns; turn++) {
+      if (turn > 0) progress.report('stage', `结构化交付仍有 ${deliveryProblems.length} 项不一致，正在进行第 ${turn}/${maxFinalizationTurns} 轮修正`)
+      const finalPrompt = turn === 0
+        ? codexTestAgentFinalPrompt()
+        : `${codexTestAgentFinalPrompt()}\n\nThe previous result had these deterministic contract problems:\n- ${deliveryProblems.join('\n- ')}\nCorrect the report from existing evidence. Do not repeat business writes.`
+      try {
+        const finalResponse = await runTurn(
+          thread,
+          [{ type: 'text', text: finalPrompt }],
+          eventsPath,
+          redactionSecrets,
+          progress,
+          persistThreadId,
+          codexTestResultSchema,
+        )
+        const candidate = parseCodexTestResult(finalResponse)
+        deliveryProblems = finalResultProblems(candidate, options.manifest)
+        if (deliveryProblems.length > 0) continue
+        const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+        const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+        result = enforceMutationLedger(enforceEnvironmentRequirements({
+          ...candidate,
+          startedAt: state.startedAt,
+          finishedAt: new Date().toISOString(),
+          mutations: [],
+        }, environmentRequirements), ledger)
+        break
+      } catch (error) {
+        const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
+        if (isOperationalBlock(message)) throw error
+        deliveryProblems = [message]
+      }
     }
-    ledger = await readMutationLedger(workspace.mutationLedgerPath)
-    environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-    fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
-    evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
-    plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
-    decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
-    const finalProblems = decisionProblems(decisions, options.manifest, evidence, ledger, fieldGates, plan)
-    const result = resultFromDecisions({
-      manifest: options.manifest,
-      state,
-      decisions,
-      evidence,
-      ledger,
-      environmentRequirements,
-      fieldGates,
-      problems: finalProblems,
-    })
+    if (!result) {
+      const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+      result = deliveryBlockedResult(
+        options.manifest,
+        state,
+        deliveryProblems.join('; ') || 'Codex did not provide a structured final result.',
+        ledger,
+        environmentRequirements,
+      )
+    }
     await writePrivateJson(resultPath, result)
     progress.report('stage', `结构化测试结果已生成：${result.outcome}`)
     state = updateCodexTestState(state, {
