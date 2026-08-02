@@ -8,3 +8,19 @@ export function redactAgentValue(value: string, secrets: string[]): string {
   for (const secret of secrets) output = output.replaceAll(secret, '<redacted-secret>')
   return output
 }
+
+export function transientAgentEventValues(event: unknown): string[] {
+  const candidate = event as {
+    type?: unknown
+    item?: { type?: unknown; tool?: unknown; arguments?: unknown }
+  }
+  if (candidate.type !== 'item.started' && candidate.type !== 'item.updated' && candidate.type !== 'item.completed') return []
+  if (candidate.item?.type !== 'mcp_tool_call' || candidate.item.tool !== 'field_composition_check') return []
+  const input = candidate.item.arguments as { rendered?: unknown } | undefined
+  if (!Array.isArray(input?.rendered)) return []
+  return [...new Set(input.rendered.flatMap((component) => {
+    if (!component || typeof component !== 'object') return []
+    const value = (component as { literalValue?: unknown }).literalValue
+    return typeof value === 'string' && value.length > 0 ? [value] : []
+  }))].sort((left, right) => right.length - left.length)
+}

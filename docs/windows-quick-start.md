@@ -98,7 +98,9 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 默认执行主体是一个持久 Codex 测试线程。它通过 Playwright MCP 查看真实页面、持续更新动态计划、执行操作、验证业务结果并完成恢复；测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
-每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
+一个逻辑测试值如果在页面上被拆成选择器、输入框、显示前缀或其他组件，代理必须在提交前通过通用的复合字段输入 Gate。当前默认使用 execution-first：模型可以按需读取本次 Excel/Profile 中的测试值，自主派生各页面组件所需的值；它仍无法通过该接口读取模型 API Key、Cookie、浏览器存储或宿主机凭据。Gate 会根据组件的 `segment/context/none` 关系私下重建原始逻辑值，并从持久化记录中删除派生明文；重复、遗漏、未知表示或缺少填充后证据会直接阻断提交。只有 Gate 已通过、应用仍拒绝正确表示时，结果才能记为产品缺陷；代理填错必须记为 `blocked/agent_execution`。需要恢复严格别名模式时，在命令行加入 `--opaque-test-data`。
+
+每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据，`.agent-private/field-compositions.json` 保存复合字段 Gate。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
 如果测试材料或页面证据提出了环境 Profile 未注册的新网站 origin，代理不会直接访问或猜测替代路由，而会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充 origin。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。
 
@@ -127,6 +129,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 ```
 
 `--headed` 会显示认证刷新和 Codex 测试代理的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据和结构化结果仍保存在本次结果目录中。
+
+默认 direct 测试数据模式只扩大模型对本次运行测试值的可见性，不放开 origin allowlist、Mutation Ledger、身份匹配、清理和最终结果门禁。
 
 如果电脑睡眠、网络、模型连接、浏览器或 MCP 导致运行中断，恢复网络后复用原命令、原 Excel、原环境和原结果目录，并增加 `--resume`：
 

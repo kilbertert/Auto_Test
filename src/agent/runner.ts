@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { blockedNavigationOriginsFromEvents, reconcileEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
+import { decisionFieldContractProblem } from './decision-contract.js'
 import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
-import { redactAgentValue, secretValues } from './redact.js'
+import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { enforceMutationLedger } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestCaseDecision, CodexTestEnvironmentRequirement, CodexTestMutationLedgerEntry } from './types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestCaseDecision, CodexTestEnvironmentRequirement, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareCodexAgentWorkspace } from './workspace.js'
 
 export interface CodexTestAgentOptions {
@@ -32,6 +33,7 @@ export interface CodexTestAgentOptions {
   resume?: boolean
   onProgress?: CodexTestAgentProgressSink
   progressHeartbeatMs?: number
+  testDataAccess?: 'direct' | 'opaque'
 }
 
 export interface CodexTestAgentRun {
@@ -223,7 +225,7 @@ function startSdkThread(options: {
 }
 
 async function appendEvent(path: string, event: ThreadEvent, secrets: string[]): Promise<void> {
-  const serialized = redactAgentValue(JSON.stringify(event), secrets)
+  const serialized = redactAgentValue(JSON.stringify(event), [...secrets, ...transientAgentEventValues(event)])
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
 }
@@ -255,6 +257,7 @@ function decisionProblems(
   manifest: WorkflowIntakeManifest,
   evidence: AgentEvidenceNote[],
   ledger: CodexTestMutationLedgerEntry[],
+  fieldGates: CodexTestFieldCompositionGate[],
   plan?: AgentPlan,
 ): string[] {
   const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
@@ -281,6 +284,8 @@ function decisionProblems(
     }
     if (decision.outcome === 'blocked' && decision.blockers.length === 0) problems.push(`blocked case decision ${decision.caseId} has no blocker`)
     if (decision.outcome === 'product_failed' && decision.productDefects.length === 0) problems.push(`product-failed case decision ${decision.caseId} has no product defect`)
+    const fieldProblem = decisionFieldContractProblem(decision, fieldGates)
+    if (fieldProblem) problems.push(`case ${decision.caseId} ${fieldProblem}`)
   }
   if (ledger.some((entry) => entry.status === 'pending')) problems.push('Mutation Ledger contains pending entries')
   return problems
@@ -299,6 +304,7 @@ function resultFromDecisions(options: {
   evidence: AgentEvidenceNote[]
   ledger: CodexTestMutationLedgerEntry[]
   environmentRequirements: CodexTestEnvironmentRequirement[]
+  fieldGates: CodexTestFieldCompositionGate[]
   problems: string[]
 }): CodexTestAgentResult {
   const pendingEnvironmentRequirements = options.environmentRequirements.filter((item) => item.status === 'pending')
@@ -312,11 +318,20 @@ function resultFromDecisions(options: {
     : 'The execution agent did not record a final case decision.'
   const cases = options.manifest.phases.map((phase) => {
     const decision = decisionByCase.get(phase.id)
+    const fieldProblem = decision ? decisionFieldContractProblem(decision, options.fieldGates) : undefined
+    const failureSource = fieldProblem ? 'agent_execution' as const : decision?.failureSource
+    const failureKind = fieldProblem
+      ? (decision?.failureKind === 'validation' ? 'validation' as const : 'execution' as const)
+      : decision?.failureKind
+    const outcome = fieldProblem ? 'blocked' as const : decision?.outcome ?? 'blocked' as const
     return {
       caseId: phase.id,
       title: phase.title,
-      outcome: decision?.outcome ?? 'blocked' as const,
-      summary: decision?.summary ?? missingMessage,
+      outcome,
+      summary: fieldProblem ? `${decision?.summary ?? missingMessage} Composite-field contract: ${fieldProblem}.` : decision?.summary ?? missingMessage,
+      ...(outcome !== 'passed' ? { failureSource: failureSource ?? 'agent_execution' as const } : {}),
+      ...(outcome !== 'passed' ? { failureKind: failureKind ?? 'execution' as const } : {}),
+      ...(decision?.fieldGateIds?.length ? { fieldGateIds: decision.fieldGateIds } : {}),
       evidence: (evidenceByCase.get(phase.id) ?? []).map((note) => ({
         kind: note.kind,
         description: note.description,
@@ -328,7 +343,9 @@ function resultFromDecisions(options: {
     ...options.decisions.flatMap((item) => item.blockers),
     ...effectiveProblems,
   ])]
-  const productDefects = [...new Set(options.decisions.flatMap((item) => item.productDefects))]
+  const productDefects = [...new Set(options.decisions.flatMap((item) => (
+    decisionFieldContractProblem(item, options.fieldGates) ? [] : item.productDefects
+  )))]
   const decisionOutcome = outcomeFor(options.decisions)
   const outcome = effectiveProblems.length > 0 ? 'blocked' : decisionOutcome
   const result: CodexTestAgentResult = {
@@ -384,6 +401,8 @@ function blockedResult(
       title: phase.title,
       outcome: 'blocked',
       summary: message,
+      failureSource: 'environment',
+      failureKind: 'environment',
       evidence: [{ kind: 'observation', description: 'Execution dependency failure recorded in codex-agent.events.jsonl.' }],
     })),
     mutations: [],
@@ -503,6 +522,7 @@ export async function runCodexTestAgent(
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       sourceCodexHome: options.codexHome ?? process.env.CODEX_HOME ?? process.env.AUTO_TEST_CODEX_HOME ?? resolve(process.env.HOME ?? '.', '.codex'),
       environment: process.env,
+      testDataAccess: options.testDataAccess ?? 'direct',
       ...(options.resume ? { resume: true } : {}),
     })
     mutationLedgerPath = workspace.mutationLedgerPath
@@ -543,6 +563,7 @@ export async function runCodexTestAgent(
             environmentContext: options.environmentContext,
             secretAliases: workspace.secretAliases,
             allowedOrigins: options.profile.origins,
+            testDataAccess: options.testDataAccess ?? 'direct',
             ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
           }) },
           ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
@@ -554,12 +575,13 @@ export async function runCodexTestAgent(
     progress.report('stage', '浏览器执行阶段结束，正在核对 Execution Plan、证据和 Mutation Ledger')
     let ledger = await readMutationLedger(workspace.mutationLedgerPath)
     let environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+    let fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
     let evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
     let plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
     let decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
     for (let turn = 0; turn < maxFinalizationTurns; turn++) {
-      const problems = decisionProblems(decisions, options.manifest, evidence, ledger, plan)
+      const problems = decisionProblems(decisions, options.manifest, evidence, ledger, fieldGates, plan)
       if (problems.length === 0) break
       progress.report('stage', `交付核对发现 ${problems.length} 项不完整，正在进行第 ${turn + 1}/${maxFinalizationTurns} 轮补齐`)
       await runTurn(thread, [{
@@ -573,16 +595,18 @@ export async function runCodexTestAgent(
       )
       ledger = await readMutationLedger(workspace.mutationLedgerPath)
       environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+      fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
       evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
       plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
       decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
     }
     ledger = await readMutationLedger(workspace.mutationLedgerPath)
     environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+    fieldGates = await readJsonOr<CodexTestFieldCompositionGate[]>(workspace.fieldCompositionPath, [])
     evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
     plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
     decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
-    const finalProblems = decisionProblems(decisions, options.manifest, evidence, ledger, plan)
+    const finalProblems = decisionProblems(decisions, options.manifest, evidence, ledger, fieldGates, plan)
     const result = resultFromDecisions({
       manifest: options.manifest,
       state,
@@ -590,6 +614,7 @@ export async function runCodexTestAgent(
       evidence,
       ledger,
       environmentRequirements,
+      fieldGates,
       problems: finalProblems,
     })
     await writePrivateJson(resultPath, result)

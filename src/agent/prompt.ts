@@ -7,14 +7,16 @@ export function codexTestAgentPrompt(options: {
   secretAliases: AgentSecretAlias[]
   allowedOrigins?: string[]
   maxIterations?: number
+  testDataAccess?: 'direct' | 'opaque'
 }): string {
   const registeredOrigins = [...new Set(options.allowedOrigins ?? options.manifest.targetUrls.map((url) => new URL(url).origin))]
   const secretGuide = options.secretAliases.length === 0
     ? 'No secret aliases are available.'
     : options.secretAliases.map((item) => (
         `- ${item.purpose}: use ${item.aliases.map((alias) => JSON.stringify(alias)).join(', ')} as the browser input value. ` +
-        'The Playwright server replaces the alias inside the browser; never try to discover or print the underlying value. ' +
-        'When the page decomposes one logical value into multiple controls, keep the secret unchanged and do not duplicate a prefix already represented by another control.'
+        (options.testDataAccess === 'direct'
+          ? 'Call auto-test-control.test_value_get for the exact run-scoped value when page evidence requires inspection or transformation. You may derive a transient component value, but do not request provider keys, cookies, or host credentials.'
+          : 'The Playwright server replaces the alias inside the browser; never try to discover or print the underlying value.')
       )).join('\n')
   const canary = options.maxIterations === undefined
     ? 'Execute the full data set described by the test material.'
@@ -37,9 +39,9 @@ Mandatory operating protocol:
 10. Use only the Playwright and Auto-Test Control MCP tools. Do not use shell, web search, external apps, plugins, or source-code edits.
 11. Browser navigation is restricted to the registered origin allowlist below. Before using a URL discovered in a screenshot, link, redirect, or page, call request_environment_access. If it returns blocked, do not navigate or retry that origin; record the requirement and block only the affected case or dependent phases.
 12. Treat ERR_BLOCKED_BY_CLIENT on an unregistered origin as an environment-policy block, not a product failure. Do not guess an equivalent route on a registered origin.
-13. For any form with a composite value, first inspect the visible control decomposition and request evidence. Keep secret material immutable; derive only the transient representation required by the visible controls. If the application returns a format/validation error, capture evidence and make at most one evidence-driven correction before recording product_failed. Never retry a side effect blindly.
+13. For any logical value split across multiple visible controls, inspect a fresh accessibility snapshot, derive the component values from the run-scoped test value, fill them, then call auto-test-control.field_composition_check before any submit or side effect. Mark each component as a logical segment, context, or non-contributing control. The gate privately reconstructs the logical value from the rendered segments and strips raw values from its persisted record. If the gate is blocked, do not submit. Make at most one evidence-driven correction, take fresh evidence, and check again. If it remains blocked, record blocked with failureSource agent_execution, failureKind validation, and the blocked field gate ID. Never retry a side effect blindly.
 14. Before finalizing, call mutation_list and make the final browser assertions needed to prove a safe final state.
-15. After the final assertion for each case, call case_result_record exactly once with passed, product_failed, or blocked. A passed record cannot include blockers or product defects. A product_failed record must name the verified mismatch. A blocked record must name the missing data, permission, authentication, recovery authority, or ambiguity.
+15. After the final assertion for each case, call case_result_record exactly once with passed, product_failed, or blocked. Include passed fieldGateIds for composite fields submitted successfully. Every non-passed result must include failureSource and failureKind. A product_failed validation result is permitted only after a passed field_composition_check and must reference its fieldGateIds. A malformed or unverified representation is blocked/agent_execution, never a product defect. A passed record cannot include blockers or product defects.
 16. After every case result is recorded and recovery is complete, reply with a short plain-text execution summary. Do not emit JSON in this turn.
 
 ${canary}
@@ -70,6 +72,7 @@ Mandatory recovery protocol:
 4. Recreate browser tabs and authentication as needed from the registered environment, then continue from the earliest unfinished plan step. Refresh the dynamic plan when interruption evidence changes its status.
 5. Preserve immutable expected results and all prior evidence. Add new recovery evidence instead of weakening or deleting earlier findings.
 6. Resolve every pending Mutation Ledger entry only after verified compensation or an explicitly expected safe accepted state.
-7. Complete all remaining case_result_record entries and final safety assertions. Finish with a short plain-text summary; do not emit JSON.
+7. Call field_composition_list before finalizing any validation-related failure. A product validation failure requires a passed gate; a blocked gate must be classified as blocked/agent_execution rather than product_failed.
+8. Complete all remaining case_result_record entries and final safety assertions. Finish with a short plain-text summary; do not emit JSON.
 `
 }

@@ -15,4 +15,7 @@ export interface CodexTestControlConfig {
   caseResultsPath: string
   mutationLedgerPath: string
   environmentRequirementsPath?: string
+  fieldCompositionPath?: string
+  secretValuesPath?: string
+  testDataAccess?: 'direct' | 'opaque'
 }

@@ -69,6 +69,8 @@ When exactly one profile covers all supplied URL origins, the autonomous command
 
 Live page evidence redacts every value supplied through `AUTO_TEST_SECRET_*`, including profile-only secrets and members of JSON list bindings, even when the current Draft does not reference that secret.
 
+Composite values are governed by a generic field-representation contract. When one logical value is split across selectors, one or more editable inputs, display components, or derived controls, the agent must record the observed decomposition and a post-fill representation with `field_composition_check` before submitting. In the current execution-first mode, `test_value_get` exposes only the requested Excel/Profile run value to the test agent, allowing it to derive component values without receiving provider keys, cookies, browser storage, or host credentials. The gate requires one authoritative logical source, privately reconstructs it from components marked as segments, ignores context-only controls, strips raw derived values from persisted gate and event records, and rejects unknown semantics, missing observations, or duplicated/omitted segments. A validation response may be classified as `product_failed` only when the referenced field gate passed; malformed or unverified representations terminate as `blocked` with `failureSource: agent_execution`. `--opaque-test-data` retains the stricter alias-only mode for environments that require it.
+
 See `templates/environment-profiles.example.json` for the registry shape.
 
 ## Current Boundary

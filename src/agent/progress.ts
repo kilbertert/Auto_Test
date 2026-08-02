@@ -47,8 +47,11 @@ const browserToolLabels: Record<string, string> = {
 
 const controlToolLabels: Record<string, string> = {
   test_contract: '读取不可变测试契约',
+  test_value_get: '读取本次运行测试数据',
   test_plan_update: '更新动态 Execution Plan',
   evidence_record: '记录测试证据',
+  field_composition_check: '校验复合字段输入表示',
+  field_composition_list: '核对复合字段输入门禁',
   case_result_record: '记录测试用例终态',
   mutation_begin: '登记业务写入到 Mutation Ledger',
   mutation_resolve: '核销业务写入和清理结果',
