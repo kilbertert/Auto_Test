@@ -41,8 +41,6 @@ requires_openai_auth = false
 
 Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
 
-如果同一 Windows 用户的 Codex CLI 已在 `%USERPROFILE%\.codex\auth.json` 配置了 `OPENAI_API_KEY`，Auto-Test 会把它作为受控备用 Key：只有当前 Provider 探测明确返回额度不足或 HTTP 429 时才尝试备用 Key；401、403、模型不存在、网络和 TLS 错误不会被错误地切换。备用 Key 探测成功后会使用 DPAPI 保存为当前 Auto-Test Provider Key；`auth.json` 不会被复制进项目或发行包，也不会在终端显示 Key 内容。
-
 旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。
 
 Chromium 首次下载默认优先使用适合当前 Windows 部署区域的 Playwright 镜像；镜像失败会自动回退官方 CDN。安装器直接使用 Auto-Test 自带的 `node.exe` 执行项目内 Playwright CLI，不依赖电脑上的全局 `npm`、`npx` 或它们的 PowerShell 脚本。企业网络如果有自己的制品镜像，可以在启动前临时指定：
@@ -162,8 +160,6 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 ```powershell
 .\Auto-Test.cmd --reconfigure-api --setup-only
 ```
-
-如果已经在 Codex CLI 中配置了新的 `OPENAI_API_KEY`，通常无需手工复制 Key；重新启动私有包即可触发额度不足时的自动备用切换。只有需要更换 Base URL、模型或清除自动切换行为时，才使用上面的显式重配置命令。
 
 管理员批量部署时仍可以覆盖内置配置并静默准备：
 

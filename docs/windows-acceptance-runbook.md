@@ -22,7 +22,7 @@ Set-Location "D:\Auto-Test"
 .\Auto-Test.cmd doctor
 ```
 
-继续验收前，应确认 Node.js、Codex CLI、模型 Provider/API 和 Chromium 均显示成功。若当前 Provider Key 额度不足且 Windows 用户的 Codex CLI `auth.json` 存在备用 `OPENAI_API_KEY`，启动器会明确显示切换并再次探测；没有出现成功探测前不要直接开始业务测试。初始化失败时先解决环境问题，不要直接开始业务测试。
+继续验收前，应确认 Node.js、Codex CLI、模型 Provider/API 和 Chromium 均显示成功。初始化失败时先解决环境问题，不要直接开始业务测试。
 
 ## 3. 一次性注册测试环境
 

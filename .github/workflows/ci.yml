@@ -87,51 +87,6 @@ jobs:
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
           .\Auto-Test.cmd --setup-only
 
-      - name: Verify Codex CLI API key quota failover
-        shell: pwsh
-        run: |
-          $testUserProfile = Join-Path $env:RUNNER_TEMP 'auto-test-failover-user'
-          $testCodexHome = Join-Path $env:RUNNER_TEMP 'auto-test-failover-codex'
-          $probePath = Join-Path $env:RUNNER_TEMP 'auto-test-failover-probe.cmd'
-          $previousUserProfile = $env:USERPROFILE
-          $previousApiKey = $env:AUTO_TEST_MODEL_API_KEY
-          try {
-            New-Item -ItemType Directory -Force -Path (Join-Path $testUserProfile '.codex'), $testCodexHome | Out-Null
-            Set-Content -LiteralPath (Join-Path $testUserProfile '.codex\auth.json') -Encoding UTF8 -Value (@{ OPENAI_API_KEY = 'sk-synthetic-backup-key' } | ConvertTo-Json)
-            @'
-          @echo off
-          if "%AUTO_TEST_MODEL_API_KEY%"=="sk-synthetic-primary-key" (
-            1>&2 echo 429 quota exhausted
-            exit /b 1
-          )
-          if "%AUTO_TEST_MODEL_API_KEY%"=="sk-synthetic-backup-key" (
-            echo AUTO_TEST_API_READY
-            exit /b 0
-          )
-          1>&2 echo unexpected API key
-          exit /b 1
-          '@ | Set-Content -LiteralPath $probePath -Encoding ASCII
-            Set-Content -LiteralPath .\Auto-Test.private-key -NoNewline -Encoding UTF8 -Value 'sk-synthetic-primary-key'
-            Set-Content -LiteralPath .\Auto-Test.private-provider.json -NoNewline -Encoding UTF8 -Value '{"baseUrl":"https://model-api.example.test/v1","model":"synthetic-model"}'
-            $env:USERPROFILE = $testUserProfile
-            $env:AUTO_TEST_CODEX_HOME = $testCodexHome
-            $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
-            $env:AUTO_TEST_MODEL_API_KEY = 'sk-synthetic-primary-key'
-            $env:AUTO_TEST_CODEX_PROBE_BIN = $probePath
-            $output = .\Auto-Test.cmd --setup-only 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) { throw "Expected quota failover setup to succeed: $output" }
-            if ($output -notmatch 'Codex CLI 备用 Key') { throw "Expected backup-key switch message: $output" }
-            if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed after failover' }
-            if (Test-Path .\Auto-Test.private-provider.json) { throw 'Bootstrap provider was not removed after failover' }
-            if (-not (Test-Path (Join-Path $testCodexHome 'provider-key.dpapi'))) { throw 'Selected backup key was not persisted with DPAPI' }
-          } finally {
-            $env:USERPROFILE = $previousUserProfile
-            $env:AUTO_TEST_MODEL_API_KEY = $previousApiKey
-            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
-            Remove-Item -Force $probePath, .\Auto-Test.private-key, .\Auto-Test.private-provider.json -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force $testUserProfile, $testCodexHome -ErrorAction SilentlyContinue
-          }
-
       - name: Run deterministic checks
         run: npm run check
 
