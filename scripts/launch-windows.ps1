@@ -31,7 +31,6 @@ $script:BootstrapSecretPath = ''
 $script:BootstrapProviderPath = ''
 $script:BootstrapSecretUsed = $false
 $script:BootstrapProviderUsed = $false
-$script:ApiKeyCandidates = @()
 $script:PreviousConfigExists = $false
 $script:PreviousConfigContent = ''
 $script:PreviousSecretExists = $false
@@ -196,31 +195,8 @@ function Unprotect-Secret([string] $Value) {
   }
 }
 
-function Get-CodexCliApiKey {
-  $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
-  if (-not (Test-Path -LiteralPath $authPath)) { return '' }
-  try {
-    $auth = Get-Content -Raw -Encoding UTF8 $authPath | ConvertFrom-Json
-    $candidate = [string] $auth.OPENAI_API_KEY
-    if ($candidate -match '^sk-\S+$') { return $candidate }
-  } catch {
-    # A missing or non-API-key Codex auth file is not an Auto-Test blocker.
-  }
-  return ''
-}
-
 function Escape-TomlString([string] $Value) {
   return $Value.Replace('\', '\\').Replace('"', '\"')
-}
-
-function Persist-ProviderSecret([string] $Value) {
-  $secretPath = $script:ProviderSecretPath
-  if ($env:AUTO_TEST_PERSIST_API_KEY -eq '0') {
-    Remove-Item -Force $secretPath -ErrorAction SilentlyContinue
-    return
-  }
-  $encrypted = Protect-Secret $Value
-  [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
 }
 
 function Test-HttpUrl([string] $Value) {
@@ -310,13 +286,8 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
       throw '已保存的 API Key 无法由当前 Windows 用户解密，请使用 --reconfigure-api 重新配置。'
     }
   }
-  $codexCliApiKey = Get-CodexCliApiKey
-  $script:ApiKeyCandidates = @(@($apiKey, $codexCliApiKey) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-    Select-Object -Unique)
-  if (-not $apiKey -and $codexCliApiKey) { $apiKey = $codexCliApiKey }
   $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or $apiKeyFromBootstrap -or $script:BootstrapProviderUsed -or -not $providerReady -or
-    $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi -or $script:ApiKeyCandidates.Count -gt 1
+    $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
   if ($baseUrl -and $existingBaseUrl -and $baseUrl -ne $existingBaseUrl) {
     $script:ApiConfigurationChanged = $true
   }
@@ -330,7 +301,6 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $apiKey = ''
     $apiKeyFromProcess = $false
     $providerReady = $false
-    $script:ApiKeyCandidates = @()
   }
   if ($legacyProvider) {
     $providerReady = $false
@@ -374,7 +344,12 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $keyProvidedNow = $true
   }
   if ($keyProvidedNow) {
-    Persist-ProviderSecret $apiKey
+    if ($env:AUTO_TEST_PERSIST_API_KEY -eq '0') {
+      Remove-Item -Force $secretPath -ErrorAction SilentlyContinue
+    } else {
+      $encrypted = Protect-Secret $apiKey
+      [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
+    }
   }
   [Environment]::SetEnvironmentVariable($ProviderKeyEnvironment, $apiKey, 'Process')
 
@@ -444,53 +419,33 @@ function Test-CodexProvider {
   if (-not $script:ApiConfigurationChanged -or $env:AUTO_TEST_SKIP_API_PROBE -eq '1') { return }
   $codexExecutable = if ($env:AUTO_TEST_CODEX_PROBE_BIN) { $env:AUTO_TEST_CODEX_PROBE_BIN } else { $env:AUTO_TEST_CODEX_BIN }
   if (-not $codexExecutable -or -not (Test-Path $codexExecutable)) { throw '找不到 Auto-Test 私有 Codex CLI。' }
-  $candidates = @($script:ApiKeyCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  if ($candidates.Count -eq 0) {
-    $candidates = @([Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process'))
-  }
-  if ($candidates.Count -eq 0 -or [string]::IsNullOrWhiteSpace($candidates[0])) {
-    throw '没有可用于模型 API 探针的 Key。'
-  }
-
-  for ($index = 0; $index -lt $candidates.Count; $index++) {
-    $candidate = [string] $candidates[$index]
-    [Environment]::SetEnvironmentVariable($ProviderKeyEnvironment, $candidate, 'Process')
-    $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
+  $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
+  try {
+    Write-Host '[检查] 正在验证模型 API 地址、Key 和模型可用性……'
+    $probeExitCode = 1
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
-      if ($index -eq 0) {
-        Write-Host '[检查] 正在验证模型 API 地址、Key 和模型可用性……'
-      } else {
-        Write-Host '[切换] 主 API Key 额度不足，正在尝试 Codex CLI 备用 Key……'
-      }
-      $probeExitCode = 1
-      $previousErrorActionPreference = $ErrorActionPreference
-      try {
-        # Windows PowerShell 5 wraps native stderr as ErrorRecord objects. Codex writes
-        # its normal version banner to stderr, so capture it without treating it as a script failure.
-        $ErrorActionPreference = 'Continue'
-        & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
-        $probeExitCode = $LASTEXITCODE
-      } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-      }
-      $probe = if (Test-Path $probePath) { Get-Content -Raw -Encoding UTF8 $probePath } else { '' }
-      if ($probeExitCode -eq 0 -and $probe -match '(?m)^\s*AUTO_TEST_API_READY\s*$') {
-        Persist-ProviderSecret $candidate
-        if ($index -gt 0) { Write-Host '[切换] 已切换到 Codex CLI 备用 Key，并保存为当前 Auto-Test Provider Key。' }
-        Write-Host '[OK] 模型 API 调用验证通过'
-        return
-      }
-
-      $hint = Get-CodexProbeFailureHint $probe $probeExitCode
-      $hasFallback = $index + 1 -lt $candidates.Count
-      if ($hint -notmatch '额度不足或请求频率受限' -or -not $hasFallback) {
-        Restore-PreviousProviderConfig
-        if ($probeExitCode -eq 0) { throw '模型 API 已响应但健康检查结果异常，已恢复上一版配置。' }
-        throw "模型 API 探针失败，已恢复上一版配置。$hint"
-      }
+      # Windows PowerShell 5 wraps native stderr as ErrorRecord objects. Codex writes
+      # its normal version banner to stderr, so capture it without treating it as a script failure.
+      $ErrorActionPreference = 'Continue'
+      & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
+      $probeExitCode = $LASTEXITCODE
     } finally {
-      Remove-Item -Force $probePath -ErrorAction SilentlyContinue
+      $ErrorActionPreference = $previousErrorActionPreference
     }
+    $probe = if (Test-Path $probePath) { Get-Content -Raw -Encoding UTF8 $probePath } else { '' }
+    if ($probeExitCode -ne 0) {
+      Restore-PreviousProviderConfig
+      $hint = Get-CodexProbeFailureHint $probe $probeExitCode
+      throw "模型 API 探针失败，已恢复上一版配置。$hint"
+    }
+    if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {
+      Restore-PreviousProviderConfig
+      throw '模型 API 已响应但健康检查结果异常，已恢复上一版配置。'
+    }
+    Write-Host '[OK] 模型 API 调用验证通过'
+  } finally {
+    Remove-Item -Force $probePath -ErrorAction SilentlyContinue
   }
 }
 
