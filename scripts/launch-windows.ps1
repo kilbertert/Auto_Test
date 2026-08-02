@@ -470,11 +470,7 @@ function ConvertTo-NativeArgument([string] $Value) {
   return '"' + $Value.Replace('"', '\"') + '"'
 }
 
-function Start-CodexProbeProcess(
-  [string] $Executable,
-  [string] $StandardOutputPath,
-  [string] $StandardErrorPath
-) {
+function Start-CodexProbeProcess([string] $Executable) {
   $arguments = @(
     'exec',
     'Reply with exactly AUTO_TEST_API_READY.',
@@ -494,11 +490,28 @@ function Start-CodexProbeProcess(
     $processExecutable = $env:ComSpec
     $processArguments = "/d /s /c `"`"$Executable`" $argumentLine`""
   }
-  # File redirection avoids Windows PowerShell 5 converting Codex's normal stderr
-  # banners into ErrorRecord objects, and also avoids pipe-buffer deadlocks.
-  return Start-Process -FilePath $processExecutable -ArgumentList $processArguments `
-    -RedirectStandardOutput $StandardOutputPath -RedirectStandardError $StandardErrorPath `
-    -WindowStyle Hidden -PassThru
+  # Native Process APIs preserve the real exit code on Windows PowerShell 5.1.
+  # Read both streams asynchronously so neither pipe can block the probe process.
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $processExecutable
+  $startInfo.Arguments = $processArguments
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    $process.Start() | Out-Null
+    return [pscustomobject]@{
+      Process = $process
+      StandardOutput = $process.StandardOutput.ReadToEndAsync()
+      StandardError = $process.StandardError.ReadToEndAsync()
+    }
+  } catch {
+    $process.Dispose()
+    throw
+  }
 }
 
 function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSeconds) {
@@ -536,16 +549,15 @@ function Test-CodexProvider {
   if (-not $script:ApiConfigurationChanged -or $env:AUTO_TEST_SKIP_API_PROBE -eq '1') { return }
   $codexExecutable = if ($env:AUTO_TEST_CODEX_PROBE_BIN) { $env:AUTO_TEST_CODEX_PROBE_BIN } else { $env:AUTO_TEST_CODEX_BIN }
   if (-not $codexExecutable -or -not (Test-Path $codexExecutable)) { throw '找不到 Auto-Test 私有 Codex CLI。' }
-  $probeStem = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N'))"
-  $standardOutputPath = "$probeStem.stdout.txt"
-  $standardErrorPath = "$probeStem.stderr.txt"
+  $probeInvocation = $null
   $probeProcess = $null
   try {
     try {
       $timeoutSeconds = Get-CodexProbeTimeoutSeconds
       Write-Host "[检查] 正在验证模型 API 地址、Key 和模型可用性（最多等待 $timeoutSeconds 秒）……"
       try {
-        $probeProcess = Start-CodexProbeProcess $codexExecutable $standardOutputPath $standardErrorPath
+        $probeInvocation = Start-CodexProbeProcess $codexExecutable
+        $probeProcess = $probeInvocation.Process
       } catch {
         throw "无法启动模型 API 探针：$($_.Exception.Message)"
       }
@@ -554,8 +566,8 @@ function Test-CodexProvider {
         throw "模型 API 探针在 $timeoutSeconds 秒内未完成，已终止卡住的 Codex 进程。请检查模型服务、Windows 网络、代理或流式响应稳定性；仅在网关确实较慢时调整 AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS。"
       }
       $probeExitCode = $probeProcess.ExitCode
-      $standardOutput = if (Test-Path $standardOutputPath) { Get-Content -Raw -Encoding UTF8 $standardOutputPath } else { '' }
-      $standardError = if (Test-Path $standardErrorPath) { Get-Content -Raw -Encoding UTF8 $standardErrorPath } else { '' }
+      $standardOutput = $probeInvocation.StandardOutput.GetAwaiter().GetResult()
+      $standardError = $probeInvocation.StandardError.GetAwaiter().GetResult()
       $probe = @($standardOutput, $standardError) -join [Environment]::NewLine
       if ($probeExitCode -ne 0) {
         $hint = Get-CodexProbeFailureHint $probe $probeExitCode
@@ -570,8 +582,11 @@ function Test-CodexProvider {
       throw "$($_.Exception.Message) 已恢复上一版配置。"
     }
   } finally {
+    if ($probeInvocation -and $probeProcess -and $probeProcess.HasExited) {
+      try { $probeInvocation.StandardOutput.GetAwaiter().GetResult() | Out-Null } catch {}
+      try { $probeInvocation.StandardError.GetAwaiter().GetResult() | Out-Null } catch {}
+    }
     if ($probeProcess) { $probeProcess.Dispose() }
-    Remove-Item -Force $standardOutputPath, $standardErrorPath -ErrorAction SilentlyContinue
   }
 }
 
