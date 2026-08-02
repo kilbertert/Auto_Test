@@ -23,6 +23,8 @@ describe('Windows portable launcher', () => {
     expect(script).toContain('$startInfo.RedirectStandardError = $true')
     expect(script).toContain('$process.StandardOutput.ReadToEndAsync()')
     expect(script).toContain('$process.StandardError.ReadToEndAsync()')
+    expect(script).toContain('$Process.StandardOutput.Close()')
+    expect(script).toContain('$Process.StandardError.Close()')
     expect(script).not.toContain("& $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.'")
     expect(script).toContain("scripts\\check-playwright-browser.cjs")
     expect(script).toContain('& $script:NodeExecutable $playwrightCli install chromium')
