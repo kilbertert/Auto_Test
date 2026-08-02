@@ -543,6 +543,10 @@ function Stop-CodexProbeProcess([Diagnostics.Process] $Process) {
     try { $Process.Kill() } catch {}
   }
   try { $Process.WaitForExit(5000) | Out-Null } catch {}
+  # Detached descendants can keep inherited pipe handles open after the probe
+  # process exits. Close our readers so timeout cleanup never waits for EOF.
+  try { $Process.StandardOutput.Close() } catch {}
+  try { $Process.StandardError.Close() } catch {}
 }
 
 function Test-CodexProvider {
@@ -582,10 +586,6 @@ function Test-CodexProvider {
       throw "$($_.Exception.Message) 已恢复上一版配置。"
     }
   } finally {
-    if ($probeInvocation -and $probeProcess -and $probeProcess.HasExited) {
-      try { $probeInvocation.StandardOutput.GetAwaiter().GetResult() | Out-Null } catch {}
-      try { $probeInvocation.StandardError.GetAwaiter().GetResult() | Out-Null } catch {}
-    }
     if ($probeProcess) { $probeProcess.Dispose() }
   }
 }
