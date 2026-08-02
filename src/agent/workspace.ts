@@ -91,6 +91,15 @@ function riskFor(profile: EnvironmentProfile): CodexTestRisk {
   return 'read'
 }
 
+function originSet(values: string[]): Set<string> {
+  return new Set(values.map((value) => new URL(value).origin))
+}
+
+function isOriginAppendOnly(previous: string[], current: string[]): boolean {
+  const next = originSet(current)
+  return [...originSet(previous)].every((origin) => next.has(origin))
+}
+
 function bindingPurpose(bindings: WorkflowSecretBinding[], secretRef: string): string {
   return bindings.find((binding) => binding.secretRef === secretRef)?.purpose ?? secretRef
 }
@@ -176,12 +185,12 @@ export async function prepareCodexAgentWorkspace(options: {
   const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
   const planPath = resolve(workspaceDirectory, 'execution-plan.json')
   const workspaceHashPath = resolve(workspaceDirectory, 'workspace.sha256')
-  const workspaceHash = createHash('sha256').update(JSON.stringify({
+  const workspaceIdentity = {
     workflowId: options.manifest.workflowId,
     sourceSha256: options.manifest.source.sha256,
     profileId: options.profile.id,
-    origins: options.profile.origins,
-  })).digest('hex')
+  }
+  const workspaceHash = createHash('sha256').update(JSON.stringify(workspaceIdentity)).digest('hex')
   await Promise.all([
     mkdir(workspaceDirectory, { recursive: true, mode: 0o750 }),
     mkdir(privateDirectory, { recursive: true, mode: 0o700 }),
@@ -197,9 +206,13 @@ export async function prepareCodexAgentWorkspace(options: {
     if (existingManifest.workflowId !== options.manifest.workflowId || existingManifest.source.sha256 !== options.manifest.source.sha256) {
       throw new Error('Resume input does not match the existing Auto-Test workflow identity')
     }
-    const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
-    if (existingHash !== workspaceHash) throw new Error('Resume environment does not match the existing Auto-Test workspace identity')
     const existingControl = JSON.parse(await readFile(controlConfigPath, 'utf8')) as CodexTestControlConfig
+    const existingOrigins = existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin)
+    const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
+    const legacyWorkspaceHash = createHash('sha256').update(JSON.stringify({ ...workspaceIdentity, origins: existingOrigins })).digest('hex')
+    if (existingHash !== workspaceHash && existingHash !== legacyWorkspaceHash) {
+      throw new Error('Resume environment does not match the existing Auto-Test workspace identity')
+    }
     const expectedControl = {
       workflowId: options.manifest.workflowId,
       sourceSha256: options.manifest.source.sha256,
@@ -218,7 +231,9 @@ export async function prepareCodexAgentWorkspace(options: {
       caseIds: existingControl.caseIds,
       caseRisks: existingControl.caseRisks,
     }
-    if (JSON.stringify(actualControl) !== JSON.stringify(expectedControl)) {
+    const immutableControlMatches = JSON.stringify({ ...actualControl, allowedOrigins: undefined }) ===
+      JSON.stringify({ ...expectedControl, allowedOrigins: undefined })
+    if (!immutableControlMatches || !isOriginAppendOnly(existingOrigins, options.profile.origins)) {
       throw new Error('Resume contract or environment policy does not match the existing Auto-Test run')
     }
   } else {

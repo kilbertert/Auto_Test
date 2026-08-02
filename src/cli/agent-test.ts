@@ -3,6 +3,7 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
+import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult } from '../agent/types.js'
 import { redactSensitiveContent } from '../input/text.js'
@@ -36,6 +37,13 @@ export interface AgentTestCliOptions {
   codexExecutable?: string
   codexHome?: string
   resume?: boolean
+}
+
+interface AgentEnvironmentSelection {
+  profileId: string
+  origins: string[]
+  policy: EnvironmentProfile['policy']
+  authenticatedOrigins: string[]
 }
 
 function timestamp(): string {
@@ -170,17 +178,43 @@ export function mergeAgentSecrets(
   return result
 }
 
-function targetOrigins(manifest: WorkflowIntakeManifest): Set<string> {
-  return new Set(manifest.targetUrls.map((url) => new URL(url).origin))
+function targetOrigins(manifest: WorkflowIntakeManifest, additionalOrigins: string[] = []): Set<string> {
+  return new Set([
+    ...manifest.targetUrls.map((url) => new URL(url).origin),
+    ...additionalOrigins.map((origin) => new URL(origin).origin),
+  ])
 }
 
-export function scopeEnvironmentProfile(profile: EnvironmentProfile, manifest: WorkflowIntakeManifest): EnvironmentProfile {
-  const origins = targetOrigins(manifest)
+export function scopeEnvironmentProfile(
+  profile: EnvironmentProfile,
+  manifest: WorkflowIntakeManifest,
+  additionalOrigins: string[] = [],
+): EnvironmentProfile {
+  const origins = targetOrigins(manifest, additionalOrigins)
   return {
     ...profile,
     origins: profile.origins.filter((origin) => origins.has(origin)),
     auth: profile.auth.filter((adapter) => origins.has(adapter.origin)),
   }
+}
+
+function originSet(origins: string[]): Set<string> {
+  return new Set(origins.map((origin) => new URL(origin).origin))
+}
+
+function isAppendOnlyOrigins(previous: string[], current: string[]): boolean {
+  const next = originSet(current)
+  return [...originSet(previous)].every((origin) => next.has(origin))
+}
+
+function isAppendOnlyEnvironmentSelection(
+  previous: { profileId: string; origins: string[]; policy: EnvironmentProfile['policy']; authenticatedOrigins: string[] },
+  current: { profileId: string; origins: string[]; policy: EnvironmentProfile['policy']; authenticatedOrigins: string[] },
+): boolean {
+  return previous.profileId === current.profileId &&
+    JSON.stringify(previous.policy) === JSON.stringify(current.policy) &&
+    isAppendOnlyOrigins(previous.origins, current.origins) &&
+    isAppendOnlyOrigins(previous.authenticatedOrigins, current.authenticatedOrigins)
 }
 
 function requiredSecretRefs(manifest: WorkflowIntakeManifest, profile: EnvironmentProfile): Set<string> {
@@ -309,9 +343,20 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   try {
     printProgress('正在匹配环境 Profile、权限策略和登录状态')
     const registry = await loadEnvironmentProfileRegistry(options.profileRegistryPath)
+    const environmentSelectionPath = resolve(options.outputDirectory, 'environment-selection.json')
+    const priorSelection = options.resume
+      ? JSON.parse(await readFile(environmentSelectionPath, 'utf8')) as AgentEnvironmentSelection
+      : undefined
+    const priorRequirements = options.resume
+      ? await readEnvironmentRequirements(resolve(options.outputDirectory, '.agent-private', 'environment-requirements.json'))
+      : []
+    const additionalOrigins = priorRequirements
+      .map((requirement) => requirement.origin)
+    const requestedProfileId = options.profileId ?? priorSelection?.profileId
     profile = scopeEnvironmentProfile(
-      selectEnvironmentProfile(registry, intake.manifest.targetUrls, options.profileId),
+      selectEnvironmentProfile(registry, intake.manifest.targetUrls, requestedProfileId),
       intake.manifest,
+      additionalOrigins,
     )
     secrets = mergeAgentSecrets(
       await loadEnvironmentProfileSecrets(profile),
@@ -327,17 +372,15 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       { headless: !options.headed, ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}) },
     )
     printProgress(`环境“${profile.id}”已就绪，正在启动 Codex-native 测试代理`)
-    const environmentSelection = {
+    const environmentSelection: AgentEnvironmentSelection = {
       profileId: profile.id,
       origins: profile.origins,
       policy: profile.policy,
       authenticatedOrigins: profile.auth.map((adapter) => adapter.origin),
     }
-    const environmentSelectionPath = resolve(options.outputDirectory, 'environment-selection.json')
     if (options.resume) {
-      const existingSelection = JSON.parse(await readFile(environmentSelectionPath, 'utf8')) as typeof environmentSelection
-      if (JSON.stringify(existingSelection) !== JSON.stringify(environmentSelection)) {
-        throw new Error('恢复运行所选环境与原运行不一致')
+      if (!priorSelection || !isAppendOnlyEnvironmentSelection(priorSelection, environmentSelection)) {
+        throw new Error('恢复运行所选环境与原运行不一致；仅允许在同一 Profile 和策略下追加已登记 origin')
       }
     } else {
       await writePrivateJson(environmentSelectionPath, environmentSelection)

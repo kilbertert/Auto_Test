@@ -6,7 +6,7 @@ import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { blockedNavigationOriginsFromEvents, requestEnvironmentAccess } from './environment-requirements.js'
+import { blockedNavigationOriginsFromEvents, reconcileEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
 import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues } from './redact.js'
@@ -507,6 +507,7 @@ export async function runCodexTestAgent(
     })
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath
+    await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
     progress.report('stage', '隔离测试工作区已准备，正在启动 Codex 测试线程')
     const activeCodexExecutable = await resolveCodexExecutable(options)
     const threadOptions = {
@@ -565,6 +566,11 @@ export async function runCodexTestAgent(
         type: 'text',
         text: `The execution delivery contract is incomplete:\n- ${problems.join('\n- ')}\nContinue the same browser session. Repair missing final assertions, evidence, plan status, case_result_record entries, or pending mutation recovery without weakening expected results. Do not repeat already verified business mutations. Finish with a short plain-text summary.`,
       }], eventsPath, redactionSecrets, progress, persistThreadId)
+      await captureBlockedNavigationRequirements(
+        eventsPath,
+        workspace.environmentRequirementsPath,
+        options.profile.origins,
+      )
       ledger = await readMutationLedger(workspace.mutationLedgerPath)
       environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
       evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])

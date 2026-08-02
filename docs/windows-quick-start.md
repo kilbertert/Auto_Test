@@ -141,7 +141,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --headed
 ```
 
-恢复继续使用同一个 Codex thread 和 Mutation Ledger。它只重建浏览器/MCP 进程，并先根据页面证据核对未完成业务写入；Excel、URL、环境或权限与原 run 不一致时会拒绝恢复。
+恢复继续使用同一个 Codex thread 和 Mutation Ledger。它只重建浏览器/MCP 进程，并先根据页面证据核对未完成业务写入。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对于本次 run 已记录为环境需求、后来完成注册的 origin，框架允许在同一 Profile 下追加并恢复，其他环境替换或权限收窄都会拒绝恢复。
 
 只有排查旧链路兼容性时才使用：
 

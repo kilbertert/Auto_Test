@@ -176,4 +176,36 @@ describe('Codex agent workspace', () => {
     expect(JSON.parse(await readFile(resumed.planPath, 'utf8'))).toEqual(plan)
     expect(await readFile(resumed.playwrightSecretsPath, 'utf8')).toContain('rotated-value')
   })
+
+  it('allows an append-only registered origin during resume', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-origins-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const firstProfile: EnvironmentProfile = {
+      id: 'workspace-fixture',
+      origins: ['https://one.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+    const options = {
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(firstProfile.origins),
+      profile: firstProfile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: sourceHome,
+    }
+    await prepareCodexAgentWorkspace(options)
+    const resumed = await prepareCodexAgentWorkspace({
+      ...options,
+      profile: { ...firstProfile, origins: [...firstProfile.origins, 'https://two.example.test'] },
+      resume: true,
+    })
+
+    const control = JSON.parse(await readFile(resumed.controlConfigPath, 'utf8')) as { allowedOrigins: string[] }
+    expect(control.allowedOrigins).toEqual(['https://one.example.test', 'https://two.example.test'])
+  })
 })

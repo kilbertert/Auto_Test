@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, requestEnvironmentAccess } from '../src/agent/environment-requirements.js'
+import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, reconcileEnvironmentRequirements, requestEnvironmentAccess } from '../src/agent/environment-requirements.js'
 
 const directories: string[] = []
 
@@ -35,6 +35,10 @@ describe('environment access requirements', () => {
     expect(blocked).toMatchObject({ status: 'blocked', origin: 'https://admin.example.test' })
     expect(await readEnvironmentRequirements(requirementsPath)).toHaveLength(1)
     expect(await readFile(requirementsPath, 'utf8')).not.toContain('/virtual/device')
+
+    const reconciled = await reconcileEnvironmentRequirements(requirementsPath, ['https://app.example.test', 'https://admin.example.test'])
+    expect(reconciled[0]).toMatchObject({ origin: 'https://admin.example.test', status: 'satisfied' })
+    expect((await readEnvironmentRequirements(requirementsPath))[0]?.status).toBe('satisfied')
   })
 
   it('infers only blocked navigation origins, not blocked third-party resources', () => {

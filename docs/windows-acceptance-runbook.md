@@ -129,7 +129,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
   --headed
 ```
 
-恢复会继续使用原 Codex thread、动态计划、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原 Codex thread、动态计划、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对本次 run 已记录且后来完成注册的 origin，只允许在同一 Profile 下追加。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
 `product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。
 

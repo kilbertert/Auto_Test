@@ -70,6 +70,23 @@ export async function readEnvironmentRequirements(path: string): Promise<CodexTe
   return readRequirements(path)
 }
 
+export async function reconcileEnvironmentRequirements(
+  path: string,
+  allowedOrigins: string[],
+): Promise<CodexTestEnvironmentRequirement[]> {
+  const requirements = await readRequirements(path)
+  let changed = false
+  const reconciled = requirements.map((item) => {
+    if (item.status === 'pending' && allowedOrigins.includes(item.origin)) {
+      changed = true
+      return { ...item, status: 'satisfied' as const }
+    }
+    return item
+  })
+  if (changed) await writePrivateJson(path, reconciled)
+  return reconciled
+}
+
 export function blockedNavigationOriginsFromEvents(events: string, allowedOrigins: string[]): string[] {
   const found = new Set<string>()
   for (const line of events.split(/\r?\n/)) {
