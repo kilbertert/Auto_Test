@@ -7,6 +7,7 @@ describe('Windows portable launcher', () => {
     const script = await readFile(resolve(import.meta.dirname, '../scripts/launch-windows.ps1'), 'utf8')
     const browserCheck = await readFile(resolve(import.meta.dirname, '../scripts/check-playwright-browser.cjs'), 'utf8')
     const privatePackageBuilder = await readFile(resolve(import.meta.dirname, '../scripts/build-private-windows-package.sh'), 'utf8')
+    const quickPackageBuilder = await readFile(resolve(import.meta.dirname, '../scripts/build-private-windows-package-quick.sh'), 'utf8')
 
     expect(script).toContain("node_modules\\npm\\bin\\npm-cli.js")
     expect(script).toContain("node_modules\\@playwright\\test\\cli.js")
@@ -31,5 +32,8 @@ describe('Windows portable launcher', () => {
     expect(privatePackageBuilder).toContain('AUTO_TEST_CODEX_BASE_URL')
     expect(privatePackageBuilder).toContain('AUTO_TEST_CODEX_MODEL')
     expect(privatePackageBuilder).toContain('Auto-Test.private-provider.json')
+    expect(privatePackageBuilder).toContain('read -r model_api_key || :')
+    expect(quickPackageBuilder).toContain('read -r -s model_api_key || :')
+    expect(quickPackageBuilder).toContain('build-private-windows-package.sh')
   })
 })

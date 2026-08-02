@@ -10,7 +10,10 @@ model_api_key="${AUTO_TEST_MODEL_API_KEY:-}"
 model_base_url="${AUTO_TEST_CODEX_BASE_URL:-}"
 model_id="${AUTO_TEST_CODEX_MODEL:-}"
 if [[ -z "$model_api_key" && ! -t 0 ]]; then
-  IFS= read -r model_api_key
+  # A pipe may end without a newline (for example printf '%s' "$key").
+  # Bash read stores the value but returns 1 at EOF; do not let set -e
+  # terminate before the explicit empty-key validation below.
+  IFS= read -r model_api_key || :
 fi
 if [[ -z "$model_api_key" ]]; then
   echo "缺少模型 API Key；请通过标准输入或私有构建进程环境提供。" >&2
