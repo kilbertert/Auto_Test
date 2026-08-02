@@ -88,7 +88,7 @@ function help(): string {
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
-    '  --opaque-test-data          不向模型直接提供本次 Excel/Profile 测试值；默认 direct',
+    '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
     '  --resume                    恢复同一输出目录中的中断 run、Codex thread 与 Mutation Ledger',
   ].join('\n')
 }
@@ -402,6 +402,8 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     profile,
     secrets,
     environmentContext,
+    sourceFilePath: options.filePath,
+    ...(inputBundle.briefPath ? { briefFilePath: inputBundle.briefPath } : {}),
     imagePaths,
     headed: options.headed,
     ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),

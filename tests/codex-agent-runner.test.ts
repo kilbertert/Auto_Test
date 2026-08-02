@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Input, ThreadEvent } from '@openai/codex-sdk'
 import { CodexTestProgressReporter, progressFromThreadEvent } from '../src/agent/progress.js'
 import { runCodexTestAgent } from '../src/agent/runner.js'
+import type { CodexTestAgentResult } from '../src/agent/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 const directories: string[] = []
@@ -58,6 +59,31 @@ function reconnectingStreamText(response: string): { events: AsyncGenerator<Thre
   }
 }
 
+function finalResult(workflow: WorkflowIntakeManifest, overrides: Partial<CodexTestAgentResult> = {}): CodexTestAgentResult {
+  return {
+    version: '1.0',
+    workflowId: workflow.workflowId,
+    sourceSha256: workflow.source.sha256,
+    outcome: 'passed',
+    summary: 'The requested operation and observable result were verified.',
+    startedAt: '2026-08-03T00:00:00.000Z',
+    finishedAt: '2026-08-03T00:01:00.000Z',
+    cases: workflow.phases.map((phase) => ({
+      caseId: phase.id,
+      title: phase.title,
+      outcome: 'passed',
+      summary: 'Expected business state was observed.',
+      evidence: [{ kind: 'observation', description: 'Live page and business state were verified.' }],
+    })),
+    mutations: [],
+    environmentRequirements: [],
+    blockers: [],
+    productDefects: [],
+    nextActions: [],
+    ...overrides,
+  }
+}
+
 async function fakeCodexExecutable(directory: string): Promise<string> {
   const path = resolve(directory, process.platform === 'win32' ? 'codex.exe' : 'codex')
   await writeFile(path, '', { mode: 0o700 })
@@ -84,11 +110,15 @@ describe('Codex test agent runner', () => {
     const agentMessage = progressFromThreadEvent({
       type: 'item.completed', item: { id: 'message', type: 'agent_message', text: secret },
     } as ThreadEvent)
+    const command = progressFromThreadEvent({
+      type: 'item.started', item: { id: 'command', type: 'command_execution', command: `inspect ${secret}`, aggregated_output: '', status: 'in_progress' },
+    } as ThreadEvent)
 
     expect(started?.message).toContain('填写页面表单')
     expect(completed?.message).toContain('Execution Plan')
     expect(agentMessage?.message).toContain('本轮执行说明')
-    expect(JSON.stringify([started, completed, agentMessage])).not.toContain(secret)
+    expect(command?.message).toContain('测试辅助命令')
+    expect(JSON.stringify([started, completed, agentMessage, command])).not.toContain(secret)
   })
 
   it('emits a heartbeat while a long-running model turn is quiet', async () => {
@@ -171,6 +201,34 @@ describe('Codex test agent runner', () => {
     expect(receivedCodexExecutable).toBe(userCodex)
   })
 
+  it('keeps the legacy restricted Codex configuration behind opaque test-data mode', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-restricted-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    let fullAgentAccess = true
+
+    await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest('https://tasks.example.test'),
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      testDataAccess: 'opaque',
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: (options) => {
+        fullAgentAccess = options.fullAgentAccess
+        throw new Error('stop after restricted thread configuration')
+      },
+    })
+
+    expect(fullAgentAccess).toBe(false)
+  })
+
   it('keeps execution and incomplete-delivery repair in the same persistent thread', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-runner-'))
     directories.push(directory)
@@ -182,38 +240,28 @@ describe('Codex test agent runner', () => {
     const codexExecutable = await fakeCodexExecutable(directory)
     const executionInputs: Input[] = []
     const progressMessages: string[] = []
-    let turn = 0
-    let controlConfigPath = ''
+    const workflow = manifest('https://tasks.example.test')
+    const sourceFilePath = resolve(directory, 'runner.xlsx')
+    await writeFile(sourceFilePath, 'raw workbook')
+    let structuredTurn = 0
     const executionRunStreamed = vi.fn(async (input: Input, options?: { outputSchema?: unknown }) => {
       executionInputs.push(input)
-      expect(options?.outputSchema).toBeUndefined()
-      const control = JSON.parse(await readFile(controlConfigPath, 'utf8')) as { planPath: string; evidencePath: string; caseResultsPath: string }
-      await writeFile(control.planPath, JSON.stringify({
-        summary: 'Inspect task evidence',
-        steps: [{ id: 'inspect', title: 'Inspect task', status: 'passed', evidenceRequired: 'Task details' }],
-      }))
-      await writeFile(control.evidencePath, JSON.stringify([{
-        caseId: 'inspect-task', kind: 'observation', description: 'The expected owner and state were visible.',
-      }]))
-      if (turn++ > 0) {
-        await writeFile(control.caseResultsPath, JSON.stringify([{
-          caseId: 'inspect-task', outcome: 'passed', summary: 'Expected details were visible.',
-          blockers: [], productDefects: [], recordedAt: '2026-08-01T00:01:00.000Z',
-        }]))
-      }
-      return streamedResponse('Execution delivery updated.')
+      if (!options?.outputSchema) return streamedResponse('Execution and assertions complete.')
+      structuredTurn += 1
+      if (structuredTurn === 1) return streamedResponse(JSON.stringify(finalResult(workflow, { cases: [] })))
+      return streamedResponse(JSON.stringify(finalResult(workflow)))
     })
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
-      manifest: manifest('https://tasks.example.test'),
+      manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      secrets: {}, environmentContext: '', sourceFilePath, imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
       onProgress: (progress) => progressMessages.push(progress.message),
     }, {
       browserExecutablePath: browserPath,
       startThread: (options) => {
-        controlConfigPath = options.controlConfigPath
+        expect(options.fullAgentAccess).toBe(true)
         return { id: 'thread-fixture', runStreamed: executionRunStreamed }
       },
     })
@@ -221,13 +269,15 @@ describe('Codex test agent runner', () => {
     expect(run.result?.outcome).toBe('passed')
     expect(run.result?.cases[0]?.failureSource).toBeUndefined()
     expect(run.result?.cases[0]?.failureKind).toBeUndefined()
-    expect(executionRunStreamed).toHaveBeenCalledTimes(2)
-    expect(JSON.stringify(executionInputs[0])).toContain('Do not produce the structured final result')
-    expect(JSON.stringify(executionInputs[1])).toContain('missing final case decision')
+    expect(executionRunStreamed).toHaveBeenCalledTimes(3)
+    expect(JSON.stringify(executionInputs[0])).toContain('primary test engineer')
+    expect(JSON.stringify(executionInputs[0])).toContain('runner.xlsx')
+    expect(JSON.stringify(executionInputs[1])).toContain('Produce the final structured result')
+    expect(JSON.stringify(executionInputs[2])).toContain('missing final case result')
     expect(progressMessages).toContain('Codex 测试线程已建立；中断后可以从本次结果目录恢复')
     expect(progressMessages).toContain('结构化测试结果已生成：passed')
     const events = await readFile(resolve(directory, 'run', 'codex-agent.events.jsonl'), 'utf8')
-    expect(events.trim().split('\n')).toHaveLength(6)
+    expect(events.trim().split('\n')).toHaveLength(9)
   })
 
   it('delivers model infrastructure failures as a structured blocked result', async () => {
@@ -318,7 +368,8 @@ describe('Codex test agent runner', () => {
         resumedThreadId = options.threadId
         return {
           id: options.threadId,
-          runStreamed: async (input) => {
+          runStreamed: async (input, turnOptions) => {
+            if (turnOptions?.outputSchema) return streamedResponse(JSON.stringify(finalResult(workflow)))
             recoveryPrompt = JSON.stringify(input)
             await writeFile(ledgerPath, JSON.stringify([{
               id: 'pending-action', caseId: 'inspect-task', description: 'Recover exact task update', risk: 'write', status: 'compensated',
@@ -332,10 +383,6 @@ describe('Codex test agent runner', () => {
               summary: 'Recovered',
               steps: [{ id: 'recover', title: 'Recover pending action', status: 'passed', evidenceRequired: 'Terminal state' }],
             }))
-            await writeFile(caseResultsPath, JSON.stringify([{
-              caseId: 'inspect-task', outcome: 'passed', summary: 'Recovered and verified.', blockers: [], productDefects: [],
-              recordedAt: '2026-08-01T00:01:00.000Z',
-            }]))
             return streamedResponse('Recovery complete.')
           },
         }
@@ -360,37 +407,31 @@ describe('Codex test agent runner', () => {
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
     const codexExecutable = await fakeCodexExecutable(directory)
-    let controlConfigPath = ''
+    let turn = 0
+    const workflow = manifest('https://tasks.example.test')
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
-      manifest: manifest('https://tasks.example.test'),
+      manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
     }, {
       browserExecutablePath: browserPath,
-      startThread: (options) => {
-        controlConfigPath = options.controlConfigPath
-        return {
-          id: 'thread-fixture',
-          runStreamed: async () => {
-            const control = JSON.parse(await readFile(controlConfigPath, 'utf8')) as { planPath: string; evidencePath: string; caseResultsPath: string }
-            await writeFile(control.planPath, JSON.stringify({ steps: [{ id: 'inspect', status: 'passed' }] }))
-            await writeFile(control.evidencePath, JSON.stringify([{ caseId: 'inspect-task', kind: 'observation', description: 'Evidence' }]))
-            await writeFile(control.caseResultsPath, JSON.stringify([{
-              caseId: 'inspect-task', outcome: 'passed', summary: 'Expected details were visible.',
-              blockers: [], productDefects: [], recordedAt: '2026-08-01T00:01:00.000Z',
-            }]))
-            return reconnectingStreamText('Execution complete.')
-          },
-        }
-      },
+      startThread: () => ({
+        id: 'thread-fixture',
+        runStreamed: async (_input, options) => {
+          turn += 1
+          return options?.outputSchema
+            ? streamedResponse(JSON.stringify(finalResult(workflow)))
+            : reconnectingStreamText('Execution complete.')
+        },
+      }),
     })
 
     expect(run.result?.outcome).toBe('passed')
   })
 
-  it('downgrades an unverified product validation claim to blocked', async () => {
+  it('accepts a valid Codex result without framework plans, field gates, case checkpoints, or mandatory ledger entries', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-field-gate-'))
     directories.push(directory)
     const sourceHome = resolve(directory, 'source-home')
@@ -399,45 +440,26 @@ describe('Codex test agent runner', () => {
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
     const codexExecutable = await fakeCodexExecutable(directory)
-    let controlConfigPath = ''
+    const workflow = manifest('https://tasks.example.test', 'write')
 
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'),
-      manifest: manifest('https://tasks.example.test'),
-      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
       maxFinalizationTurns: 0,
     }, {
       browserExecutablePath: browserPath,
-      startThread: (options) => {
-        controlConfigPath = options.controlConfigPath
-        return {
-          id: 'thread-field-gate',
-          runStreamed: async () => {
-            const control = JSON.parse(await readFile(controlConfigPath, 'utf8')) as {
-              planPath: string; evidencePath: string; caseResultsPath: string; fieldCompositionPath: string
-            }
-            await writeFile(control.planPath, JSON.stringify({ steps: [{ id: 'submit', status: 'failed' }] }))
-            await writeFile(control.evidencePath, JSON.stringify([{ caseId: 'inspect-task', kind: 'observation', description: 'Validation error visible.' }]))
-            await writeFile(control.fieldCompositionPath, JSON.stringify([{
-              id: 'inspect-task:value', caseId: 'inspect-task', fieldId: 'value', status: 'blocked',
-            }]))
-            await writeFile(control.caseResultsPath, JSON.stringify([{
-              caseId: 'inspect-task', outcome: 'product_failed', summary: 'The application rejected the value.',
-              blockers: [], productDefects: ['Validation rejected the value.'], failureSource: 'product', failureKind: 'validation',
-              fieldGateIds: ['inspect-task:value'], recordedAt: '2026-08-01T00:01:00.000Z',
-            }]))
-            return streamedResponse('Execution complete.')
-          },
-        }
-      },
+      startThread: () => ({
+        id: 'thread-thin-harness',
+        runStreamed: async (_input, options) => options?.outputSchema
+          ? streamedResponse(JSON.stringify(finalResult(workflow)))
+          : streamedResponse('Execution complete.'),
+      }),
     })
 
-    expect(run.result?.outcome).toBe('blocked')
-    expect(run.result?.cases[0]?.outcome).toBe('blocked')
-    expect(run.result?.cases[0]?.failureSource).toBe('agent_execution')
-    expect(run.result?.productDefects).toEqual([])
-    expect(run.result?.blockers.join(' ')).toContain('lacks a passed composite-field gate')
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.mutations).toEqual([])
   })
 
   it('keeps unknown framework exceptions as failed instead of misclassifying them as a business block', async () => {

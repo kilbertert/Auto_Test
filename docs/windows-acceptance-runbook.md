@@ -75,9 +75,9 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 将示例 URL 替换为测试材料需要访问的实际 URL。`--one` 先执行一条列表数据做安全 canary；确认清理和断言可靠后，再按测试范围执行更多数据。
 
-运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。框架会自主理解 Excel 和图片、探索页面、维护动态计划、执行操作、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
+运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。Codex 会直接读取原始 Excel 和图片，并可使用 shell、临时脚本和完整 Playwright 自主探索、执行、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
 
-启动后应立即看到带时间的阶段进度；执行期间会显示读取页面、浏览器动作、动态计划、证据和业务写入清理等安全摘要。模型正在思考、等待页面或自动重连而暂时没有新动作时，窗口每约 20 秒输出一次“框架仍在运行”心跳。进度不会显示密码、验证码、Cookie、表单值、工具参数或模型推理正文。如果窗口给出明确的 `blocked` 或失败结果，应按结果中的原因处理；不要仅因某个页面步骤耗时较长就关闭窗口。
+启动后应立即看到带时间的阶段进度；执行期间会显示读取页面、浏览器动作、测试辅助脚本、工作区更新、证据和业务写入清理等摘要。模型正在思考、等待页面或自动重连而暂时没有新动作时，窗口每约 20 秒输出一次“框架仍在运行”心跳。进度不会显示命令正文、密码、验证码、Cookie、表单值、工具参数或模型推理正文。如果窗口给出明确的 `blocked` 或失败结果，应按结果中的原因处理；不要仅因某个页面步骤耗时较长就关闭窗口。
 
 终端进度只用于判断框架是否仍在运行，不能作为验收通过证据。
 
@@ -95,25 +95,22 @@ Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFr
 
 ```powershell
 $Result = Get-Content "$Run\codex-agent.result.json" -Raw | ConvertFrom-Json
-$Plan = Get-Content "$Run\agent-workspace\execution-plan.json" -Raw | ConvertFrom-Json
 $Ledger = Get-Content "$Run\.agent-private\mutation-ledger.json" -Raw | ConvertFrom-Json
-$FieldGates = Get-Content "$Run\.agent-private\field-compositions.json" -Raw | ConvertFrom-Json
 
 $Result.outcome
-$Result.cases | Format-Table caseId, outcome
-$Plan.steps | Where-Object status -ne "passed" | Format-Table id, status
+$Result.cases | Format-Table caseId, outcome, summary
+$Result.cases | ForEach-Object { $_.evidence }
 $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
-$FieldGates | Where-Object status -eq "blocked" | Format-Table id, caseId, fieldId, status
 ```
 
 只有同时满足以下条件，才算该 run 通过：
 
 - `codex-agent.result.json` 的 `outcome` 为 `passed`；
 - 每个测试用例均为 `passed`，且有对应业务证据；
-- 动态计划没有 `pending`、`in_progress`、`failed` 或 `blocked` 步骤；
 - Mutation Ledger 没有 `pending` 条目；
-- 任何已提交的复合字段都有对应的 `passed` Gate；验证类 `product_failed` 必须引用已通过的 `fieldGateIds`；
 - 测试材料要求的最终业务状态已验证，例如零活动订单、测试数据已删除、设备或连接器已恢复。
+
+`execution-plan.json`、`field-compositions.json`、Control MCP evidence checkpoint 或 Codex 生成的临时脚本可以存在，也可以不存在；它们不能替代最终业务证据，也不是通过条件。
 
 一次页面点击成功、浏览器没有报错或部分步骤执行完成，都不能替代这些终态条件。
 
@@ -132,7 +129,7 @@ $FieldGates | Where-Object status -eq "blocked" | Format-Table id, caseId, field
   --headed
 ```
 
-恢复会继续使用原 Codex thread、动态计划、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对本次 run 已记录且后来完成注册的 origin，只允许在同一 Profile 下追加。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原 Codex thread、原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。Excel、URL、Profile 和风险策略必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
 `product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。
 
@@ -143,9 +140,9 @@ $FieldGates | Where-Object status -eq "blocked" | Format-Table id, caseId, field
 - `codex-agent.state.json`
 - `codex-agent.result.json`
 - `codex-agent.events.jsonl`
-- `agent-workspace\execution-plan.json`
-- `agent-workspace\evidence-index.json`
+- `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`
+- Codex 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录
 - `.agent-private\environment-requirements.json`（如存在）
 
 `.agent-private` 用于本机恢复和审计，不应外发。页面证据也可能包含业务数据，离开测试团队前必须先检查和脱敏。

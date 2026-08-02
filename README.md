@@ -4,9 +4,9 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。
 
-默认主链路已经切换为 Codex-native 测试代理：输入测试用例 Excel 和已注册环境后，一个持久 Codex 线程通过 Playwright MCP 持续完成用例理解、页面探索、证据驱动计划修订、真实执行、业务断言、恢复和结构化交付。它不会先把新场景压缩成固定 Execution Plan；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
+默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片、测试说明和本轮环境值会进入隔离的可写 run 工作区。同一个持久 Codex 线程可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付。框架不再把新场景压缩成固定 Execution Plan，也不实现页面字段语义执行器；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、复合字段输入 Gate、结构化结果、同 thread 中断恢复和 Windows 启动器接入。复合字段 Gate 将一个逻辑测试值与页面上的选择器、输入框、显示前缀等组件分离，并在提交前阻断未知或重复表示；未经通过 Gate 的格式错误不能被报告为产品缺陷。真实 Windows 充电闭环已经仅使用 Excel、三个目标 URL 和一次环境注册完成自主执行，并在主机离线与模型限流后从原 run 恢复到 `passed`；任意新业务场景仍应先执行一条安全 canary，不能把单个复杂场景通过等同于所有网站天然兼容。
+当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、同 thread 中断恢复和 Windows 启动器接入。`test_plan_update`、复合字段 Gate 和逐用例 checkpoint 仍可用于诊断，但不再是执行或通过门禁。历史 Windows 充电闭环曾在较受限的 Codex-native 版本中仅使用 Excel、三个目标 URL 和一次环境注册恢复到 `passed`；新的薄外壳实现必须重新执行真实 Windows canary 后，才能声明同一场景已在新权限模型下闭环。
 
 ## 当前文档
 
@@ -45,9 +45,9 @@ URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日
 - 测试工程师定义的预期结果不可由 Agent 修改。
 - 每个通过用例必须包含至少一条明确断言。
 - 浏览器操作失败不能被降级为成功。
-- 写入前必须登记 Mutation，完成后必须验证接受或补偿结果。
+- 对需要中断恢复的外部业务写入，应按一个完整业务操作登记 Mutation，并验证接受或补偿结果；普通导航、读取和字段输入不需要逐动作登记。
 - 凭据和真实测试数据不得提交到仓库。
-- 页面内容视为不可信输入，测试线程只启用 Playwright 与 Auto-Test Control MCP。
+- 页面内容视为不可信输入。默认测试线程可使用 run 工作区、shell、网络和完整 Playwright，但不得修改 Auto-Test 或被测应用源码。
 
 ## Legacy IR/Runtime
 

@@ -9,7 +9,6 @@ import { readEnvironmentRequirements, requestEnvironmentAccess } from './environ
 import type { CodexTestControlConfig } from './control-types.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
 import { validateFieldCompositionGate } from './field-composition.js'
-import { decisionFieldContractProblem } from './decision-contract.js'
 import { getRunScopedTestValue, parseAgentSecretValues } from './test-data-access.js'
 import type { CodexTestCaseDecision, CodexTestFailureKind, CodexTestFailureSource, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry, CodexTestRisk } from './types.js'
 
@@ -68,12 +67,11 @@ async function main(): Promise<void> {
   const caseIds = new Set(config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
-      'Use test_plan_update before browser execution and whenever live evidence changes the plan.',
-      'Use evidence_record for every business assertion and important failure observation.',
-      'For every logical value split across multiple visible controls, call field_composition_check after filling and before any submit or side effect.',
-      'After the final assertion for each case, use case_result_record exactly once to persist passed, product_failed, or blocked with a concise summary.',
-      'Before any browser action that can create, update, start, stop, settle, delete, pay, or otherwise mutate business state, call mutation_begin with the owning caseId.',
-      'Resolve each mutation only after verified compensation or when the expected business change is explicitly accepted by the test case.',
+      'These tools are an optional run journal; they do not replace Codex planning, shell work, Playwright exploration, or final structured delivery.',
+      'Use test_plan_update, evidence_record, field_composition_check, and case_result_record only when they make the run easier to recover or audit.',
+      'Use mutation_begin and mutation_resolve as a coarse crash-recovery journal for externally persisted business operations.',
+      'One mutation entry may cover one coherent business operation; ordinary navigation, reads, and form composition do not need entries.',
+      'Resolve each pending mutation only after verified compensation or an explicitly expected retained state.',
     ].join(' '),
   })
 
@@ -129,7 +127,7 @@ async function main(): Promise<void> {
 
   server.registerTool('test_plan_update', {
     title: 'Update dynamic execution plan',
-    description: 'Persist the current evidence-driven execution plan. This is a working plan, not a fixed precompiled script.',
+    description: 'Optionally persist a concise plan snapshot. Codex native todo lists, workspace notes, and scripts are equally valid.',
     inputSchema: {
       summary: z.string().min(1),
       steps: z.array(z.object({
@@ -174,7 +172,7 @@ async function main(): Promise<void> {
 
   server.registerTool('field_composition_check', {
     title: 'Validate a composite field representation',
-    description: 'Record and validate how one logical value is represented across multiple visible controls. Full run values are referenced by alias; transient derived component values are privately checked and removed from the persisted gate record.',
+    description: 'Optional diagnostic for recording how one logical value is represented across multiple controls. It is not required for submission or final result classification.',
     inputSchema: {
       caseId: z.string().min(1),
       fieldId: z.string().min(1),
@@ -221,7 +219,7 @@ async function main(): Promise<void> {
 
   server.registerTool('case_result_record', {
     title: 'Record final case result',
-    description: 'Persist the final evidence-based outcome for one immutable test case. Update the same case if later evidence changes the conclusion.',
+    description: 'Optionally checkpoint one case outcome for recovery. The same Codex thread produces the authoritative final structured result.',
     inputSchema: {
       caseId: z.string().min(1),
       outcome: z.enum(['passed', 'product_failed', 'blocked']),
@@ -252,8 +250,6 @@ async function main(): Promise<void> {
       ...(fieldGateIds.length > 0 ? { fieldGateIds: [...new Set(fieldGateIds)] } : {}),
       recordedAt: new Date().toISOString(),
     }
-    const contractProblem = decisionFieldContractProblem(decision, await readJson<CodexTestFieldCompositionGate[]>(fieldCompositionPath, []))
-    if (contractProblem) throw new Error(`Case result violates the field representation contract: ${contractProblem}`)
     const existing = decisions.findIndex((item) => item.caseId === caseId)
     if (existing >= 0) decisions[existing] = decision
     else decisions.push(decision)

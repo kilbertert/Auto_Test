@@ -44,7 +44,7 @@ npm run easy
 
 URL 可以通过运行参数提供，也可以写在 Excel 单元格中。Excel 内嵌图片和同名 `.auto-test/images/` 目录中的补充图片会作为视觉输入交给同一 Codex 线程。
 
-账号、验证码和手机号等值会在 Intake 时替换为 secretRef，真实值只进入私有 Secret Vault 或本次进程，不写入 Manifest、事件日志或工作区。
+默认完整 Agent 模式会把原始 Excel 和本轮 Environment Profile 测试值复制到权限受限的 run 工作区，让 Codex 能直接理解和转换业务数据。它们不会进入 Git。需要旧的 alias-only 行为时使用 `--opaque-test-data`。
 
 ## 4. 执行
 
@@ -80,12 +80,14 @@ npm run agent:test -- \
 
 ## 5. 运行机制
 
-每次运行使用独立 Codex Home 和只读 Agent 工作区。Shell、Web Search、插件、Apps、Memory、Hooks 和多 Agent 均关闭，只启用：
+每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向同一个 Codex thread 提供：
 
-- Playwright MCP：页面导航、可访问性快照、表单、点击、刷新、存储和确定性页面验证；
-- Auto-Test Control MCP：不可变测试契约、动态计划、证据索引和 Mutation Ledger。
+- 原始 Excel、说明、图片和本轮测试值；
+- shell、临时脚本、网络和 Web Search；
+- 完整 Playwright MCP，包括页面 JavaScript、网络、视觉和 Playwright 代码执行；
+- 可选 Auto-Test Control MCP 日志和 Mutation Ledger。
 
-Agent 必须在业务写入前登记 Mutation，结束前验证其已补偿或被用例明确接受。仍有 pending Mutation 时，结果必定是 `blocked`。
+Codex 自己决定工作计划和执行方式。对于需要中断恢复的外部业务写入，应以完整业务操作为单位登记 Mutation；普通导航、读取和字段输入不需要登记。仍有 pending Mutation 时，结果必定是 `blocked`。
 
 ## 6. 结果
 
@@ -94,8 +96,8 @@ Agent 必须在业务写入前登记 Mutation，结束前验证其已补偿或�
 - `codex-agent.state.json`：运行状态、Codex 线程 ID 和结果路径；
 - `codex-agent.result.json`：`passed`、`product_failed` 或 `blocked` 的结构化交付；
 - `codex-agent.events.jsonl`：脱敏后的 Codex 事件；
-- `agent-workspace/execution-plan.json`：页面证据驱动的动态工作计划；
-- `agent-workspace/evidence-index.json`：业务断言证据索引；
+- `agent-workspace/input/`：原始测试材料和本轮输入；
+- Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
 
@@ -116,12 +118,12 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会复用原 Codex thread、动态计划、证据、用例结论和 Mutation Ledger，只重建浏览器与 MCP 进程。框架会校验工作流来源哈希、目标 URL、环境身份和权限策略；任何不一致都会 fail closed。恢复 Agent 必须先重新观察 pending Mutation 的真实业务状态，不会把浏览器断线当成重复写操作的理由。不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
+恢复会复用原 Codex thread、原始材料副本、工作区脚本、证据和 Mutation Ledger，只重建浏览器与 MCP 进程。框架会校验工作流来源哈希、环境身份和权限策略；任何不一致都会 fail closed。恢复 Agent 必须先重新观察 pending Mutation 的真实业务状态，不会把浏览器断线当成重复写操作的理由。不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 
-以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Secret 隔离、Storage State 合并、持久线程恢复、动态计划、Mutation Ledger、Windows 启动器，以及真实 Playwright MCP + Control MCP 执行。
+以下已经通过本地确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、持久线程恢复、Codex 直接结构化结果校验、Mutation Ledger 和 Windows 启动器。真实模型流与 Windows 业务 canary 仍需在本分支通过 CI 和新私有包复测后确认。
 
-2026-08-01 的真实 Windows 充电闭环使用原始 Excel、三个目标 URL 和一次环境 Profile 注册完成 3 个用例、12 个动态计划步骤和 6 个业务 Mutation。执行期间主机离线、模型并发限制和 `429` 均未通过人工业务操作绕过；框架复用同一 Codex thread、输出目录、证据和 Ledger 恢复，最终验证活动充电订单与占位费订单均为零、模拟器连接器恢复安全状态，并交付 `passed`。
+2026-08-01 的真实 Windows 充电闭环在上一版较受限的 Codex-native 运行器中使用原始 Excel、三个目标 URL 和一次环境 Profile 注册恢复到 `passed`。新的薄外壳模式扩大了 Codex 的原始材料、shell、网络和 Playwright 能力，但必须重新执行真实 Windows canary 后才能形成新的现场验收结论。
 
 该结果证明当前架构可以在一个复杂、多站点、含真实写入与清理的 Windows 场景中自主闭环并安全恢复，但不构成对任意未知网站的无条件保证。新业务首次接入仍应从一条授权 canary 开始，根据 `passed`、`product_failed` 或 `blocked` 的结构化证据决定是否扩大测试范围。Windows 从全新目录复现时按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作。

@@ -32,6 +32,12 @@ const browserToolLabels: Record<string, string> = {
   browser_verify_value: '验证页面字段值',
   browser_network_request: '检查页面网络请求',
   browser_network_requests: '检查页面网络请求',
+  browser_evaluate: '执行页面 JavaScript 检查',
+  browser_run_code_unsafe: '执行 Playwright 辅助代码',
+  browser_generate_locator: '生成页面定位器',
+  browser_annotate: '标注页面证据',
+  browser_highlight: '高亮页面元素',
+  browser_hide_highlight: '移除页面高亮',
   browser_console_messages: '检查页面控制台',
   browser_tabs: '管理浏览器标签页',
   browser_handle_dialog: '处理页面弹窗',
@@ -87,6 +93,19 @@ export function progressFromThreadEvent(event: ThreadEvent): CodexTestAgentProgr
     if (event.type === 'item.started') return { kind: 'activity', message: `正在${label}` }
     if (item.status === 'failed') return { kind: 'warning', message: `${label}返回失败，Codex 正在分析并尝试恢复` }
     return { kind: 'activity', message: `${label}已完成` }
+  }
+  if (item.type === 'command_execution') {
+    if (event.type === 'item.started') return { kind: 'activity', message: 'Codex 正在运行测试辅助命令或脚本' }
+    if (item.status === 'failed') return { kind: 'warning', message: '测试辅助命令执行失败，Codex 正在分析并恢复' }
+    return { kind: 'activity', message: '测试辅助命令或脚本已完成' }
+  }
+  if (item.type === 'file_change') {
+    if (event.type === 'item.started') return { kind: 'activity', message: 'Codex 正在更新本次运行的临时脚本或记录' }
+    if (item.status === 'failed') return { kind: 'warning', message: '本次运行工作区文件更新失败，Codex 正在恢复' }
+    return { kind: 'activity', message: '本次运行的临时脚本或记录已更新' }
+  }
+  if (item.type === 'web_search') {
+    return { kind: 'activity', message: event.type === 'item.started' ? 'Codex 正在检索测试所需的外部资料' : '外部资料检索已完成' }
   }
   if (event.type === 'item.started' && item.type === 'reasoning') {
     return { kind: 'activity', message: 'Codex 正在分析当前证据和下一步动作' }

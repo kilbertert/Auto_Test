@@ -38,7 +38,7 @@ function manifest(origins: string[]): WorkflowIntakeManifest {
 }
 
 describe('Codex agent workspace', () => {
-  it('isolates Codex configuration, merges multi-origin state, and exposes only secret aliases', async () => {
+  it('stages raw run inputs and enables the complete Playwright capability set without copying provider secrets', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-'))
     directories.push(directory)
     const sourceHome = resolve(directory, 'source-home')
@@ -80,12 +80,21 @@ describe('Codex agent workspace', () => {
     }
     const homeKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME'
     const homeValue = process.platform === 'win32' ? 'C:\\Users\\fixture' : '/home/fixture'
+    const sourceFilePath = resolve(directory, 'fixture.xlsx')
+    const briefFilePath = resolve(directory, 'brief.md')
+    const imagePath = resolve(directory, 'screen.png')
+    await writeFile(sourceFilePath, 'raw-workbook')
+    await writeFile(briefFilePath, 'raw-brief')
+    await writeFile(imagePath, 'raw-image')
 
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
       secrets: { 'fixture.accessCode': 'sensitive-value' },
+      sourceFilePath,
+      briefFilePath,
+      inputImagePaths: [imagePath],
       headed: false,
       browserExecutablePath: '/verified/chromium',
       sourceCodexHome: sourceHome,
@@ -110,7 +119,9 @@ describe('Codex agent workspace', () => {
     expect(config).toContain('[model_providers.fixture]')
     expect(config).not.toContain('mcp_servers.unrelated')
     expect(playwrightConfig.browser.launchOptions.executablePath).toBe('/verified/chromium')
-    expect(playwrightConfig.network.allowedOrigins).toEqual(profile.origins)
+    expect(playwrightConfig.network).toBeUndefined()
+    expect(playwrightConfig.capabilities).toEqual(expect.arrayContaining(['core', 'network', 'testing', 'vision', 'devtools']))
+    expect(playwrightConfig.codegen).toBe('typescript')
     const controlConfig = JSON.parse(await readFile(workspace.controlConfigPath, 'utf8'))
     expect(controlConfig.evidenceDirectory).toBe(workspace.evidenceDirectory)
     expect(controlConfig.caseResultsPath).toBe(workspace.caseResultsPath)
@@ -127,11 +138,19 @@ describe('Codex agent workspace', () => {
     expect(mergedState.origins.find((item: { origin: string }) => item.origin === 'https://two.example.test').indexedDB).toHaveLength(1)
     expect(secrets).toContain('AUTO_TEST_VALUE_001="sensitive-value"')
     expect(workspace.secretAliases[0]?.aliases).toEqual(['AUTO_TEST_VALUE_001'])
+    expect(await readFile(workspace.sourceFilePath!, 'utf8')).toBe('raw-workbook')
+    expect(await readFile(workspace.briefFilePath!, 'utf8')).toBe('raw-brief')
+    expect(await readFile(workspace.inputImagePaths[0]!, 'utf8')).toBe('raw-image')
+    expect(JSON.parse(await readFile(workspace.runValuesPath!, 'utf8'))).toContainEqual(expect.objectContaining({
+      secretRef: 'fixture.accessCode', alias: 'AUTO_TEST_VALUE_001', value: 'sensitive-value',
+    }))
+    expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('primary test engineer')
     expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key' })
     expect(workspace.codexEnvironment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
     expect(workspace.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
     expect(workspace.mcpEnvironment.FIXTURE_MODEL_KEY).toBe('')
     expect(serializedWorkspace).not.toContain('sensitive-value')
+    expect(await readFile(workspace.runValuesPath!, 'utf8')).not.toContain('provider-key')
     if (process.platform !== 'win32') {
       expect((await stat(workspace.playwrightSecretsPath)).mode & 0o777).toBe(0o600)
       await chmod(workspace.playwrightSecretsPath, 0o600)
@@ -214,5 +233,39 @@ describe('Codex agent workspace', () => {
 
     const control = JSON.parse(await readFile(resumed.controlConfigPath, 'utf8')) as { allowedOrigins: string[] }
     expect(control.allowedOrigins).toEqual(['https://one.example.test', 'https://two.example.test'])
+  })
+
+  it('preserves the legacy restricted workspace when opaque test data is requested', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-restricted-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const sourceFilePath = resolve(directory, 'fixture.xlsx')
+    await writeFile(sourceFilePath, 'raw-workbook')
+    const profile: EnvironmentProfile = {
+      id: 'workspace-fixture', origins: ['https://one.example.test'], auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+
+    const workspace = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: { 'fixture.accessCode': 'sensitive-value' },
+      sourceFilePath,
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: sourceHome,
+      testDataAccess: 'opaque',
+    })
+
+    const playwrightConfig = JSON.parse(await readFile(workspace.playwrightConfigPath, 'utf8'))
+    expect(workspace.sourceFilePath).toBeUndefined()
+    expect(workspace.runValuesPath).toBeUndefined()
+    expect(playwrightConfig.capabilities).toEqual(['core', 'storage'])
+    expect(playwrightConfig.network.allowedOrigins).toEqual(profile.origins)
+    expect(playwrightConfig.codegen).toBe('none')
+    expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('Restricted Workspace')
   })
 })
