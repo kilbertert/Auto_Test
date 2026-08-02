@@ -32,6 +32,7 @@ $script:BootstrapProviderPath = ''
 $script:BootstrapSecretUsed = $false
 $script:BootstrapProviderUsed = $false
 $script:ApiKeyCandidates = @()
+$script:CodexCliBackupBaseUrl = ''
 $script:PreviousConfigExists = $false
 $script:PreviousConfigContent = ''
 $script:PreviousSecretExists = $false
@@ -209,6 +210,25 @@ function Get-CodexCliApiKey {
   return ''
 }
 
+function Get-CodexCliBaseUrl {
+  $configured = [Environment]::GetEnvironmentVariable('OPENAI_BASE_URL', 'Process')
+  if (-not $configured) { $configured = [Environment]::GetEnvironmentVariable('OPENAI_BASE_URL', 'User') }
+  if ($configured -and (Test-HttpUrl $configured)) { return $configured.TrimEnd('/') }
+
+  $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
+  if (Test-Path -LiteralPath $configPath) {
+    $line = Get-Content -Encoding UTF8 -LiteralPath $configPath |
+      Where-Object { $_ -match '^\s*base_url\s*=\s*"([^"]+)"\s*$' } |
+      Select-Object -First 1
+    if ($line) {
+      $configured = [Regex]::Match($line, '^\s*base_url\s*=\s*"([^"]+)"\s*$').Groups[1].Value
+      if (Test-HttpUrl $configured) { return $configured.TrimEnd('/') }
+    }
+  }
+
+  return 'https://api.openai.com/v1'
+}
+
 function Escape-TomlString([string] $Value) {
   return $Value.Replace('\', '\\').Replace('"', '\"')
 }
@@ -221,6 +241,14 @@ function Persist-ProviderSecret([string] $Value) {
   }
   $encrypted = Protect-Secret $Value
   [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
+}
+
+function Set-ProviderBaseUrl([string] $BaseUrl) {
+  $config = Get-Content -Raw -Encoding UTF8 $script:ProviderConfigPath
+  $baseUrlPattern = [Regex]::new('(?m)^\s*base_url\s*=\s*"[^"]+"\s*$')
+  $updated = $baseUrlPattern.Replace($config, ('base_url = "' + (Escape-TomlString $BaseUrl) + '"'), 1)
+  if ($updated -eq $config) { throw 'Auto-Test Provider 配置缺少 base_url，无法切换备用 API。' }
+  [IO.File]::WriteAllText($script:ProviderConfigPath, $updated, [Text.UTF8Encoding]::new($false))
 }
 
 function Test-HttpUrl([string] $Value) {
@@ -311,6 +339,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     }
   }
   $codexCliApiKey = Get-CodexCliApiKey
+  $script:CodexCliBackupBaseUrl = if ($codexCliApiKey -and $codexCliApiKey -ne $apiKey) { Get-CodexCliBaseUrl } else { '' }
   $script:ApiKeyCandidates = @(@($apiKey, $codexCliApiKey) |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -Unique)
@@ -331,6 +360,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $apiKeyFromProcess = $false
     $providerReady = $false
     $script:ApiKeyCandidates = @()
+    $script:CodexCliBackupBaseUrl = ''
   }
   if ($legacyProvider) {
     $providerReady = $false
@@ -455,6 +485,9 @@ function Test-CodexProvider {
   for ($index = 0; $index -lt $candidates.Count; $index++) {
     $candidate = [string] $candidates[$index]
     [Environment]::SetEnvironmentVariable($ProviderKeyEnvironment, $candidate, 'Process')
+    if ($index -gt 0 -and $script:CodexCliBackupBaseUrl) {
+      Set-ProviderBaseUrl $script:CodexCliBackupBaseUrl
+    }
     $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
     try {
       if ($index -eq 0) {

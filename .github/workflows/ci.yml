@@ -124,6 +124,8 @@ jobs:
             if (Test-Path .\Auto-Test.private-key) { throw 'Plaintext bootstrap key was not removed after failover' }
             if (Test-Path .\Auto-Test.private-provider.json) { throw 'Bootstrap provider was not removed after failover' }
             if (-not (Test-Path (Join-Path $testCodexHome 'provider-key.dpapi'))) { throw 'Selected backup key was not persisted with DPAPI' }
+            $config = Get-Content -Raw -Encoding UTF8 (Join-Path $testCodexHome 'config.toml')
+            if ($config -notmatch 'base_url = "https://api\.openai\.com/v1"') { throw 'Codex CLI fallback Base URL was not selected' }
           } finally {
             $env:USERPROFILE = $previousUserProfile
             $env:AUTO_TEST_MODEL_API_KEY = $previousApiKey

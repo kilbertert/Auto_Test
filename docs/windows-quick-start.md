@@ -41,7 +41,7 @@ requires_openai_auth = false
 
 Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
 
-如果同一 Windows 用户的 Codex CLI 已在 `%USERPROFILE%\.codex\auth.json` 配置了 `OPENAI_API_KEY`，Auto-Test 会把它作为受控备用 Key：只有当前 Provider 探测明确返回额度不足或 HTTP 429 时才尝试备用 Key；401、403、模型不存在、网络和 TLS 错误不会被错误地切换。备用 Key 探测成功后会使用 DPAPI 保存为当前 Auto-Test Provider Key；`auth.json` 不会被复制进项目或发行包，也不会在终端显示 Key 内容。
+如果同一 Windows 用户的 Codex CLI 已在 `%USERPROFILE%\.codex\auth.json` 配置了 `OPENAI_API_KEY`，Auto-Test 会把它作为受控备用 Key：只有当前 Provider 探测明确返回额度不足或 HTTP 429 时才尝试备用 Key；401、403、模型不存在、网络和 TLS 错误不会被错误地切换。备用 Key 使用 Codex CLI 配置的 `base_url`，未配置时使用 Codex CLI 默认的官方 Responses API 地址；探测成功后会使用 DPAPI 保存为当前 Auto-Test Provider Key。`auth.json` 不会被复制进项目或发行包，也不会在终端显示 Key 内容。
 
 旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。
 
