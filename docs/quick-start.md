@@ -122,8 +122,8 @@ npm run easy -- run \
 
 ## 7. 当前验收状态
 
-以下已经通过本地确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、持久线程恢复、Codex 直接结构化结果校验、Mutation Ledger 和 Windows 启动器。真实模型流与 Windows 业务 canary 仍需在本分支通过 CI 和新私有包复测后确认。
+以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、持久线程恢复、Codex 直接结构化结果校验、Mutation Ledger、Windows 启动器、Linux Verify 和 Windows Verify。
 
-2026-08-01 的真实 Windows 充电闭环在上一版较受限的 Codex-native 运行器中使用原始 Excel、三个目标 URL 和一次环境 Profile 注册恢复到 `passed`。新的薄外壳模式扩大了 Codex 的原始材料、shell、网络和 Playwright 能力，但必须重新执行真实 Windows canary 后才能形成新的现场验收结论。
+2026-08-03，基于 `c94ad77` 的最终 thin harness Windows 私有包使用充电 Excel、测试 URL 和一次 Environment Profile 注册完成真实业务 canary：同一个 Codex thread 自主执行 3/3 manifest case 和 7 组测试数据，记录 26 条 Mutation Ledger 且 pending 为 0，生成 129 个证据文件，最终结果为 `passed`。运行中的模型重连和页面工具错误由同一 thread 恢复，没有人工编辑 Execution Plan。
 
-该结果证明当前架构可以在一个复杂、多站点、含真实写入与清理的 Windows 场景中自主闭环并安全恢复，但不构成对任意未知网站的无条件保证。新业务首次接入仍应从一条授权 canary 开始，根据 `passed`、`product_failed` 或 `blocked` 的结构化证据决定是否扩大测试范围。Windows 从全新目录复现时按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作。
+本轮 manifest 加载了 Excel 的 6 张内嵌图片，但没有加载同名 `.auto-test` sidecar 的补充说明和图片，因此该 `passed` 不覆盖历史 sidecar 中的扩展步骤。该结果证明当前架构可以在一个复杂、多站点、含真实写入与清理的 Windows manifest 中自主闭环并安全恢复，但不构成对任意未知网站的无条件保证。新业务首次接入仍应从一条授权 canary 开始，根据 `passed`、`product_failed` 或 `blocked` 的结构化证据决定是否扩大测试范围。Windows 从全新目录复现时按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作。
