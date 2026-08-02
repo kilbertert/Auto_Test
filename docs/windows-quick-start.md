@@ -41,7 +41,15 @@ requires_openai_auth = false
 
 Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
 
-旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。
+旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳；模型服务或流式响应卡住时，启动器会终止探针进程并给出网络/Provider 诊断，不会无限停在“正在验证”。
+
+只有确认私有网关正常但响应时间确实超过 120 秒时，才临时调高等待时间；取值范围为 1 到 3600 秒。这个参数不会修复额度不足、限流或断流，不应作为日常配置：
+
+```powershell
+$env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS = "180"
+.\Auto-Test.cmd --setup-only
+Remove-Item Env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS
+```
 
 Chromium 首次下载默认优先使用适合当前 Windows 部署区域的 Playwright 镜像；镜像失败会自动回退官方 CDN。安装器直接使用 Auto-Test 自带的 `node.exe` 执行项目内 Playwright CLI，不依赖电脑上的全局 `npm`、`npx` 或它们的 PowerShell 脚本。企业网络如果有自己的制品镜像，可以在启动前临时指定：
 

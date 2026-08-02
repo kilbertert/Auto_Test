@@ -455,37 +455,138 @@ function Get-CodexProbeFailureHint([string] $Output, [int] $ExitCode) {
   return "Codex CLI 返回退出码 $ExitCode。"
 }
 
+function Get-CodexProbeTimeoutSeconds {
+  if (-not $env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS) { return 120 }
+  $timeoutSeconds = 0
+  if (-not [int]::TryParse($env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS, [ref] $timeoutSeconds) -or
+      $timeoutSeconds -lt 1 -or $timeoutSeconds -gt 3600) {
+    throw 'AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS 必须是 1 到 3600 的整数秒。'
+  }
+  return $timeoutSeconds
+}
+
+function ConvertTo-NativeArgument([string] $Value) {
+  if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+  return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Start-CodexProbeProcess([string] $Executable) {
+  $arguments = @(
+    'exec',
+    'Reply with exactly AUTO_TEST_API_READY.',
+    '--ephemeral',
+    '--sandbox',
+    'read-only',
+    '--skip-git-repo-check',
+    '--color',
+    'never',
+    '-C',
+    $RepositoryRoot
+  )
+  $argumentLine = (($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
+  $processExecutable = $Executable
+  $processArguments = $argumentLine
+  if ([IO.Path]::GetExtension($Executable) -match '(?i)^\.(cmd|bat)$') {
+    $processExecutable = $env:ComSpec
+    $processArguments = "/d /s /c `"`"$Executable`" $argumentLine`""
+  }
+  # Native Process APIs preserve the real exit code on Windows PowerShell 5.1.
+  # Read both streams asynchronously so neither pipe can block the probe process.
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $processExecutable
+  $startInfo.Arguments = $processArguments
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    $process.Start() | Out-Null
+    return [pscustomobject]@{
+      Process = $process
+      StandardOutput = $process.StandardOutput.ReadToEndAsync()
+      StandardError = $process.StandardError.ReadToEndAsync()
+    }
+  } catch {
+    $process.Dispose()
+    throw
+  }
+}
+
+function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSeconds) {
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $nextHeartbeatSeconds = 20
+  while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+    $remainingMilliseconds = [int] [Math]::Ceiling(($TimeoutSeconds - $stopwatch.Elapsed.TotalSeconds) * 1000)
+    $waitMilliseconds = [Math]::Max(1, [Math]::Min(1000, $remainingMilliseconds))
+    if ($Process.WaitForExit($waitMilliseconds)) {
+      $Process.WaitForExit()
+      return $true
+    }
+    if ($stopwatch.Elapsed.TotalSeconds -ge $nextHeartbeatSeconds) {
+      $elapsedSeconds = [int] [Math]::Floor($stopwatch.Elapsed.TotalSeconds)
+      Write-Host "[检查] 模型 API 仍在响应中（已等待 $elapsedSeconds 秒，最多 $TimeoutSeconds 秒）……"
+      $nextHeartbeatSeconds += 20
+    }
+  }
+  return $Process.HasExited
+}
+
+function Stop-CodexProbeProcess([Diagnostics.Process] $Process) {
+  if ($Process.HasExited) { return }
+  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+  if (Test-Path $taskkill) {
+    try { & $taskkill /PID $Process.Id /T /F *> $null } catch {}
+  }
+  if (-not $Process.HasExited) {
+    try { $Process.Kill() } catch {}
+  }
+  try { $Process.WaitForExit(5000) | Out-Null } catch {}
+}
+
 function Test-CodexProvider {
   if (-not $script:ApiConfigurationChanged -or $env:AUTO_TEST_SKIP_API_PROBE -eq '1') { return }
   $codexExecutable = if ($env:AUTO_TEST_CODEX_PROBE_BIN) { $env:AUTO_TEST_CODEX_PROBE_BIN } else { $env:AUTO_TEST_CODEX_BIN }
   if (-not $codexExecutable -or -not (Test-Path $codexExecutable)) { throw '找不到 Auto-Test 私有 Codex CLI。' }
-  $probePath = Join-Path $env:TEMP "auto-test-codex-probe-$([Guid]::NewGuid().ToString('N')).txt"
+  $probeInvocation = $null
+  $probeProcess = $null
   try {
-    Write-Host '[检查] 正在验证模型 API 地址、Key 和模型可用性……'
-    $probeExitCode = 1
-    $previousErrorActionPreference = $ErrorActionPreference
     try {
-      # Windows PowerShell 5 wraps native stderr as ErrorRecord objects. Codex writes
-      # its normal version banner to stderr, so capture it without treating it as a script failure.
-      $ErrorActionPreference = 'Continue'
-      & $codexExecutable exec 'Reply with exactly AUTO_TEST_API_READY.' --ephemeral --sandbox read-only --skip-git-repo-check --color never -C $RepositoryRoot *>&1 | Out-File -FilePath $probePath -Encoding utf8
-      $probeExitCode = $LASTEXITCODE
-    } finally {
-      $ErrorActionPreference = $previousErrorActionPreference
-    }
-    $probe = if (Test-Path $probePath) { Get-Content -Raw -Encoding UTF8 $probePath } else { '' }
-    if ($probeExitCode -ne 0) {
+      $timeoutSeconds = Get-CodexProbeTimeoutSeconds
+      Write-Host "[检查] 正在验证模型 API 地址、Key 和模型可用性（最多等待 $timeoutSeconds 秒）……"
+      try {
+        $probeInvocation = Start-CodexProbeProcess $codexExecutable
+        $probeProcess = $probeInvocation.Process
+      } catch {
+        throw "无法启动模型 API 探针：$($_.Exception.Message)"
+      }
+      if (-not (Wait-CodexProbeProcess $probeProcess $timeoutSeconds)) {
+        Stop-CodexProbeProcess $probeProcess
+        throw "模型 API 探针在 $timeoutSeconds 秒内未完成，已终止卡住的 Codex 进程。请检查模型服务、Windows 网络、代理或流式响应稳定性；仅在网关确实较慢时调整 AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS。"
+      }
+      $probeExitCode = $probeProcess.ExitCode
+      $standardOutput = $probeInvocation.StandardOutput.GetAwaiter().GetResult()
+      $standardError = $probeInvocation.StandardError.GetAwaiter().GetResult()
+      $probe = @($standardOutput, $standardError) -join [Environment]::NewLine
+      if ($probeExitCode -ne 0) {
+        $hint = Get-CodexProbeFailureHint $probe $probeExitCode
+        throw "模型 API 探针失败。$hint"
+      }
+      if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {
+        throw '模型 API 已响应但健康检查结果异常。'
+      }
+      Write-Host '[OK] 模型 API 调用验证通过'
+    } catch {
       Restore-PreviousProviderConfig
-      $hint = Get-CodexProbeFailureHint $probe $probeExitCode
-      throw "模型 API 探针失败，已恢复上一版配置。$hint"
+      throw "$($_.Exception.Message) 已恢复上一版配置。"
     }
-    if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {
-      Restore-PreviousProviderConfig
-      throw '模型 API 已响应但健康检查结果异常，已恢复上一版配置。'
-    }
-    Write-Host '[OK] 模型 API 调用验证通过'
   } finally {
-    Remove-Item -Force $probePath -ErrorAction SilentlyContinue
+    if ($probeInvocation -and $probeProcess -and $probeProcess.HasExited) {
+      try { $probeInvocation.StandardOutput.GetAwaiter().GetResult() | Out-Null } catch {}
+      try { $probeInvocation.StandardError.GetAwaiter().GetResult() | Out-Null } catch {}
+    }
+    if ($probeProcess) { $probeProcess.Dispose() }
   }
 }
 
