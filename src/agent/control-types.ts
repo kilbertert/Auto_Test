@@ -1,4 +1,4 @@
-import type { CodexTestRisk } from './types.js'
+import type { CodexTestEnvironmentRequirement, CodexTestRisk } from './types.js'
 
 export interface CodexTestControlConfig {
   version: '1.0'
@@ -6,6 +6,7 @@ export interface CodexTestControlConfig {
   sourceSha256: string
   allowedRisk: CodexTestRisk
   targetUrls: string[]
+  allowedOrigins?: string[]
   caseIds: string[]
   caseRisks: Record<string, CodexTestRisk>
   evidenceDirectory: string
@@ -13,4 +14,5 @@ export interface CodexTestControlConfig {
   evidencePath: string
   caseResultsPath: string
   mutationLedgerPath: string
+  environmentRequirementsPath?: string
 }

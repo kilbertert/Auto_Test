@@ -114,6 +114,8 @@ describe('Codex agent workspace', () => {
     const controlConfig = JSON.parse(await readFile(workspace.controlConfigPath, 'utf8'))
     expect(controlConfig.evidenceDirectory).toBe(workspace.evidenceDirectory)
     expect(controlConfig.caseResultsPath).toBe(workspace.caseResultsPath)
+    expect(controlConfig.allowedOrigins).toEqual(profile.origins)
+    expect(controlConfig.environmentRequirementsPath).toBe(workspace.environmentRequirementsPath)
     expect(controlConfig.caseRisks).toEqual({ 'inspect-board': 'read' })
     expect(JSON.parse(await readFile(workspace.caseResultsPath, 'utf8'))).toEqual([])
     expect(mergedState.cookies).toHaveLength(2)

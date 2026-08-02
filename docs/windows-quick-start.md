@@ -100,9 +100,11 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 每次运行目录中的 `codex-agent.events.jsonl` 保存脱敏后的线程和工具事件，`codex-agent.result.json` 保存最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
+如果测试材料或页面证据提出了环境 Profile 未注册的新网站 origin，代理不会直接访问或猜测替代路由，而会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充 origin。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。
+
 启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、更新动态 Execution Plan、记录证据、核对 Mutation Ledger 和最终化补齐。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示受控动作类别，不显示模型推理正文、表单值、工具参数、Cookie、验证码或 API 信息。
 
-这些进度表示框架仍在工作，不代表测试已经通过。最终结论仍以 `codex-agent.result.json`、Execution Plan、证据和 Mutation Ledger 的终态为准。
+这些进度表示框架仍在工作，不代表测试已经通过。最终结论仍以 `codex-agent.result.json`、Execution Plan、证据、Environment Requirements 和 Mutation Ledger 的终态为准。
 
 结束时直接显示以下三类结果：
 

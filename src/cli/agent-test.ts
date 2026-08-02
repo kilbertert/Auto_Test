@@ -228,6 +228,7 @@ function preExecutionBlockedResult(manifest: WorkflowIntakeManifest, message: st
       evidence: [{ kind: 'observation', description: 'Pre-execution validation did not permit browser execution.' }],
     })),
     mutations: [],
+    environmentRequirements: [],
     blockers: [message],
     productDefects: [],
     nextActions: ['补充或修复所列环境条件后，使用同一 Excel 和环境 Profile 重新执行。'],
@@ -367,6 +368,9 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
   console.log(`状态文件：${resolve(options.outputDirectory, 'codex-agent.state.json')}`)
   if (run.result) console.log(`结果文件：${resolve(options.outputDirectory, 'codex-agent.result.json')}`)
+  for (const requirement of run.result?.environmentRequirements ?? []) {
+    console.log(`环境需求：${requirement.origin}（${requirement.status}，完成注册后使用 --resume）`)
+  }
   if (run.state.error) console.log(`错误：${run.state.error}`)
   if (run.result?.outcome === 'passed') return 0
   if (run.result?.outcome === 'product_failed') return 2

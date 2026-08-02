@@ -78,7 +78,7 @@ describe('friendly autonomous result summary', () => {
         version: '1.0', workflowId: 'catalog', sourceSha256: 'b'.repeat(64), outcome: 'product_failed',
         summary: 'The catalog did not match the expected result.', startedAt: '2026-08-01T00:00:00.000Z', finishedAt: '2026-08-01T00:01:00.000Z',
         cases: [{ caseId: 'filter', title: 'Filter', outcome: 'product_failed', summary: 'Wrong count', evidence: [{ kind: 'observation', description: 'Three rows remained.' }] }],
-        mutations: [], blockers: [], productDefects: ['Filtering by Lighting returned three rows instead of two.'], nextActions: [],
+        mutations: [], environmentRequirements: [], blockers: [], productDefects: ['Filtering by Lighting returned three rows instead of two.'], nextActions: [],
       }
       const agentState: CodexTestAgentState = {
         version: '1.0', status: 'completed', stage: 'completed', workflowId: 'catalog', sourceSha256: 'b'.repeat(64),

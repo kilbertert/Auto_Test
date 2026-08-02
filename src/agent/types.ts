@@ -24,6 +24,14 @@ export interface CodexTestMutationResult {
   evidence: string[]
 }
 
+export interface CodexTestEnvironmentRequirement {
+  origin: string
+  reason: string
+  evidence: string[]
+  status: 'pending' | 'satisfied'
+  requestedAt: string
+}
+
 export interface CodexTestAgentResult {
   version: '1.0'
   workflowId: string
@@ -34,6 +42,7 @@ export interface CodexTestAgentResult {
   finishedAt: string
   cases: CodexTestCaseResult[]
   mutations: CodexTestMutationResult[]
+  environmentRequirements: CodexTestEnvironmentRequirement[]
   blockers: string[]
   productDefects: string[]
   nextActions: string[]

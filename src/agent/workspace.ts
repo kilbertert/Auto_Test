@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
@@ -32,6 +32,7 @@ export interface CodexAgentWorkspace {
   playwrightSecretsPath: string
   controlConfigPath: string
   mutationLedgerPath: string
+  environmentRequirementsPath: string
   evidenceIndexPath: string
   caseResultsPath: string
   planPath: string
@@ -170,6 +171,7 @@ export async function prepareCodexAgentWorkspace(options: {
   const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
   const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
+  const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
   const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
   const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
   const planPath = resolve(workspaceDirectory, 'execution-plan.json')
@@ -203,6 +205,7 @@ export async function prepareCodexAgentWorkspace(options: {
       sourceSha256: options.manifest.source.sha256,
       allowedRisk: riskFor(options.profile),
       targetUrls: options.manifest.targetUrls,
+      allowedOrigins: options.profile.origins,
       caseIds: options.manifest.phases.map((phase) => phase.id),
       caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     }
@@ -211,6 +214,7 @@ export async function prepareCodexAgentWorkspace(options: {
       sourceSha256: existingControl.sourceSha256,
       allowedRisk: existingControl.allowedRisk,
       targetUrls: existingControl.targetUrls,
+      allowedOrigins: existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin),
       caseIds: existingControl.caseIds,
       caseRisks: existingControl.caseRisks,
     }
@@ -274,10 +278,14 @@ export async function prepareCodexAgentWorkspace(options: {
     codegen: 'none',
   })
 
+  const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
   if (!options.resume) {
     await writePrivateJson(mutationLedgerPath, [])
+    await writePrivateJson(environmentRequirementsPath, [])
     await writePrivateJson(evidenceIndexPath, [])
     await writePrivateJson(caseResultsPath, [])
+  } else if (requirementsMissing) {
+    await writePrivateJson(environmentRequirementsPath, [])
   }
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
@@ -285,6 +293,7 @@ export async function prepareCodexAgentWorkspace(options: {
     sourceSha256: options.manifest.source.sha256,
     allowedRisk: riskFor(options.profile),
     targetUrls: options.manifest.targetUrls,
+    allowedOrigins: options.profile.origins,
     caseIds: options.manifest.phases.map((phase) => phase.id),
     caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     evidenceDirectory,
@@ -292,6 +301,7 @@ export async function prepareCodexAgentWorkspace(options: {
     evidencePath: evidenceIndexPath,
     caseResultsPath,
     mutationLedgerPath,
+    environmentRequirementsPath,
   }
   await writePrivateJson(controlConfigPath, controlConfig)
 
@@ -307,6 +317,7 @@ export async function prepareCodexAgentWorkspace(options: {
     playwrightSecretsPath,
     controlConfigPath,
     mutationLedgerPath,
+    environmentRequirementsPath,
     evidenceIndexPath,
     caseResultsPath,
     planPath,

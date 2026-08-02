@@ -81,6 +81,14 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 终端进度只用于判断框架是否仍在运行，不能作为验收通过证据。
 
+如果结果包含环境需求，先查看：
+
+```powershell
+Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFrom-Json
+```
+
+对其中的 origin 完成一次环境注册或更新后，必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续；不要改用新目录绕过环境边界。
+
 ## 5. 判断验收是否真正通过
 
 启动窗口显示“测试通过”后，仍应核对结构化产物：
@@ -135,6 +143,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 - `agent-workspace\execution-plan.json`
 - `agent-workspace\evidence-index.json`
 - `agent-workspace\evidence\`
+- `.agent-private\environment-requirements.json`（如存在）
 
 `.agent-private` 用于本机恢复和审计，不应外发。页面证据也可能包含业务数据，离开测试团队前必须先检查和脱敏。
 
