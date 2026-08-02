@@ -24,6 +24,21 @@ Set-Location "D:\Auto-Test"
 
 继续验收前，应确认 Node.js、Codex CLI、模型 Provider/API 和 Chromium 均显示成功。初始化失败时先解决环境问题，不要直接开始业务测试。
 
+如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
+
+```powershell
+.\Auto-Test.cmd run `
+  --file $Cases `
+  --url "https://app.example.test/" `
+  --profile $Profile `
+  --output-dir $Run `
+  --api-key "<temporary-api-key>" `
+  --headed `
+  --one
+```
+
+该参数只作用于当前运行，不会替换默认 Key；不要把真实 Key 提交到脚本或测试材料。需要永久重配默认 Provider 时，使用 `--reconfigure-api`，不要与 `--api-key` 同时使用。
+
 ## 3. 一次性注册测试环境
 
 双击 `Auto-Test.cmd`，选择“注册或更新测试环境”：
