@@ -188,7 +188,24 @@ $env:AUTO_TEST_PERSIST_API_KEY = "0"
 
 内部私有包正常使用时无需输入 API Key。只有调试公开源码包或主动轮换凭据时，安装器才会使用隐藏输入；不要把 Key 写进命令行。
 
-私有发行管理员在受控服务器上构建零输入包时，通过标准输入或私有进程环境把专用 Key 交给 `scripts/build-private-windows-package.sh`。脚本只允许从干净、已提交的工作树构建，输出位于被 Git 忽略的 `artifacts/private-release/`，且不会打印 Key。
+私有发行管理员在受控服务器上构建零输入包时，可以直接运行快速脚本：
+
+```bash
+AUTO_TEST_CODEX_BASE_URL="https://model-api.example/v1" \
+AUTO_TEST_CODEX_MODEL="your-model-id" \
+bash scripts/build-private-windows-package-quick.sh
+```
+
+脚本会隐藏读取 API Key，完成后输出 ZIP 的绝对路径和 SHA-256。也可以使用底层脚本进行自动化构建：
+
+```bash
+printf '%s\n' "$MODEL_API_KEY" | \
+  AUTO_TEST_CODEX_BASE_URL="https://model-api.example/v1" \
+  AUTO_TEST_CODEX_MODEL="your-model-id" \
+  bash scripts/build-private-windows-package.sh
+```
+
+两种脚本都只允许从干净、已提交的工作树构建，输出位于被 Git 忽略的 `artifacts/private-release/`。包名形如 `Auto-Test-Windows-private-<commit>.zip`；把它复制到 Windows 后解压，双击 `Auto-Test.cmd` 即可。包内含可提取的模型 API Key，禁止提交 Git、上传 GitHub、网盘或公开制品库。
 
 ## 注意事项
 
