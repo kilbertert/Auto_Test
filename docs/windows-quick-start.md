@@ -155,7 +155,20 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 .\Auto-Test.cmd register --profile test-95 --url "https://example.test/"
 ```
 
-需要临时改用其他 API 或轮换 API Key 时执行：
+两个 API Key 使用同一个 Base URL 时，可以只在本次运行临时指定另一个 Key。默认 Key 不会被替换，也不会把临时 Key 写入 DPAPI：
+
+```powershell
+.\Auto-Test.cmd --api-key "<temporary-api-key>" --setup-only
+.\Auto-Test.cmd run `
+  --file "C:/TestData/cases.xlsx" `
+  --url "https://app.example.test/" `
+  --api-key "<temporary-api-key>" `
+  --headed
+```
+
+`--api-key` 只影响当前启动的 Codex 进程，Base URL 和模型仍使用现有 Provider 配置；不带该参数时继续使用私有包内置的默认 Key。命令行参数可能出现在本机进程列表或 PowerShell 历史中，只在受控测试机使用，不要把真实 Key 写进脚本、Excel 或文档。
+
+需要永久重新配置默认 Provider（包括 Base URL、模型或默认 Key）时，才执行：
 
 ```powershell
 .\Auto-Test.cmd --reconfigure-api --setup-only

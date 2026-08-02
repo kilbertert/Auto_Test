@@ -146,6 +146,39 @@ jobs:
             Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
           }
 
+      - name: Verify Windows temporary API key override
+        shell: pwsh
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-override.cmd'
+          $capturePath = Join-Path $env:RUNNER_TEMP 'auto-test-api-key-capture.txt'
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          $stubCodex = @'
+          @echo off
+          if not "%~1"=="--version" goto :probe
+          echo codex-cli 0.146.0
+          exit /b 0
+          :probe
+          >"%AUTO_TEST_OVERRIDE_CAPTURE%" echo %AUTO_TEST_MODEL_API_KEY%
+          echo AUTO_TEST_API_READY
+          exit /b 0
+          '@
+          try {
+            $before = Get-Content -Raw -Encoding UTF8 $secretPath
+            [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
+            $env:AUTO_TEST_OVERRIDE_CAPTURE = $capturePath
+            .\Auto-Test.cmd --api-key synthetic-override-key --setup-only
+            if ($LASTEXITCODE -ne 0) { throw "Expected temporary API key override to succeed, got $LASTEXITCODE" }
+            if ((Get-Content -Raw -Encoding UTF8 $capturePath).Trim() -ne 'synthetic-override-key') { throw 'Temporary API key was not used by the Codex process' }
+            if ((Get-Content -Raw -Encoding UTF8 $secretPath) -ne $before) { throw 'Temporary API key changed the persisted default Key' }
+          } finally {
+            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
+            Remove-Item Env:AUTO_TEST_OVERRIDE_CAPTURE -ErrorAction SilentlyContinue
+            Remove-Item -Force $stubPath, $capturePath -ErrorAction SilentlyContinue
+          }
+
       - name: Verify no-argument CMD launcher
         shell: pwsh
         env:

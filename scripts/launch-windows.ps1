@@ -210,7 +210,11 @@ function Resolve-CodexHome {
   return Join-Path $env:APPDATA 'auto-test\codex-home'
 }
 
-function Ensure-ApiProvider([switch] $ForcePrompt) {
+function Ensure-ApiProvider([switch] $ForcePrompt, [string] $ApiKeyOverride) {
+  $hasApiKeyOverride = -not [string]::IsNullOrWhiteSpace($ApiKeyOverride)
+  if ($hasApiKeyOverride -and $ApiKeyOverride -match '\s') {
+    throw '临时 API Key 不能包含空白字符。'
+  }
   $codexHome = Resolve-CodexHome
   New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
   $env:CODEX_HOME = $codexHome
@@ -286,8 +290,9 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
       throw '已保存的 API Key 无法由当前 Windows 用户解密，请使用 --reconfigure-api 重新配置。'
     }
   }
+  $defaultApiKey = $apiKey
   $script:ApiConfigurationChanged = $ForcePrompt -or $legacyProvider -or $apiKeyFromBootstrap -or $script:BootstrapProviderUsed -or -not $providerReady -or
-    $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi
+    $apiKeyFromProcess -or -not $apiKeyLoadedFromDpapi -or $hasApiKeyOverride
   if ($baseUrl -and $existingBaseUrl -and $baseUrl -ne $existingBaseUrl) {
     $script:ApiConfigurationChanged = $true
   }
@@ -307,6 +312,11 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     Write-Host ''
     Write-Host '[迁移] 检测到旧的服务器 CLIProxyAPI 配置。'
     Write-Host '       正在自动改用内置的直连模型 API，不需要暴露 Auto-Test 服务器。'
+  }
+
+  if ($hasApiKeyOverride) {
+    $apiKey = $ApiKeyOverride
+    Write-Host '[配置] 本次启动使用临时 API Key；默认 Key 不会被替换。'
   }
 
   if (-not $baseUrl -and $providerReady -and $existingBaseUrl) {
@@ -333,7 +343,7 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     throw '模型 ID 无效。'
   }
 
-  $keyProvidedNow = $apiKeyFromProcess -or $apiKeyFromBootstrap
+  $keyProvidedNow = if ($hasApiKeyOverride) { $apiKeyFromBootstrap } else { $apiKeyFromProcess -or $apiKeyFromBootstrap }
   if (-not $apiKey) {
     if ([Console]::IsInputRedirected) {
       throw '当前是公开源码包，没有包含私有模型 API Key。请使用内部私有 Windows 安装包。'
@@ -344,10 +354,11 @@ function Ensure-ApiProvider([switch] $ForcePrompt) {
     $keyProvidedNow = $true
   }
   if ($keyProvidedNow) {
+    $keyToPersist = if ($hasApiKeyOverride -and $apiKeyFromBootstrap) { $defaultApiKey } else { $apiKey }
     if ($env:AUTO_TEST_PERSIST_API_KEY -eq '0') {
       Remove-Item -Force $secretPath -ErrorAction SilentlyContinue
     } else {
-      $encrypted = Protect-Secret $apiKey
+      $encrypted = Protect-Secret $keyToPersist
       [IO.File]::WriteAllText($secretPath, $encrypted, [Text.UTF8Encoding]::new($false))
     }
   }
@@ -393,6 +404,35 @@ function Restore-PreviousProviderConfig {
     [IO.File]::WriteAllText($script:ProviderSecretPath, $script:PreviousSecretContent, [Text.UTF8Encoding]::new($false))
   } else {
     Remove-Item -Force $script:ProviderSecretPath -ErrorAction SilentlyContinue
+  }
+}
+
+function Parse-ApiKeyOverride([string[]] $Arguments) {
+  $remaining = [Collections.Generic.List[string]]::new()
+  $apiKey = ''
+  for ($index = 0; $index -lt $Arguments.Count; $index++) {
+    $argument = [string] $Arguments[$index]
+    if ($argument -eq '--api-key') {
+      if ($index + 1 -ge $Arguments.Count) { throw '--api-key 缺少值。' }
+      $index++
+      $candidate = [string] $Arguments[$index]
+      if ([string]::IsNullOrWhiteSpace($candidate) -or $candidate.StartsWith('-')) { throw '--api-key 的值无效。' }
+      if ($apiKey) { throw '--api-key 只能指定一次。' }
+      $apiKey = $candidate
+      continue
+    }
+    if ($argument.StartsWith('--api-key=')) {
+      $candidate = $argument.Substring('--api-key='.Length)
+      if ([string]::IsNullOrWhiteSpace($candidate)) { throw '--api-key 的值无效。' }
+      if ($apiKey) { throw '--api-key 只能指定一次。' }
+      $apiKey = $candidate
+      continue
+    }
+    $remaining.Add($argument)
+  }
+  [pscustomobject]@{
+    ApiKey = $apiKey
+    Arguments = @($remaining)
   }
 }
 
@@ -557,12 +597,16 @@ function Ensure-ProjectRuntime {
 }
 
 try {
-  $setupOnly = $AutoTestArgs -contains '--setup-only'
-  $reconfigureApi = $AutoTestArgs -contains '--reconfigure-api'
-  $forwardArgs = @($AutoTestArgs | Where-Object { $_ -ne '--setup-only' -and $_ -ne '--reconfigure-api' })
+  $parsedApiKey = Parse-ApiKeyOverride $AutoTestArgs
+  $setupOnly = $parsedApiKey.Arguments -contains '--setup-only'
+  $reconfigureApi = $parsedApiKey.Arguments -contains '--reconfigure-api'
+  if ($reconfigureApi -and $parsedApiKey.ApiKey) {
+    throw '--api-key 不能和 --reconfigure-api 同时使用；临时 Key 不会覆盖默认配置。'
+  }
+  $forwardArgs = @($parsedApiKey.Arguments | Where-Object { $_ -ne '--setup-only' -and $_ -ne '--reconfigure-api' })
   Ensure-Node
   Ensure-CodexCli
-  Ensure-ApiProvider -ForcePrompt:$reconfigureApi
+  Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
   Test-CodexProvider
   Complete-BootstrapImport
   Ensure-ProjectRuntime
