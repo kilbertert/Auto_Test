@@ -114,6 +114,8 @@ describe('Codex agent workspace', () => {
     const controlConfig = JSON.parse(await readFile(workspace.controlConfigPath, 'utf8'))
     expect(controlConfig.evidenceDirectory).toBe(workspace.evidenceDirectory)
     expect(controlConfig.caseResultsPath).toBe(workspace.caseResultsPath)
+    expect(controlConfig.allowedOrigins).toEqual(profile.origins)
+    expect(controlConfig.environmentRequirementsPath).toBe(workspace.environmentRequirementsPath)
     expect(controlConfig.caseRisks).toEqual({ 'inspect-board': 'read' })
     expect(JSON.parse(await readFile(workspace.caseResultsPath, 'utf8'))).toEqual([])
     expect(mergedState.cookies).toHaveLength(2)
@@ -173,5 +175,37 @@ describe('Codex agent workspace', () => {
     expect(JSON.parse(await readFile(resumed.caseResultsPath, 'utf8'))).toEqual(decisions)
     expect(JSON.parse(await readFile(resumed.planPath, 'utf8'))).toEqual(plan)
     expect(await readFile(resumed.playwrightSecretsPath, 'utf8')).toContain('rotated-value')
+  })
+
+  it('allows an append-only registered origin during resume', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-origins-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const firstProfile: EnvironmentProfile = {
+      id: 'workspace-fixture',
+      origins: ['https://one.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+    const options = {
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(firstProfile.origins),
+      profile: firstProfile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: sourceHome,
+    }
+    await prepareCodexAgentWorkspace(options)
+    const resumed = await prepareCodexAgentWorkspace({
+      ...options,
+      profile: { ...firstProfile, origins: [...firstProfile.origins, 'https://two.example.test'] },
+      resume: true,
+    })
+
+    const control = JSON.parse(await readFile(resumed.controlConfigPath, 'utf8')) as { allowedOrigins: string[] }
+    expect(control.allowedOrigins).toEqual(['https://one.example.test', 'https://two.example.test'])
   })
 })

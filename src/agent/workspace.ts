@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
@@ -32,6 +32,7 @@ export interface CodexAgentWorkspace {
   playwrightSecretsPath: string
   controlConfigPath: string
   mutationLedgerPath: string
+  environmentRequirementsPath: string
   evidenceIndexPath: string
   caseResultsPath: string
   planPath: string
@@ -88,6 +89,15 @@ function riskFor(profile: EnvironmentProfile): CodexTestRisk {
   if (profile.policy.allowDestructive) return 'destructive'
   if (profile.policy.allowWrite) return 'write'
   return 'read'
+}
+
+function originSet(values: string[]): Set<string> {
+  return new Set(values.map((value) => new URL(value).origin))
+}
+
+function isOriginAppendOnly(previous: string[], current: string[]): boolean {
+  const next = originSet(current)
+  return [...originSet(previous)].every((origin) => next.has(origin))
 }
 
 function bindingPurpose(bindings: WorkflowSecretBinding[], secretRef: string): string {
@@ -170,16 +180,17 @@ export async function prepareCodexAgentWorkspace(options: {
   const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
   const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
+  const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
   const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
   const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
   const planPath = resolve(workspaceDirectory, 'execution-plan.json')
   const workspaceHashPath = resolve(workspaceDirectory, 'workspace.sha256')
-  const workspaceHash = createHash('sha256').update(JSON.stringify({
+  const workspaceIdentity = {
     workflowId: options.manifest.workflowId,
     sourceSha256: options.manifest.source.sha256,
     profileId: options.profile.id,
-    origins: options.profile.origins,
-  })).digest('hex')
+  }
+  const workspaceHash = createHash('sha256').update(JSON.stringify(workspaceIdentity)).digest('hex')
   await Promise.all([
     mkdir(workspaceDirectory, { recursive: true, mode: 0o750 }),
     mkdir(privateDirectory, { recursive: true, mode: 0o700 }),
@@ -195,14 +206,19 @@ export async function prepareCodexAgentWorkspace(options: {
     if (existingManifest.workflowId !== options.manifest.workflowId || existingManifest.source.sha256 !== options.manifest.source.sha256) {
       throw new Error('Resume input does not match the existing Auto-Test workflow identity')
     }
-    const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
-    if (existingHash !== workspaceHash) throw new Error('Resume environment does not match the existing Auto-Test workspace identity')
     const existingControl = JSON.parse(await readFile(controlConfigPath, 'utf8')) as CodexTestControlConfig
+    const existingOrigins = existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin)
+    const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
+    const legacyWorkspaceHash = createHash('sha256').update(JSON.stringify({ ...workspaceIdentity, origins: existingOrigins })).digest('hex')
+    if (existingHash !== workspaceHash && existingHash !== legacyWorkspaceHash) {
+      throw new Error('Resume environment does not match the existing Auto-Test workspace identity')
+    }
     const expectedControl = {
       workflowId: options.manifest.workflowId,
       sourceSha256: options.manifest.source.sha256,
       allowedRisk: riskFor(options.profile),
       targetUrls: options.manifest.targetUrls,
+      allowedOrigins: options.profile.origins,
       caseIds: options.manifest.phases.map((phase) => phase.id),
       caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     }
@@ -211,10 +227,13 @@ export async function prepareCodexAgentWorkspace(options: {
       sourceSha256: existingControl.sourceSha256,
       allowedRisk: existingControl.allowedRisk,
       targetUrls: existingControl.targetUrls,
+      allowedOrigins: existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin),
       caseIds: existingControl.caseIds,
       caseRisks: existingControl.caseRisks,
     }
-    if (JSON.stringify(actualControl) !== JSON.stringify(expectedControl)) {
+    const immutableControlMatches = JSON.stringify({ ...actualControl, allowedOrigins: undefined }) ===
+      JSON.stringify({ ...expectedControl, allowedOrigins: undefined })
+    if (!immutableControlMatches || !isOriginAppendOnly(existingOrigins, options.profile.origins)) {
       throw new Error('Resume contract or environment policy does not match the existing Auto-Test run')
     }
   } else {
@@ -274,10 +293,14 @@ export async function prepareCodexAgentWorkspace(options: {
     codegen: 'none',
   })
 
+  const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
   if (!options.resume) {
     await writePrivateJson(mutationLedgerPath, [])
+    await writePrivateJson(environmentRequirementsPath, [])
     await writePrivateJson(evidenceIndexPath, [])
     await writePrivateJson(caseResultsPath, [])
+  } else if (requirementsMissing) {
+    await writePrivateJson(environmentRequirementsPath, [])
   }
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
@@ -285,6 +308,7 @@ export async function prepareCodexAgentWorkspace(options: {
     sourceSha256: options.manifest.source.sha256,
     allowedRisk: riskFor(options.profile),
     targetUrls: options.manifest.targetUrls,
+    allowedOrigins: options.profile.origins,
     caseIds: options.manifest.phases.map((phase) => phase.id),
     caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     evidenceDirectory,
@@ -292,6 +316,7 @@ export async function prepareCodexAgentWorkspace(options: {
     evidencePath: evidenceIndexPath,
     caseResultsPath,
     mutationLedgerPath,
+    environmentRequirementsPath,
   }
   await writePrivateJson(controlConfigPath, controlConfig)
 
@@ -307,6 +332,7 @@ export async function prepareCodexAgentWorkspace(options: {
     playwrightSecretsPath,
     controlConfigPath,
     mutationLedgerPath,
+    environmentRequirementsPath,
     evidenceIndexPath,
     caseResultsPath,
     planPath,

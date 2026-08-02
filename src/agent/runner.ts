@@ -6,12 +6,13 @@ import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
+import { blockedNavigationOriginsFromEvents, reconcileEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
 import { codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues } from './redact.js'
 import { enforceMutationLedger } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestCaseDecision, CodexTestMutationLedgerEntry } from './types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestCaseDecision, CodexTestEnvironmentRequirement, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareCodexAgentWorkspace } from './workspace.js'
 
 export interface CodexTestAgentOptions {
@@ -297,13 +298,17 @@ function resultFromDecisions(options: {
   decisions: CodexTestCaseDecision[]
   evidence: AgentEvidenceNote[]
   ledger: CodexTestMutationLedgerEntry[]
+  environmentRequirements: CodexTestEnvironmentRequirement[]
   problems: string[]
 }): CodexTestAgentResult {
+  const pendingEnvironmentRequirements = options.environmentRequirements.filter((item) => item.status === 'pending')
+  const environmentBlockers = pendingEnvironmentRequirements.map((item) => `Environment origin is not registered: ${item.origin}`)
+  const effectiveProblems = [...options.problems, ...environmentBlockers]
   const decisionByCase = new Map(options.decisions.map((item) => [item.caseId, item]))
   const evidenceByCase = new Map<string, AgentEvidenceNote[]>()
   for (const note of options.evidence) evidenceByCase.set(note.caseId, [...(evidenceByCase.get(note.caseId) ?? []), note])
-  const missingMessage = options.problems.length > 0
-    ? `The execution delivery contract is incomplete: ${options.problems.join('; ')}`
+  const missingMessage = effectiveProblems.length > 0
+    ? `The execution delivery contract is incomplete: ${effectiveProblems.join('; ')}`
     : 'The execution agent did not record a final case decision.'
   const cases = options.manifest.phases.map((phase) => {
     const decision = decisionByCase.get(phase.id)
@@ -321,11 +326,11 @@ function resultFromDecisions(options: {
   })
   const blockers = [...new Set([
     ...options.decisions.flatMap((item) => item.blockers),
-    ...options.problems,
+    ...effectiveProblems,
   ])]
   const productDefects = [...new Set(options.decisions.flatMap((item) => item.productDefects))]
   const decisionOutcome = outcomeFor(options.decisions)
-  const outcome = options.problems.length > 0 ? 'blocked' : decisionOutcome
+  const outcome = effectiveProblems.length > 0 ? 'blocked' : decisionOutcome
   const result: CodexTestAgentResult = {
     version: '1.0',
     workflowId: options.manifest.workflowId,
@@ -340,10 +345,14 @@ function resultFromDecisions(options: {
     finishedAt: new Date().toISOString(),
     cases,
     mutations: [],
+    environmentRequirements: options.environmentRequirements,
     blockers,
     productDefects,
     nextActions: outcome === 'blocked'
-      ? ['Resolve the recorded blockers or incomplete execution evidence, then rerun the same input.']
+      ? [
+        ...pendingEnvironmentRequirements.map((item) => `Register ${item.origin} in the Environment Profile, then resume the same run.`),
+        'Resolve the recorded blockers or incomplete execution evidence, then rerun the same input.',
+      ]
       : outcome === 'product_failed'
         ? ['Triage the verified product defects and rerun after the product fix.']
         : [],
@@ -360,6 +369,7 @@ function blockedResult(
   state: CodexTestAgentState,
   message: string,
   ledger: CodexTestMutationLedgerEntry[],
+  environmentRequirements: CodexTestEnvironmentRequirement[] = [],
 ): CodexTestAgentResult {
   const result: CodexTestAgentResult = {
     version: '1.0',
@@ -377,6 +387,7 @@ function blockedResult(
       evidence: [{ kind: 'observation', description: 'Execution dependency failure recorded in codex-agent.events.jsonl.' }],
     })),
     mutations: [],
+    environmentRequirements,
     blockers: [message],
     productDefects: [],
     nextActions: ['Restore the unavailable model, browser, MCP, network, or authorization dependency and rerun the same input.'],
@@ -394,6 +405,26 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
     throw error
+  }
+}
+
+async function captureBlockedNavigationRequirements(
+  eventsPath: string,
+  requirementsPath: string,
+  allowedOrigins: string[],
+): Promise<void> {
+  const events = await readFile(eventsPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return ''
+    throw error
+  })
+  for (const origin of blockedNavigationOriginsFromEvents(events, allowedOrigins)) {
+    await requestEnvironmentAccess({
+      allowedOrigins,
+      requirementsPath,
+      origin,
+      reason: 'Playwright blocked navigation to an origin outside the registered Environment Profile allowlist.',
+      evidence: ['codex-agent.events.jsonl: browser_navigate returned ERR_BLOCKED_BY_CLIENT'],
+    })
   }
 }
 
@@ -448,6 +479,7 @@ export async function runCodexTestAgent(
     state = initialCodexTestState(options.manifest.workflowId, options.manifest.source.sha256)
   }
   let mutationLedgerPath: string | undefined
+  let environmentRequirementsPath: string | undefined
   let activeThread: AgentThread | undefined
   const progress = new CodexTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
   await writePrivateJson(statePath, state)
@@ -474,6 +506,8 @@ export async function runCodexTestAgent(
       ...(options.resume ? { resume: true } : {}),
     })
     mutationLedgerPath = workspace.mutationLedgerPath
+    environmentRequirementsPath = workspace.environmentRequirementsPath
+    await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
     progress.report('stage', '隔离测试工作区已准备，正在启动 Codex 测试线程')
     const activeCodexExecutable = await resolveCodexExecutable(options)
     const threadOptions = {
@@ -508,15 +542,18 @@ export async function runCodexTestAgent(
             manifest: options.manifest,
             environmentContext: options.environmentContext,
             secretAliases: workspace.secretAliases,
+            allowedOrigins: options.profile.origins,
             ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
           }) },
           ...options.imagePaths.map((path) => ({ type: 'local_image' as const, path })),
         ]
     await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId)
+    await captureBlockedNavigationRequirements(eventsPath, workspace.environmentRequirementsPath, options.profile.origins)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
     progress.report('stage', '浏览器执行阶段结束，正在核对 Execution Plan、证据和 Mutation Ledger')
     let ledger = await readMutationLedger(workspace.mutationLedgerPath)
+    let environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
     let evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
     let plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
     let decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
@@ -529,12 +566,19 @@ export async function runCodexTestAgent(
         type: 'text',
         text: `The execution delivery contract is incomplete:\n- ${problems.join('\n- ')}\nContinue the same browser session. Repair missing final assertions, evidence, plan status, case_result_record entries, or pending mutation recovery without weakening expected results. Do not repeat already verified business mutations. Finish with a short plain-text summary.`,
       }], eventsPath, redactionSecrets, progress, persistThreadId)
+      await captureBlockedNavigationRequirements(
+        eventsPath,
+        workspace.environmentRequirementsPath,
+        options.profile.origins,
+      )
       ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
       evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
       plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
       decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
     }
     ledger = await readMutationLedger(workspace.mutationLedgerPath)
+    environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
     evidence = await readJsonOr<AgentEvidenceNote[]>(workspace.evidenceIndexPath, [])
     plan = await readJsonOr<AgentPlan | undefined>(workspace.planPath, undefined)
     decisions = await readJsonOr<CodexTestCaseDecision[]>(workspace.caseResultsPath, [])
@@ -545,6 +589,7 @@ export async function runCodexTestAgent(
       decisions,
       evidence,
       ledger,
+      environmentRequirements,
       problems: finalProblems,
     })
     await writePrivateJson(resultPath, result)
@@ -563,7 +608,10 @@ export async function runCodexTestAgent(
     if (isOperationalBlock(message)) {
       progress.report('warning', '模型、浏览器、网络或测试权限暂时不可用，正在保存可恢复的 blocked 结果')
       const ledger = mutationLedgerPath ? await readMutationLedger(mutationLedgerPath).catch(() => []) : []
-      const result = blockedResult(options.manifest, state, message, ledger)
+      const environmentRequirements = environmentRequirementsPath
+        ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
+        : []
+      const result = blockedResult(options.manifest, state, message, ledger, environmentRequirements)
       await writePrivateJson(resultPath, result)
       state = updateCodexTestState(state, {
         status: 'completed', stage: 'completed', outcome: 'blocked', resultPath,

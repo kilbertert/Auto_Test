@@ -19,6 +19,7 @@ function result(): CodexTestAgentResult {
       evidence: [{ kind: 'observation', description: 'Two matching rows remained.' }],
     }],
     mutations: [],
+    environmentRequirements: [],
     blockers: [],
     productDefects: [],
     nextActions: [],

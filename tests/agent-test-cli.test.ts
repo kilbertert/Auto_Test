@@ -63,4 +63,25 @@ describe('Codex agent CLI', () => {
     expect(profile.origins).toEqual(['https://catalog.example.test'])
     expect(profile.auth).toHaveLength(1)
   })
+
+  it('retains only explicitly requested additional origins for a resumed run', () => {
+    const profile = scopeEnvironmentProfile({
+      id: 'shared',
+      origins: ['https://catalog.example.test', 'https://admin.example.test', 'https://unrelated.example.test'],
+      auth: [
+        { origin: 'https://catalog.example.test' },
+        { origin: 'https://admin.example.test' },
+        { origin: 'https://unrelated.example.test' },
+      ],
+      policy: { allowWrite: true, allowDestructive: false },
+    }, {
+      version: '1.0', kind: 'workflow-intake', workflowId: 'catalog',
+      source: { format: 'xlsx', fileName: 'catalog.xlsx', sheetName: 'Cases', sha256: 'a'.repeat(64) },
+      targetUrls: ['https://catalog.example.test/products'], requiredCapabilities: [], phases: [],
+      embeddedImages: [], supplementalImages: [], review: { status: 'draft', reasons: [] },
+    }, ['https://admin.example.test/virtual/device'])
+
+    expect(profile.origins).toEqual(['https://catalog.example.test', 'https://admin.example.test'])
+    expect(profile.auth.map((adapter) => adapter.origin)).toEqual(profile.origins)
+  })
 })

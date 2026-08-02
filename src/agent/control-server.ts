@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { writePrivateJson } from './state.js'
+import { readEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
 import type { CodexTestCaseDecision, CodexTestMutationLedgerEntry, CodexTestRisk } from './types.js'
@@ -38,6 +40,10 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+function allowedOrigins(config: CodexTestControlConfig): string[] {
+  return config.allowedOrigins ?? config.targetUrls.map((url) => new URL(url).origin)
+}
+
 function text(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] }
 }
@@ -47,6 +53,8 @@ async function main(): Promise<void> {
   const configPath = process.argv[2]
   if (!configPath) throw new Error('Control server requires a config path')
   const config = JSON.parse(await readFile(configPath, 'utf8')) as CodexTestControlConfig
+  const environmentRequirementsPath = config.environmentRequirementsPath
+    ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'environment-requirements.json')
   const caseIds = new Set(config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
@@ -67,8 +75,34 @@ async function main(): Promise<void> {
     sourceSha256: config.sourceSha256,
     allowedRisk: config.allowedRisk,
     targetUrls: config.targetUrls,
+    allowedOrigins: allowedOrigins(config),
     caseIds: config.caseIds,
   }))
+
+  server.registerTool('environment_requirements', {
+    title: 'List environment access requirements',
+    description: 'Return origins requested by the agent that are not in the registered environment allowlist.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async () => text(await readEnvironmentRequirements(environmentRequirementsPath)))
+
+  server.registerTool('request_environment_access', {
+    title: 'Request access to an origin',
+    description: 'Check whether a newly discovered origin is registered. Missing origins are recorded as a resumable environment requirement; this tool never grants access or navigates the browser.',
+    inputSchema: {
+      origin: z.string().min(1),
+      reason: z.string().min(1),
+      evidence: z.array(z.string().min(1)).default([]),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ origin, reason, evidence }) => {
+    return text(await requestEnvironmentAccess({
+      allowedOrigins: allowedOrigins(config),
+      requirementsPath: environmentRequirementsPath,
+      origin,
+      reason,
+      evidence,
+    }))
+  })
 
   server.registerTool('test_plan_update', {
     title: 'Update dynamic execution plan',
