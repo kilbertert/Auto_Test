@@ -1,5 +1,7 @@
 export type CodexTestOutcome = 'passed' | 'product_failed' | 'blocked'
 export type CodexTestRisk = 'read' | 'write' | 'destructive'
+export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input'
+export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution'
 
 export interface CodexTestEvidence {
   kind: 'snapshot' | 'screenshot' | 'console' | 'network' | 'observation' | 'mutation'
@@ -12,7 +14,47 @@ export interface CodexTestCaseResult {
   title: string
   outcome: CodexTestOutcome
   summary: string
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  fieldGateIds?: string[]
   evidence: CodexTestEvidence[]
+}
+
+export type CodexTestFieldComponentRole = 'selector' | 'input' | 'display' | 'hidden'
+export type CodexTestFieldComponentSource = 'static' | 'secret' | 'derived' | 'unknown'
+export type CodexTestFieldRepresentation = 'full' | 'component' | 'suffix' | 'none' | 'unknown'
+export type CodexTestFieldContribution = 'segment' | 'context' | 'none'
+
+export interface CodexTestFieldComponent {
+  id: string
+  role: CodexTestFieldComponentRole
+  label: string
+  source: CodexTestFieldComponentSource
+  observedValue?: string | undefined
+  representation: CodexTestFieldRepresentation
+  contribution: CodexTestFieldContribution
+}
+
+export interface CodexTestFieldRenderedComponent {
+  componentId: string
+  valueKind: 'static' | 'secret' | 'derived' | 'empty'
+  valueLength?: number | undefined
+  literalValue?: string | undefined
+  secretAlias?: string | undefined
+}
+
+export interface CodexTestFieldCompositionGate {
+  id: string
+  caseId: string
+  fieldId: string
+  logicalValueRef: string
+  purpose: string
+  components: CodexTestFieldComponent[]
+  rendered: CodexTestFieldRenderedComponent[]
+  evidence: string[]
+  status: 'passed' | 'blocked'
+  reasons: string[]
+  checkedAt: string
 }
 
 export interface CodexTestMutationResult {
@@ -79,5 +121,8 @@ export interface CodexTestCaseDecision {
   summary: string
   blockers: string[]
   productDefects: string[]
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  fieldGateIds?: string[]
   recordedAt: string
 }

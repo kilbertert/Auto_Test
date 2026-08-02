@@ -37,6 +37,7 @@ export interface AgentTestCliOptions {
   codexExecutable?: string
   codexHome?: string
   resume?: boolean
+  testDataAccess: 'direct' | 'opaque'
 }
 
 interface AgentEnvironmentSelection {
@@ -44,6 +45,7 @@ interface AgentEnvironmentSelection {
   origins: string[]
   policy: EnvironmentProfile['policy']
   authenticatedOrigins: string[]
+  testDataAccess?: 'direct' | 'opaque'
 }
 
 function timestamp(): string {
@@ -86,6 +88,7 @@ function help(): string {
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
+    '  --opaque-test-data          不向模型直接提供本次 Excel/Profile 测试值；默认 direct',
     '  --resume                    恢复同一输出目录中的中断 run、Codex thread 与 Mutation Ledger',
   ].join('\n')
 }
@@ -146,6 +149,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
     headed: args.includes('--headed'),
     resume: args.includes('--resume'),
+    testDataAccess: args.includes('--opaque-test-data') ? 'opaque' : 'direct',
     ...(slowMo !== undefined ? { slowMo } : {}),
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
@@ -208,11 +212,12 @@ function isAppendOnlyOrigins(previous: string[], current: string[]): boolean {
 }
 
 function isAppendOnlyEnvironmentSelection(
-  previous: { profileId: string; origins: string[]; policy: EnvironmentProfile['policy']; authenticatedOrigins: string[] },
-  current: { profileId: string; origins: string[]; policy: EnvironmentProfile['policy']; authenticatedOrigins: string[] },
+  previous: AgentEnvironmentSelection,
+  current: AgentEnvironmentSelection,
 ): boolean {
   return previous.profileId === current.profileId &&
     JSON.stringify(previous.policy) === JSON.stringify(current.policy) &&
+    (previous.testDataAccess === undefined || previous.testDataAccess === current.testDataAccess) &&
     isAppendOnlyOrigins(previous.origins, current.origins) &&
     isAppendOnlyOrigins(previous.authenticatedOrigins, current.authenticatedOrigins)
 }
@@ -377,6 +382,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       origins: profile.origins,
       policy: profile.policy,
       authenticatedOrigins: profile.auth.map((adapter) => adapter.origin),
+      testDataAccess: options.testDataAccess,
     }
     if (options.resume) {
       if (!priorSelection || !isAppendOnlyEnvironmentSelection(priorSelection, environmentSelection)) {
@@ -405,6 +411,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
     ...(options.resume ? { resume: true } : {}),
+    testDataAccess: options.testDataAccess,
     onProgress: (progress) => printProgress(progress.message),
   })
   console.log(`测试状态：${run.state.status}`)

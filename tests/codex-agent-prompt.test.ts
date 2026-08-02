@@ -22,13 +22,20 @@ describe('Codex test agent prompt safety rules', () => {
     const prompt = codexTestAgentPrompt({
       manifest: manifest(),
       environmentContext: '',
-      secretAliases: [{ secretRef: 'workflow.value', purpose: 'sensitive value', aliases: ['AUTO_TEST_VALUE_001'] }],
+      secretAliases: [{
+        secretRef: 'workflow.value', purpose: 'sensitive value', aliases: ['AUTO_TEST_VALUE_001'],
+      }],
+      testDataAccess: 'direct',
     })
 
     expect(prompt).toContain('request_environment_access')
     expect(prompt).toContain('Registered target origins (strict browser allowlist)')
-    expect(prompt).toContain('do not duplicate a prefix')
+    expect(prompt).toContain('field_composition_check')
+    expect(prompt).toContain('failureSource agent_execution')
+    expect(prompt).toContain('malformed or unverified representation')
+    expect(prompt).toContain('test_value_get')
     expect(prompt).toContain('at most one evidence-driven correction')
     expect(prompt).not.toContain('659')
+    expect(prompt).not.toContain('+65')
   })
 })

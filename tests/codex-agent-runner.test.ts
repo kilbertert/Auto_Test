@@ -219,6 +219,8 @@ describe('Codex test agent runner', () => {
     })
 
     expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.cases[0]?.failureSource).toBeUndefined()
+    expect(run.result?.cases[0]?.failureKind).toBeUndefined()
     expect(executionRunStreamed).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(executionInputs[0])).toContain('Do not produce the structured final result')
     expect(JSON.stringify(executionInputs[1])).toContain('missing final case decision')
@@ -250,6 +252,7 @@ describe('Codex test agent runner', () => {
 
     expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked', threadId: 'thread-fixture' })
     expect(run.result?.blockers).toContain('429 usage limit reached')
+    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'environment', failureKind: 'environment' })
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
   })
 
@@ -385,6 +388,56 @@ describe('Codex test agent runner', () => {
     })
 
     expect(run.result?.outcome).toBe('passed')
+  })
+
+  it('downgrades an unverified product validation claim to blocked', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-field-gate-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    let controlConfigPath = ''
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest('https://tasks.example.test'),
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      maxFinalizationTurns: 0,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: (options) => {
+        controlConfigPath = options.controlConfigPath
+        return {
+          id: 'thread-field-gate',
+          runStreamed: async () => {
+            const control = JSON.parse(await readFile(controlConfigPath, 'utf8')) as {
+              planPath: string; evidencePath: string; caseResultsPath: string; fieldCompositionPath: string
+            }
+            await writeFile(control.planPath, JSON.stringify({ steps: [{ id: 'submit', status: 'failed' }] }))
+            await writeFile(control.evidencePath, JSON.stringify([{ caseId: 'inspect-task', kind: 'observation', description: 'Validation error visible.' }]))
+            await writeFile(control.fieldCompositionPath, JSON.stringify([{
+              id: 'inspect-task:value', caseId: 'inspect-task', fieldId: 'value', status: 'blocked',
+            }]))
+            await writeFile(control.caseResultsPath, JSON.stringify([{
+              caseId: 'inspect-task', outcome: 'product_failed', summary: 'The application rejected the value.',
+              blockers: [], productDefects: ['Validation rejected the value.'], failureSource: 'product', failureKind: 'validation',
+              fieldGateIds: ['inspect-task:value'], recordedAt: '2026-08-01T00:01:00.000Z',
+            }]))
+            return streamedResponse('Execution complete.')
+          },
+        }
+      },
+    })
+
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]?.failureSource).toBe('agent_execution')
+    expect(run.result?.productDefects).toEqual([])
+    expect(run.result?.blockers.join(' ')).toContain('lacks a passed composite-field gate')
   })
 
   it('keeps unknown framework exceptions as failed instead of misclassifying them as a business block', async () => {

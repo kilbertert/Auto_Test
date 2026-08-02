@@ -9,6 +9,7 @@ describe('Codex agent CLI', () => {
     expect(options.headed).toBe(true)
     expect(options.maxIterations).toBe(2)
     expect(options.slowMo).toBe(50)
+    expect(options.testDataAccess).toBe('direct')
     expect(options.outputDirectory).toMatch(/artifacts[\\/]runs[\\/].*cases-/)
   })
 
@@ -22,6 +23,10 @@ describe('Codex agent CLI', () => {
 
     expect(options.resume).toBe(true)
     expect(options.outputDirectory).toMatch(/artifacts[\\/]recovery$/)
+  })
+
+  it('supports an explicit opaque test-data mode', () => {
+    expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--opaque-test-data']).testDataAccess).toBe('opaque')
   })
 
   it('fails closed when environment and workbook secrets disagree', () => {

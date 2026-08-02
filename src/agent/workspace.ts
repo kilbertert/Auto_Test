@@ -33,6 +33,7 @@ export interface CodexAgentWorkspace {
   controlConfigPath: string
   mutationLedgerPath: string
   environmentRequirementsPath: string
+  fieldCompositionPath: string
   evidenceIndexPath: string
   caseResultsPath: string
   planPath: string
@@ -169,6 +170,7 @@ export async function prepareCodexAgentWorkspace(options: {
   sourceCodexHome: string
   environment?: NodeJS.ProcessEnv
   resume?: boolean
+  testDataAccess?: 'direct' | 'opaque'
 }): Promise<CodexAgentWorkspace> {
   const outputDirectory = resolve(options.outputDirectory)
   const workspaceDirectory = resolve(outputDirectory, 'agent-workspace')
@@ -181,6 +183,7 @@ export async function prepareCodexAgentWorkspace(options: {
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
   const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
   const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
+  const fieldCompositionPath = resolve(privateDirectory, 'field-compositions.json')
   const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
   const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
   const planPath = resolve(workspaceDirectory, 'execution-plan.json')
@@ -294,14 +297,17 @@ export async function prepareCodexAgentWorkspace(options: {
   })
 
   const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
+  const fieldCompositionMissing = await access(fieldCompositionPath).then(() => false, () => true)
   if (!options.resume) {
     await writePrivateJson(mutationLedgerPath, [])
     await writePrivateJson(environmentRequirementsPath, [])
+    await writePrivateJson(fieldCompositionPath, [])
     await writePrivateJson(evidenceIndexPath, [])
     await writePrivateJson(caseResultsPath, [])
   } else if (requirementsMissing) {
     await writePrivateJson(environmentRequirementsPath, [])
   }
+  if (options.resume && fieldCompositionMissing) await writePrivateJson(fieldCompositionPath, [])
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
     workflowId: options.manifest.workflowId,
@@ -317,6 +323,9 @@ export async function prepareCodexAgentWorkspace(options: {
     caseResultsPath,
     mutationLedgerPath,
     environmentRequirementsPath,
+    fieldCompositionPath,
+    secretValuesPath: playwrightSecretsPath,
+    testDataAccess: options.testDataAccess ?? 'direct',
   }
   await writePrivateJson(controlConfigPath, controlConfig)
 
@@ -333,6 +342,7 @@ export async function prepareCodexAgentWorkspace(options: {
     controlConfigPath,
     mutationLedgerPath,
     environmentRequirementsPath,
+    fieldCompositionPath,
     evidenceIndexPath,
     caseResultsPath,
     planPath,

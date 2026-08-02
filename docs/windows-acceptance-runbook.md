@@ -97,11 +97,13 @@ Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFr
 $Result = Get-Content "$Run\codex-agent.result.json" -Raw | ConvertFrom-Json
 $Plan = Get-Content "$Run\agent-workspace\execution-plan.json" -Raw | ConvertFrom-Json
 $Ledger = Get-Content "$Run\.agent-private\mutation-ledger.json" -Raw | ConvertFrom-Json
+$FieldGates = Get-Content "$Run\.agent-private\field-compositions.json" -Raw | ConvertFrom-Json
 
 $Result.outcome
 $Result.cases | Format-Table caseId, outcome
 $Plan.steps | Where-Object status -ne "passed" | Format-Table id, status
 $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
+$FieldGates | Where-Object status -eq "blocked" | Format-Table id, caseId, fieldId, status
 ```
 
 只有同时满足以下条件，才算该 run 通过：
@@ -110,6 +112,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 - 每个测试用例均为 `passed`，且有对应业务证据；
 - 动态计划没有 `pending`、`in_progress`、`failed` 或 `blocked` 步骤；
 - Mutation Ledger 没有 `pending` 条目；
+- 任何已提交的复合字段都有对应的 `passed` Gate；验证类 `product_failed` 必须引用已通过的 `fieldGateIds`；
 - 测试材料要求的最终业务状态已验证，例如零活动订单、测试数据已删除、设备或连接器已恢复。
 
 一次页面点击成功、浏览器没有报错或部分步骤执行完成，都不能替代这些终态条件。

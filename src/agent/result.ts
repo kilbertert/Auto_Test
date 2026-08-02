@@ -20,6 +20,9 @@ export const codexTestResultSchema = {
           title: { type: 'string' },
           outcome: { type: 'string', enum: ['passed', 'product_failed', 'blocked'] },
           summary: { type: 'string' },
+          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input'] },
+          failureKind: { type: 'string', enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'] },
+          fieldGateIds: { type: 'array', items: { type: 'string' } },
           evidence: {
             type: 'array',
             items: {
@@ -128,6 +131,8 @@ export function enforceMutationLedger(
       ...item,
       outcome: 'blocked',
       summary: `${item.summary} Unrecovered business mutations remain for this case.`,
+      failureSource: 'agent_execution',
+      failureKind: 'execution',
       evidence: [
         ...item.evidence,
         ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({

@@ -6,7 +6,7 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 默认主链路已经切换为 Codex-native 测试代理：输入测试用例 Excel 和已注册环境后，一个持久 Codex 线程通过 Playwright MCP 持续完成用例理解、页面探索、证据驱动计划修订、真实执行、业务断言、恢复和结构化交付。它不会先把新场景压缩成固定 Execution Plan；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、结构化结果、同 thread 中断恢复和 Windows 启动器接入。真实 Windows 充电闭环已经仅使用 Excel、三个目标 URL 和一次环境注册完成自主执行，并在主机离线与模型限流后从原 run 恢复到 `passed`；任意新业务场景仍应先执行一条安全 canary，不能把单个复杂场景通过等同于所有网站天然兼容。
+当前实现已经完成 Excel Intake、环境选择与认证刷新、隔离 Codex Home、Playwright MCP、Auto-Test Control MCP、动态计划、证据索引、Mutation Ledger、复合字段输入 Gate、结构化结果、同 thread 中断恢复和 Windows 启动器接入。复合字段 Gate 将一个逻辑测试值与页面上的选择器、输入框、显示前缀等组件分离，并在提交前阻断未知或重复表示；未经通过 Gate 的格式错误不能被报告为产品缺陷。真实 Windows 充电闭环已经仅使用 Excel、三个目标 URL 和一次环境注册完成自主执行，并在主机离线与模型限流后从原 run 恢复到 `passed`；任意新业务场景仍应先执行一条安全 canary，不能把单个复杂场景通过等同于所有网站天然兼容。
 
 ## 当前文档
 

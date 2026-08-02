@@ -33,6 +33,7 @@ interface EasyRunOptions {
   slowMo?: number
   legacyRuntime?: boolean
   resume?: boolean
+  testDataAccess?: 'direct' | 'opaque'
 }
 
 const rl = createInterface({ input, output })
@@ -284,6 +285,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
+      testDataAccess: options.testDataAccess ?? 'direct',
     })
     statePath = resolve(outputDirectory, 'codex-agent.state.json')
   }
@@ -483,6 +485,7 @@ async function main(): Promise<void> {
       ...(slowMo !== undefined ? { slowMo } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
       resume: args.includes('--resume'),
+      testDataAccess: args.includes('--opaque-test-data') ? 'opaque' : 'direct',
     })
     process.exitCode = code
     return
@@ -495,7 +498,7 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150]')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--opaque-test-data]')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')

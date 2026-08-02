@@ -50,6 +50,24 @@ describe('Codex test result contract', () => {
     expect(enforced.blockers.join(' ')).toContain('archive-row')
     expect(enforced.mutations[0]?.status).toBe('pending')
     expect(enforced.cases[0]?.outcome).toBe('blocked')
+    expect(enforced.cases[0]).toMatchObject({ failureSource: 'agent_execution', failureKind: 'execution' })
     expect(enforced.cases[0]?.evidence.some((item) => item.kind === 'mutation')).toBe(true)
+  })
+
+  it('validates optional failure classification and field gate references', () => {
+    const classified = result()
+    classified.outcome = 'blocked'
+    classified.cases[0] = {
+      ...classified.cases[0]!,
+      outcome: 'blocked',
+      failureSource: 'agent_execution',
+      failureKind: 'validation',
+      fieldGateIds: ['filter-catalog:query'],
+    }
+    classified.blockers = ['The field representation gate blocked submission.']
+
+    expect(parseCodexTestResult(JSON.stringify(classified)).cases[0]).toMatchObject({
+      failureSource: 'agent_execution', failureKind: 'validation', fieldGateIds: ['filter-catalog:query'],
+    })
   })
 })

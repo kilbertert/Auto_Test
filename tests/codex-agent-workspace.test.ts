@@ -116,8 +116,12 @@ describe('Codex agent workspace', () => {
     expect(controlConfig.caseResultsPath).toBe(workspace.caseResultsPath)
     expect(controlConfig.allowedOrigins).toEqual(profile.origins)
     expect(controlConfig.environmentRequirementsPath).toBe(workspace.environmentRequirementsPath)
+    expect(controlConfig.fieldCompositionPath).toBe(workspace.fieldCompositionPath)
+    expect(controlConfig.secretValuesPath).toBe(workspace.playwrightSecretsPath)
+    expect(controlConfig.testDataAccess).toBe('direct')
     expect(controlConfig.caseRisks).toEqual({ 'inspect-board': 'read' })
     expect(JSON.parse(await readFile(workspace.caseResultsPath, 'utf8'))).toEqual([])
+    expect(JSON.parse(await readFile(workspace.fieldCompositionPath, 'utf8'))).toEqual([])
     expect(mergedState.cookies).toHaveLength(2)
     expect(mergedState.origins).toHaveLength(2)
     expect(mergedState.origins.find((item: { origin: string }) => item.origin === 'https://two.example.test').indexedDB).toHaveLength(1)
@@ -163,10 +167,12 @@ describe('Codex agent workspace', () => {
     const evidence = [{ caseId: 'inspect-board', kind: 'observation', description: 'Prior evidence' }]
     const decisions = [{ caseId: 'inspect-board', outcome: 'blocked', summary: 'Interrupted', blockers: ['network'], productDefects: [], recordedAt: '2026-08-01T00:00:00.000Z' }]
     const plan = { summary: 'Recover', steps: [{ id: 'recover', status: 'in_progress' }] }
+    const fieldGates = [{ id: 'inspect-board:value', caseId: 'inspect-board', fieldId: 'value', status: 'passed' }]
     await writeFile(initial.mutationLedgerPath, JSON.stringify(ledger))
     await writeFile(initial.evidenceIndexPath, JSON.stringify(evidence))
     await writeFile(initial.caseResultsPath, JSON.stringify(decisions))
     await writeFile(initial.planPath, JSON.stringify(plan))
+    await writeFile(initial.fieldCompositionPath, JSON.stringify(fieldGates))
 
     const resumed = await prepareCodexAgentWorkspace({ ...options, secrets: { 'fixture.accessCode': 'rotated-value' }, resume: true })
 
@@ -174,6 +180,7 @@ describe('Codex agent workspace', () => {
     expect(JSON.parse(await readFile(resumed.evidenceIndexPath, 'utf8'))).toEqual(evidence)
     expect(JSON.parse(await readFile(resumed.caseResultsPath, 'utf8'))).toEqual(decisions)
     expect(JSON.parse(await readFile(resumed.planPath, 'utf8'))).toEqual(plan)
+    expect(JSON.parse(await readFile(resumed.fieldCompositionPath, 'utf8'))).toEqual(fieldGates)
     expect(await readFile(resumed.playwrightSecretsPath, 'utf8')).toContain('rotated-value')
   })
 
