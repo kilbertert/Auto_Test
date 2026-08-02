@@ -24,6 +24,8 @@ Set-Location "D:\Auto-Test"
 
 继续验收前，应确认 Node.js、Codex CLI、模型 Provider/API 和 Chromium 均显示成功。初始化失败时先解决环境问题，不要直接开始业务测试。
 
+模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。超过上限后启动器会终止卡住的 Codex 进程、恢复上一版 Provider 配置并明确报错；这不是业务测试结果。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
+
 如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
 
 ```powershell
