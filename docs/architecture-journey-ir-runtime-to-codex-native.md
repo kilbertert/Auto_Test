@@ -1,8 +1,8 @@
 # Auto-Test 架构实践复盘：从 IR/Runtime 到 Codex-native 测试代理
 
-记录日期：2026-08-01
+记录日期：2026-08-01，2026-08-03 补记 thin harness 实施与 Windows 验收
 
-记录范围：从旧仓库审计与清理开始，到 IR/Runtime 方案建设、真实业务闭环验收、跨场景与 Windows 复验，再到 Codex-native 架构决策。
+记录范围：从旧仓库审计与清理开始，到 IR/Runtime 方案建设、真实业务闭环验收、跨场景与 Windows 复验、Codex-native 架构决策，再到 thin harness 重构、真实 Windows 运行和输入包边界复核。
 
 ## 1. 为什么要留下这份记录
 
@@ -77,6 +77,9 @@ URL + Excel
 | 2026-07-31 | Windows 产品化 | 做成测试工程师可双击使用的私有包 | 安装与环境问题解决，核心能力未被证明 |
 | 2026-08-01 | Windows 真实复验 | 用冻结包重新跑充电场景 | 未进入充电，证明产品目标仍未实现 |
 | 2026-08-01 | 架构复盘 | 对比直接 Codex 与框架执行效果 | 决定转向 Codex-native |
+| 2026-08-01 至 08-02 | Codex-native 首版 | 持久 Codex thread 直接探索和执行，框架提供 MCP、证据和恢复 | 主体方向正确，但首版仍保留过多二次执行门禁 |
+| 2026-08-02 至 08-03 | Thin harness 重构 | 原始材料和完整工具交给 Codex，框架只保留持久控制边界 | Codex 成为真正执行主体，旧 Runtime 退出首次执行主链路 |
+| 2026-08-03 | Windows 真实验收 | 用最终私有包执行多阶段、多账号真实流程 | 当前 manifest 3/3 通过，Ledger 无 pending；不能覆盖未随输入交付的 sidecar 扩展步骤 |
 
 ## 4. 起点：旧仓库为什么必须清理
 
@@ -768,6 +771,8 @@ v8 从 12 轮扩展到 24 轮后最终成功，但这带来：
 
 ## 16. 最终方向：Codex-native 测试代理
 
+本节记录 2026-08-01 完成第一次架构复盘时形成的设计。它在当时仍是待实施方向；实际落地、现场失败和最终 thin harness 形态记录在第 24 章。
+
 ### 16.1 产品定义
 
 新的 Auto-Test 不再试图自己成为一个通用智能测试执行器。
@@ -893,7 +898,9 @@ Codex CLI 官方没有内置 Browser。直接安装裸 CLI 不会自动获得本
 | 报告系统 | 保留并接入 Codex JSONL 与工具证据 |
 | Windows 启动器 | 保留，改为启动 Agent Runner |
 
-## 18. 新架构的实施顺序
+## 18. 当时制定的新架构实施顺序
+
+以下是架构转向时制定的实施顺序。后续实现没有机械照抄全部细节：真实 Provider、Windows 和业务验收迫使执行链路继续收缩，最终取消了首次执行对静态计划、字段 Gate 和第二套结果判断器的依赖。具体变化见第 24 章。
 
 ### 阶段 A：冻结旧主链路并建立直接 Codex 基线
 
@@ -1069,9 +1076,14 @@ Windows 启动、依赖安装、API 配置和 Chromium 检查都是必要条件�
 - [仓库与历史方案审计](repository-audit.md)
 - [MVP 规格与阶段实现记录](mvp-spec.md)
 - [历史充电闭环验收](e2e-charge-acceptance.md)
-- [Autonomous Workflow Controller](autonomous-workflow.md)
+- [Codex-native Autonomous Workflow](autonomous-workflow.md)
 - [跨场景快速操作指南](quick-start.md)
 - [Windows 快速操作指南](windows-quick-start.md)
+- `src/agent/runner.ts`
+- `src/agent/workspace.ts`
+- `src/agent/prompt.ts`
+- `src/agent/control-server.ts`
+- `src/agent/progress.ts`
 - `artifacts/planning/charge/charge.refined12.plan-draft.json`
 - `artifacts/planning/charge/charge.generated-v2.execution-plan.json`
 - `artifacts/acceptance/charge/generated-v2-runtime-offset6.result.json`
@@ -1084,7 +1096,7 @@ Windows 启动、依赖安装、API 配置和 Chromium 检查都是必要条件�
 
 Windows 真实复验产物包含环境和业务证据，保留在私有测试机运行目录中，不进入仓库。
 
-## 23. 最终决策
+## 23. 2026-08-01 的架构决策
 
 停止把下列链路作为首次接入新场景的产品主路径：
 
@@ -1115,3 +1127,489 @@ Intake + Environment Profile
 > 我们曾试图先把一个开放世界的测试工程师任务完整编译成静态程序，再开始真正观察和执行页面。
 
 以后应当让 Codex 保留完整 Agent 能力，让框架负责控制世界、记录世界和保护世界，而不是试图在 Codex 行动前替它预测整个世界。
+
+## 24. Thin Harness 重构：让 Codex 成为真正的测试执行主体
+
+第 23 节完成的是方向判断，还不是产品证明。真正困难的部分发生在随后两天：我们需要把“让 Codex 保留完整 Agent 能力”从一句架构口号变成可安装、可恢复、可审计、能在真实 Windows 业务中跑到终态的实现。
+
+这次实施最终形成的结论是：
+
+> 首次接入新场景时，Codex 必须是唯一负责理解、探索、计划、执行、纠错和业务判断的智能主体；Auto-Test 只保留那些必须跨模型、浏览器和机器中断持续存在的控制能力。
+
+这里的“thin harness”不是删除框架，也不是让 Codex 无边界地操作宿主机。它表示框架不再实现第二套页面语义、第二套 Planner、第二套表单判断器或低智能业务 Runtime，而是成为 Codex 周围的一层薄运行外壳。
+
+### 24.1 为什么仅仅把 Runtime 换成 Codex 还不够
+
+最初的 Codex-native 方案已经把持久 Codex thread 接入主链路，但第一版仍然继承了旧架构的很多思维：
+
+- Codex 主要读取解析后的 manifest 和 secret alias，而不是完整原始材料；
+- 工作区偏只读，shell、网络和临时脚本能力受限；
+- 浏览器工具被裁剪为一组预先认可的动作；
+- 动态 Execution Plan、evidence checkpoint、字段 Gate 和逐用例 checkpoint 逐渐接近强制门；
+- 框架仍试图判断页面字段应该怎样组合、某类失败应该怎样解释；
+- Codex 执行后，结果还可能被另一套汇总逻辑重新解释。
+
+这比旧 IR/Runtime 前进了一步，因为同一个 thread 已经可以持续观察和行动；但它仍然没有完全解决能力倒置：最了解实时页面和业务上下文的是 Codex，最终决定却可能由信息更少的框架组件作出。
+
+真实 Windows 失败后来证明，给旧架构增加一个 Agent 并不会自动变成 Agent 架构。如果关键判断仍然被分散在 manifest、字段规则、Control MCP Gate 和最终汇总器中，Codex 仍只是被围起来的高级步骤生成器。
+
+### 24.2 Thin harness 的职责边界
+
+最终职责被重新划分为三层：
+
+| 层 | 负责内容 | 不再负责的内容 |
+|---|---|---|
+| 持久 Codex thread | 阅读原始测试材料、理解业务、探索页面、制定和修订工作计划、执行操作、验证业务状态、恢复失败、给出最终结果 | 不修改框架源码，不改变测试预期，不绕过环境和副作用边界 |
+| Auto-Test thin harness | Intake 身份、Environment Profile、认证状态、隔离工作区、Codex 启动与恢复、Playwright/Control MCP、事件脱敏、进度、Mutation Ledger、Environment Requirement、结果合同 | 不实现通用页面语义执行器，不要求首次执行先生成完整静态计划，不替 Codex 判断业务字段 |
+| 可选稳定资产 | 成功后沉淀的 Playwright 脚本、Execution Plan、字段诊断和确定性 Runtime 资产 | 不作为新场景首次执行的必要前置条件 |
+
+判断一项逻辑是否应该留在 harness 的标准是：
+
+1. 它是否必须在模型或浏览器中断后仍可靠存在；
+2. 它是否属于权限、身份、输入完整性或副作用恢复不变量；
+3. 它是否可以在不了解具体页面业务语义的情况下确定性验证。
+
+满足这些条件的能力应留在框架，例如 source hash、case 覆盖、pending Mutation 和环境身份。需要理解“这个页面当前是什么意思”的判断应交给同一个 Codex thread。
+
+### 24.3 首版 Codex-native Runner 的建立
+
+首版实现完成了从旧主链路到 Agent 主链路的基本切换：
+
+```text
+Excel / brief / images / Environment Profile
+  -> 每次运行的隔离 workspace 与独立 Codex Home
+  -> 持久 Codex thread
+  <-> Playwright MCP
+  <-> Auto-Test Control MCP
+  -> 事件、证据、Mutation Ledger
+  -> 结构化终态
+```
+
+主要工程内容包括：
+
+- 引入 Codex SDK 和 Playwright MCP；
+- 每个 run 创建独立工作区，避免 Agent 修改仓库或污染其他运行；
+- 合并 Environment Profile 的 cookies、localStorage 和 sessionStorage；
+- 为测试数据生成 run-scoped 输入，只包含本轮 Excel 和环境需要的值；
+- 建立 Control MCP，提供测试契约、动态计划、证据、环境需求和 Mutation Ledger；
+- 记录 Codex thread ID，允许中断后恢复同一 thread；
+- 将旧 Planner/Refiner/Runtime 改为显式兼容路径，默认入口进入 Codex-native；
+- 保留 `passed`、`product_failed`、`blocked` 三种终态。
+
+这一步首先证明了架构底座可以工作，但没有立即证明真实业务可用。首轮模型运行曾因额度限制返回 `blocked`；当时正确的结论只是“底座已实现且能安全阻断”，而不是“Codex 已经跑通跨场景”。
+
+额度恢复后，先使用三轮真实浏览器任务验证基础闭环：
+
+1. 只读目录查询和筛选；
+2. 创建测试记录后精确删除并恢复到初始状态；
+3. 使用全新 thread 和空工作区重复只读任务。
+
+三轮都形成了成功的结构化终态，用于验证持久 thread、浏览器工具、写入补偿和独立重复运行。这些历史组件检查没有在本文中保留完整的平台、commit、manifest、证据和 Ledger 验收卡，因此按当前规则不构成对外 `passed` 声明，也不能替代复杂业务验收。
+
+### 24.4 Codex SDK 实际调用了错误 CLI
+
+首版接入很快暴露出一个不明显但致命的运行时问题：Node/npm 启动进程时会把项目的 `node_modules/.bin` 放到 `PATH` 前面，Codex SDK 因而可能调用依赖包附带的 CLI，而不是用户已经配置好 Provider 的 Codex CLI。
+
+表面上看，代码使用了 Codex SDK；实际上执行时可能出现：
+
+- 使用错误版本的 CLI；
+- 没有继承用户已验证的 Provider 配置；
+- 服务器调试可用，打包或 Windows 运行却表现不同；
+- 同一个命令在交互终端和 npm 脚本中选择不同可执行文件。
+
+最终的 CLI 解析规则是：
+
+1. 显式传入的可执行文件路径优先；
+2. 其次读取 `AUTO_TEST_CODEX_BIN`；
+3. 否则从用户 `PATH` 搜索 Codex；
+4. 搜索时排除所有项目 `node_modules/.bin`；
+5. Windows 识别原生可执行文件和 `PATHEXT`；
+6. 找不到预期 CLI 时 fail closed，不静默回退到 SDK 附带版本。
+
+修正后，Agent Runner 才真正复用了当前用户或 Windows 私有包已经配置并通过探针的 Codex CLI。这个问题说明，“使用 Codex SDK”与“使用预期的 Codex 运行环境”是两个不同的验收项。
+
+### 24.5 首个大请求为什么在工具调用前就失败
+
+CLI 选择正确后，完整 Agent 请求仍曾在第一次工具调用前返回 Provider 5xx。故障一度看起来像 MCP、Playwright、JSON Schema 或 Provider 本身不可用。
+
+排查时没有继续整体重试，而是把链路分层探测：
+
+- 单独验证结构化输出；
+- 单独启动 Control MCP；
+- 单独启动 Playwright MCP；
+- 使用完整工具集合执行一个很短的任务；
+- 再逐步恢复完整测试说明和结果合同。
+
+这些探测分别通过，说明单个组件没有根本故障。真正的问题是首个 turn 同时承担了太多任务：
+
+```text
+理解全部输入
+  + 规划完整流程
+  + 使用大量工具执行长业务
+  + 在同一响应中满足最终 JSON Schema
+```
+
+请求上下文、工具定义、图片、长任务和最终结构化约束叠加后，Provider 在 Agent 真正开始工作前就可能失败。
+
+因此运行被拆成两个阶段：
+
+1. **执行 turn**：不附加最终结果 Schema，让 Codex 专注于理解、探索、执行、恢复和保存证据；
+2. **交付 turn**：复用同一个 thread，根据已有材料、页面证据、工作区和 Ledger 生成最终结构化结果。
+
+如果结果违反确定性合同，harness 只把具体不一致反馈给同一 thread，最多进行有限轮修正，并明确禁止为完善报告而重新制造业务写入。
+
+过程中还试验过独立 Reporter、紧凑证据摘要和由 checkpoint 确定性汇总结果，用来降低长历史对 Provider 的压力。这些方法缓解过报告阶段故障，但也重新引入了第二个判断主体：Reporter 或汇总器没有执行 thread 的完整业务上下文，却可能覆盖它的结论。
+
+最终 thin harness 选择让同一个 Codex thread 直接生成结构化结果。框架只验证：
+
+- workflow ID 和 source hash 不变；
+- manifest 中每个 case 恰好出现一次；
+- 每个 case 有实际证据；
+- case 与顶层 outcome 一致；
+- `product_failed` 确实归因于产品；
+- `passed` 不包含 blocker 或产品缺陷；
+- Mutation Ledger 没有 pending。
+
+这条边界既避免一个超大首轮请求，也避免框架重新成为业务裁判。
+
+### 24.6 动态 Execution Plan 从门禁降级为工作记录
+
+旧路线中，Execution Plan 是 Runtime 的可执行程序。Codex-native 首版仍倾向于要求 Agent 维护一份结构完整的动态计划，并让最终结果依赖所有计划步骤均为通过。
+
+真实执行表明，这仍然会产生错误激励：
+
+- Agent 花费大量时间维护 JSON，而不是解决页面问题；
+- 页面探索脚本、原生 todo list 和 Markdown 笔记明明已经足够，却因为没有同步某个 Plan 字段而被判失败；
+- 计划格式容易再次演化成隐形 DSL；
+- 结果可能证明业务已完成，却被计划 bookkeeping 阻断。
+
+thin harness 最终规定：
+
+- Codex 可以使用原生 todo、Markdown、临时脚本或 `execution-plan.json`；
+- `test_plan_update` 只是一种可选的恢复和审计工具；
+- Execution Plan 可以存在，也可以不存在；
+- Plan 不能替代业务证据；
+- Plan 不再是 `passed` 的必需门禁。
+
+这不是放弃计划，而是把计划恢复为 Agent 的工作记忆，而不是框架提前规定的程序语言。
+
+### 24.7 从受限 Agent 到完整 run-scoped Agent
+
+thin harness 重构最重要的代码变化，是把 Codex 从只读、MCP-only 的受限执行器恢复为完整但隔离的测试工程师：
+
+- 原始 Excel、brief、内嵌图片和补充图片复制到 run 工作区；
+- 仅本轮 Excel 和 Environment Profile 需要的测试值写入私有 run-values；
+- 工作区可写，Codex 可以创建一次性 JavaScript、TypeScript、Playwright 脚本和调查笔记；
+- 开放 shell、网络、Web Search 和完整 Playwright MCP；
+- 可使用页面 JavaScript、网络证据和 Playwright 辅助代码处理复杂 SPA；
+- 文件写入被限制在当前 run workspace，不允许修改 Auto-Test 或被测应用源码；
+- Provider 凭据、Codex 认证、Cookies、浏览器存储和无关宿主机凭据不进入 run-values；
+- 页面内容被视为不可信业务数据，不能覆盖测试请求或工作区规则。
+
+这里的权限扩展不是“为了让模型什么都能做”，而是修复信息和工具边界错误。Codex 需要看到测试工程师真正提供的材料，并拥有直接调查页面的手段；框架只应隐藏与本轮测试无关的宿主机和 Provider 秘密。
+
+原来的受限模式没有被完全删除。`--opaque-test-data` 仍可用于要求 alias-only、只读 workspace、无 shell/Web Search 和 origin 受限的环境，但它是兼容和高敏场景选项，不再代表默认产品能力。
+
+### 24.8 Windows 黑箱运行与实时进度
+
+第一批 Windows 包即使进程仍在运行，启动窗口也长时间没有任何可见进度。对测试工程师而言，这与程序挂死没有区别，也使真实验收无法判断应该等待、恢复还是终止。
+
+因此新增了安全的实时进度层：
+
+- 显示 Intake、环境校验、工作区准备、thread 启动、浏览器动作、测试辅助脚本、证据、Ledger 和最终化阶段；
+- 将 MCP 工具事件映射为不含参数和值的中文动作摘要；
+- 模型或页面暂时无新事件时，每约 20 秒输出心跳；
+- 模型流重连、工具失败和恢复会显示为警告，但不自动判定业务失败；
+- 不输出模型推理正文、命令内容、表单值、Cookie、验证码、API 信息或工具参数；
+- 进度回调自身失败不能影响测试结果。
+
+这一改动没有提高页面智能，却是 Windows 产品可用性的必要部分。它也建立了一条重要验收规则：进度只证明 Agent 仍在工作，最终是否通过必须读取结构化结果、证据和 Mutation Ledger。
+
+### 24.9 Windows 产品化故障与主架构故障必须分开
+
+thin harness 实施期间还出现了多类 Windows 启动和 Provider 问题：
+
+- 私有包从无换行标准输入读取配置时被 shell 的 EOF 状态提前终止；
+- 需要允许单次运行临时选择另一个同 Provider 凭据，但不能覆盖本机持久配置；
+- 模型探针可能长时间等待，启动器需要有界超时、心跳、进程终止和配置回滚；
+- PowerShell 对子进程 ExitCode、异步 stdout/stderr EOF 和超时后流关闭的处理需要单独验证；
+- Windows 原生 Codex 可执行文件、便携 Node、Chromium 和私有 Codex Home 必须彼此隔离。
+
+这些问题最终通过独立的小范围修改解决。它们很重要，但不能用来解释业务执行失败，也不能用安装器通过替代真实业务验收。
+
+这次实践因此把验证分成三层：
+
+1. **启动层**：依赖、CLI、Provider、Chromium 是否可用；
+2. **Agent 层**：Codex 是否真正读取材料、调用工具、产生证据和恢复记录；
+3. **业务层**：测试材料中的操作和预期状态是否全部完成。
+
+只有第三层通过，才能说测试用例执行成功。
+
+### 24.10 历史服务器充电 canary 的证据价值与局限
+
+Codex-native 首版在服务器环境完成过一次严格充电 canary。输入条件是：
+
+- 原始充电 Excel；
+- 测试 URL；
+- 一次已注册 Environment Profile；
+- Excel 内嵌图片；
+- 与 Excel 同名的 `.auto-test` sidecar，其中包含补充说明和图片；
+- 不提供历史 Execution Plan、Draft、seed、手工 Locator 或人工页面操作。
+
+同一个 Codex thread 自主完成了：
+
+- 检查和准备虚拟设备状态；
+- 审计执行前活动订单基线；
+- 创建全新 H5 会话并完成认证；
+- 进入真实充电状态并持续观察；
+- 捕获本轮唯一充电订单并强制停止；
+- 捕获关联占位费并完成结算；
+- 审计最终无活动充电和占位订单；
+- 核销全部 Mutation Ledger 写入。
+
+保留的历史产物记录了成功终态：实际 manifest 含 3 个阶段、6 张 Excel 内嵌图片和 2 张 sidecar 补充图片，结果覆盖 3/3 阶段和 21 条证据索引，6 条 Mutation 全部为 `accepted` 或 `compensated`，`pending=0`。
+
+该运行为 Linux 服务器上的开发 canary，但当时没有把精确 commit 或冻结包版本写入验收卡。因此，它是“持久 Codex thread 可以自主完成充电、强停、占位费结算和清理”的强历史证据，但按第 24.18 节的新规则，不单独作为当前版本的正式 `passed` 验收声明。当前可追溯的正式声明是第 24.15 节的 Windows `c94ad77` 运行。
+
+但它仍然不能证明任意新网站必然成功，也不能被描述成“单独一个 XLSX 字节流”完成，因为 sidecar 是根据 Excel 文件名自动发现的权威输入之一。
+
+### 24.11 Windows 现场失败：错误 origin、复合字段和错误归因
+
+历史服务器 canary 形成成功终态后，Windows 真实运行又连续暴露了两个通用问题。
+
+第一类问题来自 Excel 内嵌截图。截图中包含一个拼写错误的网站 origin，用户并没有在命令行输入它。受限版本把图片同样视为测试材料，发现该 origin 后没有猜测替换，也没有越过 Profile 边界，而是生成 pending Environment Requirement 并返回 `blocked`。
+
+事后核对证明：
+
+- 错误 origin 确实来自 Excel 图片；
+- Environment Profile 中没有注册错误值；
+- 该 origin 本身不可用；
+- 本轮 Mutation 已全部恢复；
+- 删除失败 run 后没有遗留业务状态。
+
+这次失败不是框架无能，而是正确暴露了输入矛盾。它也证明图片不是装饰，而是权威测试材料；图片中的错误同样会影响执行。
+
+第二类问题来自一个复合输入字段。页面已经通过一个静态或选择组件显示了前缀，Codex 又把包含相同前缀的完整逻辑值填入编辑框，最终形成重复表示。应用返回格式错误，导致认证和后续业务都没有发生。
+
+更严重的是，首版结果把它归为 `product_failed`。正确归因应是：
+
+- 产品按既有校验拒绝错误格式是预期行为；
+- 测试动作没有以页面要求的表示正确执行；
+- 因此该 case 应为 `blocked/agent_execution`，不能报告产品缺陷。
+
+这个案例暴露了两个问题：受限 Agent 看不到足够的原始测试值和页面组合语义；框架又没有可靠地区分“产品拒绝正确输入”和“代理输入本身错误”。
+
+### 24.12 拒绝业务补丁，并经历一次通用 Gate 的中间路线
+
+最危险、也最有价值的决策是拒绝为当前业务增加关键词、国家码、特定页面结构或固定字段规则。
+
+最初的通用修正尝试是建立 Composite Field Contract：
+
+- 原始逻辑值保持不变；
+- 页面选择器、输入框、前缀和显示控件被描述为多个组件；
+- 提交前记录各组件的语义和实际渲染值；
+- 通用 Gate 私下重建逻辑值，检测重复、遗漏和未知表示；
+- 代理输入错误只能归为 `blocked/agent_execution`；
+- 合成测试覆盖前缀加输入框、币种加金额、时区加日期时间等非业务专用组合。
+
+同时，Agent 获得仅限当前 run 的测试值读取能力，使它可以按真实页面需要派生临时表示，而不接触 Provider 密钥、Cookies 或无关宿主机凭据。
+
+这条路线比写业务特判正确得多，也成功建立了通用失败分类和测试覆盖。然而继续审视后发现，如果 Composite Field Gate 成为所有页面提交的强制前置条件，框架又会逐步发展成第二个表单语义执行器：
+
+- 每一种复杂控件都需要框架能表达；
+- Agent 已经观察到的页面关系还要再次翻译成 Gate Schema；
+- Gate 无法表达的新页面会被框架自身阻断；
+- 为了通过 Gate，项目会重新开始增加字段类型和领域规则。
+
+因此最终 thin harness 没有删除这些诊断能力，但把它们降级为可选记录。Codex 负责根据页面证据处理复合字段；框架只验证最终业务证据、失败归因和副作用终态。
+
+### 24.13 Environment Requirement 与恢复契约
+
+新场景中缺少网站登录、权限或环境 origin 是正常情况，不能要求模型猜，也不应让整个 run 失去恢复能力。
+
+为此建立了结构化 Environment Requirement：
+
+```text
+发现缺少环境条件
+  -> 写入 pending requirement
+  -> 结果为 blocked
+  -> 人员补充同一环境的登录或授权
+  -> 使用原 Excel、原 Profile、原输出目录执行 --resume
+  -> requirement 转为 satisfied
+  -> 同一 Codex thread 继续
+```
+
+恢复时保持以下内容不可变：
+
+- workflow ID 和 source hash；
+- Environment Profile 身份；
+- 已有 case 和风险策略；
+- 已经登记的业务写入及 Ledger；
+- 原始测试材料和运行工作区。
+
+对于已经由本轮明确提出、后来完成注册的 origin，受限兼容模式只允许在同一 Profile 下追加，不允许替换环境、缩小权限或绕过原 run 新建目录。默认完整 Agent 模式可以跟随应用真实跳转和辅助 origin，但缺少认证、业务权限或外部授权时仍必须形成 requirement，而不是猜测通过。
+
+恢复协议的核心不是“重新跑一遍”，而是先读取 pending Mutation，再重新观察真实业务状态，判断应该继续、补偿还是接受。浏览器进程重建不等于业务操作没有发生。
+
+### 24.14 真正的 thin harness 重构
+
+经过上述失败后，主架构最终进行了一次更彻底的收缩。核心修改可以概括为：
+
+```text
+删除或降级框架内的第二套智能判断
+  + 恢复 Codex 对原始输入和调查工具的访问
+  + 保留不可替代的持久安全与交付合同
+```
+
+具体变化包括：
+
+- 原始 Excel、brief、图片和 run-scoped values 成为 Codex 的直接输入；
+- workspace 从只读改为当前 run 范围内可写；
+- shell、网络、Web Search、完整 Playwright 和一次性辅助脚本可用；
+- Codex 的原生 todo、笔记和脚本均可作为工作计划；
+- `test_plan_update`、field composition 和 case checkpoint 不再是通过门；
+- 移除框架内负责二次裁决的 decision contract；
+- 同一个 Codex thread 直接产生最终结构化结果；
+- harness 只检查输入身份、case 覆盖、证据、结果一致性、环境需求和 Ledger；
+- 旧 IR/Runtime 只在显式兼容模式下运行。
+
+对应的主要版本里程碑是：
+
+| 版本 | 作用 |
+|---|---|
+| `ec18358` | 合并 Codex-native 首版、Windows 入口和同 thread 恢复 |
+| `8da6a88` | 增加 Windows 实时进度和安全心跳 |
+| `74ace6d` | 支持补充已发现环境条件后恢复原 run |
+| `0161a37` | 建立 run-scoped 测试值和通用复合字段诊断 |
+| `f849ed3` | 完成 thin harness 重构，让 Codex 成为默认主执行者 |
+| `c3233eb`、`c94ad77` | 修复 Windows Provider 探针超时、退出码和流关闭问题 |
+
+重构后的默认链路成为：
+
+```mermaid
+flowchart TD
+    A["Excel、brief、内嵌图片与 sidecar"] --> B["Intake：身份、case 与输入索引"]
+    P["Environment Profile 与授权"] --> C["隔离 Codex Home 和 run workspace"]
+    B --> C
+    C --> D["同一个持久 Codex thread"]
+    D <--> E["完整 Playwright MCP"]
+    D <--> F["shell、临时脚本、网络与页面证据"]
+    D <--> G["Control MCP：Ledger、环境需求和可选 checkpoint"]
+    D --> H["执行 turn：理解、探索、操作、断言、恢复"]
+    H --> I["交付 turn：同 thread 生成结构化结果"]
+    I --> J["Harness 确定性合同校验"]
+    J --> K["passed / product_failed / blocked"]
+```
+
+这才真正实现了“Codex 是测试执行主体，框架是薄运行外壳”。
+
+### 24.15 最终 Windows manifest 范围验收
+
+thin harness 合并后，又使用基于 `c94ad77` 的最终 Windows 私有包执行了一次真实长流程验收。操作人员只选择了：
+
+- 充电 Excel；
+- 测试 URL；
+- 一次注册完成的 Environment Profile。
+
+没有提供历史 Execution Plan、Draft、seed、手工 Locator，也没有在运行中通过聊天逐步指导页面动作。
+
+同一个持久 Codex thread 在一次 run 中自主完成：
+
+- 多站点页面探索与登录状态复用；
+- 虚拟设备阶段；
+- 多组测试账号的全新 H5 会话；
+- 真实充电会话创建和状态验证；
+- 基于本轮身份精确匹配订单并逐笔强停；
+- 每组完成后清理 H5 会话状态；
+- 工具错误后的页面重读和策略调整；
+- 一次模型流中断后的同 thread 自动重连；
+- Mutation Ledger 登记、核销和最终零 pending 审计；
+- 结构化结果合同修正和最终交付。
+
+本轮结构化证据显示：
+
+- 3/3 manifest case 为 `passed`；
+- 完成 7 组测试数据对应的真实充电和精确订单强停；
+- 记录 26 条 Mutation Ledger，最终 pending 为 0；
+- 生成 129 个证据文件；
+- 最终 `codex-agent.result.json` 为 `passed`；
+- 模型重连和页面工具错误没有创建新 run，也没有要求人工修改计划。
+
+这次验收首次证明：最终 thin harness 版本可以在真实 Windows、多阶段、多账号、有外部业务写入和恢复要求的场景中，让 Codex 作为唯一智能主体执行到结构化终态。
+
+### 24.16 为什么这次 `passed` 仍不能宣称完整历史充电扩展范围通过
+
+最终 Windows run 结束后，又发现一个必须纠正的验收边界：本轮只交付了 Excel，未同时交付服务器历史中与它同名的 `.auto-test` sidecar。
+
+实际加载的 manifest 包含：
+
+- 3 个 Excel 阶段；
+- 6 张 Excel 内嵌图片；
+- 0 张 supplemental image。
+
+历史 sidecar 中另有占位费关联、手动结算和最终占位订单状态要求。因为这些要求没有随本轮输入包加载，Codex 不应从旧聊天或服务器历史中猜测它们，最终 `passed` 也不能覆盖它们。
+
+因此必须区分两个结论：
+
+1. 较早的服务器 Codex-native canary 加载了 Excel 和 sidecar，已经覆盖充电、强停、占位费结算和最终零活动订单；
+2. 最终 thin harness Windows run 证明了当前加载 manifest 中的虚拟设备、多账号充电和订单强停，但没有证明未交付的 sidecar 扩展要求。
+
+Auto-Test 的权威输入契约最终被明确为：
+
+```text
+Excel
+  + Excel 内嵌图片
+  + 显式 brief
+  + 同目录同 stem 的 .auto-test/brief.md 或 brief.txt
+  + 同名 .auto-test/images/ 补充图片
+```
+
+这些材料共同构成一个不可分割的测试输入包。操作界面仍然可以只让测试工程师选择 Excel，因为 sidecar 会被自动发现；但打包、复制、改名和验收时必须把二者一起处理。
+
+结果的 `passed` 只证明 `test-manifest.json` 实际列出的 case、断言和范围。任何没有进入 manifest 的聊天历史、口头说明或遗漏图片都不在证明范围内。
+
+### 24.17 这次重构最终证明了什么
+
+已经被真实证据证明的能力包括：
+
+- 默认首次执行链路由持久 Codex thread 直接负责理解、探索和执行；
+- 测试工程师不需要编写或反复修改 Execution Plan；
+- Codex 可以读取完整测试输入包并在隔离工作区创建一次性辅助代码；
+- 同一个 run 可以跨多站点、多账号和多轮业务写入持续执行；
+- 页面动作失败和模型流中断可以由同一 thread 恢复；
+- Environment Requirement 可以把缺失环境条件转为可恢复 `blocked`；
+- Mutation Ledger 可以阻止未恢复写入被报告为通过；
+- Windows 启动、实时进度、Provider 探针、恢复和结构化交付形成了完整产品链路；
+- 第 24.15 节记录的 Windows commit `c94ad77` 冻结包已自主执行实际 manifest 3/3 case，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`，结构化结果为 `passed`。
+
+仍然没有被证明的内容包括：
+
+- 任意未知网站都能一次成功；
+- 缺少业务权限、测试数据或物理条件时可以不经人员补充继续；
+- 任意格式 Excel 都能被完整理解；
+- 没有随输入交付的历史要求会被自动补全；
+- 一个复杂 canary 可以代表所有行业和控件类型；
+- 首次 Agent 成功后一定能自动生成稳定、低成本的确定性回归资产。
+
+因此对外准确表述应是：
+
+> Auto-Test 已经实现并实证了 Codex-native thin harness 主架构，可以在一个复杂真实 Windows 场景中，从测试材料包、URL 和一次环境注册开始，由持久 Codex thread 自主执行到可信终态；新场景仍需通过结构化 canary 逐步扩大证据范围，不能承诺所有未知网站无条件成功。
+
+### 24.18 对后续开发的约束
+
+为了避免再次走回 IR/Runtime 为中心的老路，后续修改必须遵守以下约束：
+
+1. 不在通用框架中加入业务名称、固定设备词典、国家码、业务表列号或特定 DOM 结构。
+2. 不把动态 Execution Plan、字段 Gate、checkpoint 或临时脚本重新升级为普遍通过门。
+3. 不创建第二个比执行 Codex 拥有更少上下文、却能覆盖其业务结论的 Planner、Reporter 或裁决器。
+4. 确定性校验只覆盖输入身份、case 完整性、证据存在、结果一致性、权限、环境需求和副作用恢复。
+5. 新能力应先在与当前业务无关的合成 fixture 中验证，再进入真实 canary。
+6. 业务失败、代理执行失败、输入缺失、环境阻断和基础设施故障必须分别归类。
+7. 任何 `passed` 声明都必须同时说明平台、commit 或包版本、实际 manifest、证据和 Ledger 终态。
+8. Excel 与同名 `.auto-test` sidecar 必须作为同一个输入包管理。
+9. Windows 安装和 Provider 探针通过只能证明启动层，不得替代业务层验收。
+10. 稳定回归 Runtime 只能作为首次 Agent 成功后的可选优化，不能重新成为新场景的强制入口。
+
+这次 thin harness 重构不是简单地“把更多权限交给模型”，而是完成了一次职责纠偏：
+
+> Codex 负责像测试工程师一样理解和处理开放世界；Auto-Test 负责让这种执行有环境、有边界、有证据、可恢复、可交付。

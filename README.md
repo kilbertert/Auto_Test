@@ -6,7 +6,7 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片、测试说明和本轮环境值会进入隔离的可写 run 工作区。同一个持久 Codex 线程可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付。框架不再把新场景压缩成固定 Execution Plan，也不实现页面字段语义执行器；既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、同 thread 中断恢复和 Windows 启动器接入。`test_plan_update`、复合字段 Gate 和逐用例 checkpoint 仍可用于诊断，但不再是执行或通过门禁。历史 Windows 充电闭环曾在较受限的 Codex-native 版本中仅使用 Excel、三个目标 URL 和一次环境注册恢复到 `passed`；新的薄外壳实现必须重新执行真实 Windows canary 后，才能声明同一场景已在新权限模型下闭环。
+当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、同 thread 中断恢复和 Windows 启动器接入。`test_plan_update`、复合字段 Gate 和逐用例 checkpoint 仍可用于诊断，但不再是执行或通过门禁。基于 commit `c94ad77` 的最终 thin harness Windows 私有包已在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该结果仅证明本轮实际加载的 manifest，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 
 ## 当前文档
 
