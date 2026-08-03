@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { recoverCodexDeliveryResult } from './delivery-recovery.js'
 import { codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
@@ -545,20 +546,49 @@ export async function runCodexTestAgent(
         break
       } catch (error) {
         const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
-        if (isOperationalBlock(message)) throw error
+        if (isOperationalBlock(message)) {
+          const artifactPath = resolve(workspace.workspaceDirectory, 'case-results.json')
+          const artifactExists = await access(artifactPath).then(() => true, () => false)
+          if (!artifactExists) throw error
+          deliveryProblems = [message]
+          break
+        }
         deliveryProblems = [message]
+        continue
       }
     }
     if (!result) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
       const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-      result = deliveryBlockedResult(
-        options.manifest,
-        state,
-        deliveryProblems.join('; ') || 'Codex did not provide a structured final result.',
-        ledger,
-        environmentRequirements,
-      )
+      const artifactPath = resolve(workspace.workspaceDirectory, 'case-results.json')
+      const recovered = await recoverCodexDeliveryResult({
+        artifactPath,
+        manifest: options.manifest,
+        startedAt: state.startedAt,
+      })
+      if (recovered.result) {
+        const recoveryProblems = finalResultProblems(recovered.result, options.manifest)
+        if (recoveryProblems.length === 0) {
+          progress.report('stage', '结构化响应断流，已从同一 Codex 工作区恢复交付记录')
+          result = enforceMutationLedger(enforceEnvironmentRequirements(recovered.result, environmentRequirements), ledger)
+        } else {
+          result = deliveryBlockedResult(
+            options.manifest,
+            state,
+            recoveryProblems.join('; '),
+            ledger,
+            environmentRequirements,
+          )
+        }
+      } else {
+        result = deliveryBlockedResult(
+          options.manifest,
+          state,
+          deliveryProblems.join('; ') || recovered.problems.join('; ') || 'Codex did not provide a structured final result.',
+          ledger,
+          environmentRequirements,
+        )
+      }
     }
     await writePrivateJson(resultPath, result)
     progress.report('stage', `结构化测试结果已生成：${result.outcome}`)
@@ -567,6 +597,7 @@ export async function runCodexTestAgent(
       stage: 'completed',
       outcome: result.outcome,
       resultPath,
+      finishedAt: new Date().toISOString(),
       ...(thread.id ? { threadId: thread.id } : {}),
     })
     await writePrivateJson(statePath, state)
@@ -582,7 +613,7 @@ export async function runCodexTestAgent(
       const result = blockedResult(options.manifest, state, message, ledger, environmentRequirements)
       await writePrivateJson(resultPath, result)
       state = updateCodexTestState(state, {
-        status: 'completed', stage: 'completed', outcome: 'blocked', resultPath,
+        status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
         ...(activeThread?.id ? { threadId: activeThread.id } : {}),
       })
       await writePrivateJson(statePath, state)

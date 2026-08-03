@@ -306,6 +306,49 @@ describe('Codex test agent runner', () => {
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
   })
 
+  it('recovers a complete same-thread delivery artifact after final JSON transport fails', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-delivery-recovery-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test')
+
+    const run = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-fixture',
+        runStreamed: async (_input, options) => {
+          if (options?.outputSchema) return failedStream('stream disconnected before completion')
+          const workspace = resolve(outputDirectory, 'agent-workspace')
+          await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+          await writeFile(resolve(workspace, 'evidence', 'observed.md'), 'observed')
+          await writeFile(resolve(workspace, 'case-results.json'), JSON.stringify({
+            workflowId: workflow.workflowId,
+            source: { sha256: workflow.source.sha256 },
+            cases: [{
+              caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.', evidence: ['evidence/observed.md'],
+            }],
+            mutationLedger: { pending: 0, entries: [] },
+          }))
+          return streamedResponse('Execution complete.')
+        },
+      }),
+    })
+
+    expect(run.result).toMatchObject({ outcome: 'passed', summary: expect.stringContaining('Recovered Codex delivery artifact') })
+    expect(run.result?.cases[0]?.evidence[0]?.path).toBe('evidence/observed.md')
+  })
+
   it('resumes the same persistent thread and preserves pending mutation recovery state', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-resume-'))
     directories.push(directory)

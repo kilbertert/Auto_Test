@@ -130,7 +130,7 @@ describe('Codex agent workspace', () => {
     expect(controlConfig.fieldCompositionPath).toBe(workspace.fieldCompositionPath)
     expect(controlConfig.secretValuesPath).toBe(workspace.playwrightSecretsPath)
     expect(controlConfig.testDataAccess).toBe('direct')
-    expect(controlConfig.caseRisks).toEqual({ 'inspect-board': 'read' })
+    expect(controlConfig.caseRisks).toBeUndefined()
     expect(JSON.parse(await readFile(workspace.caseResultsPath, 'utf8'))).toEqual([])
     expect(JSON.parse(await readFile(workspace.fieldCompositionPath, 'utf8'))).toEqual([])
     expect(mergedState.cookies).toHaveLength(2)

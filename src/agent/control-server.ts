@@ -259,7 +259,7 @@ async function main(): Promise<void> {
 
   server.registerTool('mutation_begin', {
     title: 'Begin business mutation',
-    description: 'Register a business-state mutation before performing it in the browser.',
+    description: 'Register a business-state mutation before performing it in the browser. The declared action risk is checked against the Environment Profile; inferred case risk is advisory context only.',
     inputSchema: {
       id: z.string().min(1),
       caseId: z.string().min(1),
@@ -269,8 +269,6 @@ async function main(): Promise<void> {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ id, caseId, description, risk }) => {
     if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
-    const caseRisk = config.caseRisks[caseId]
-    if (!caseRisk || riskRank[risk] > riskRank[caseRisk]) throw new Error(`Test case ${caseId} does not authorize ${risk} mutations`)
     if (riskRank[risk] > riskRank[config.allowedRisk]) throw new Error(`Environment policy does not authorize ${risk} mutations`)
     const entries = await readJson<CodexTestMutationLedgerEntry[]>(config.mutationLedgerPath, [])
     const existing = entries.find((entry) => entry.id === id)

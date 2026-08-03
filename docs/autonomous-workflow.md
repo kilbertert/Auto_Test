@@ -38,7 +38,7 @@ Codex owns test understanding, working plans, exploration, execution, assertions
 
 The framework remains responsible only for capabilities that must survive model or browser interruption:
 
-1. parse enough of the Excel to establish immutable workflow and case identity;
+1. index every source row in the Excel to establish immutable workflow and case identity; row-local diagnostics remain evidence for Codex, not an execution gate;
 2. select and refresh the Environment Profile and browser authentication;
 3. create the isolated Codex Home and run workspace;
 4. start or resume the same Codex thread;
@@ -48,6 +48,10 @@ The framework remains responsible only for capabilities that must survive model 
 8. force `blocked` when an authoritative Mutation Ledger entry remains pending.
 
 The harness does not require an `execution-plan.json`, field gate, or Control MCP evidence entry for a run to pass.
+
+Before final delivery, Codex writes its own `agent-workspace/case-results.json` recovery artifact. It records the same case-level conclusions and evidence that Codex will return through the final JSON response. This is not a second planner or reporter: the harness reads it only after transport failure, validates immutable identity, exact case coverage, evidence paths, classifications, and Ledger terminal state, then preserves Codex's conclusion without inventing business facts.
+
+The risk value attached to a Manifest case is advisory context. A mutation is authorized only when the same Codex thread declares its actual `write` or `destructive` risk and the Environment Profile permits that risk. This prevents a weak text inference from becoming a second business planner or permission system.
 
 ## Mutation Recovery
 

@@ -33,6 +33,7 @@ export interface WorkflowStepDraft {
 
 export interface WorkflowPhaseDraft {
   id: string
+  sourceCaseId?: string
   title: string
   sourceRow: number
   risk: WorkflowRisk

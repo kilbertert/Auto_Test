@@ -131,7 +131,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
   --headed
 ```
 
-恢复会继续使用原 Codex thread、原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。Excel、URL、Profile 和风险策略必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原 Codex thread、原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在同一线程写入的 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后恢复交付，不能从日志或页面猜测结果。Excel、URL、Profile 和风险策略必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
 `product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。
 
@@ -142,6 +142,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 - `codex-agent.state.json`
 - `codex-agent.result.json`
 - `codex-agent.events.jsonl`
+- `agent-workspace\case-results.json`（如存在）
 - `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`
 - Codex 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录

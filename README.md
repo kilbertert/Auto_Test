@@ -262,7 +262,9 @@ npm run intake:workflow -- \
 - 接收提示词单独引用的补充图片，保存文件 hash 而不保留原私有路径；
 - 将邮箱/密码、手机号列表和测试验证码转换为 `secretRef`；
 - 标记跨 origin、新 BrowserContext、运行时实体捕获、验证码、物理状态、调度等待和破坏性批准等所需能力；
-- 只生成待审核清单，不会把缺少断言或未审核图片的工作流直接执行。
+- 为工作流型输入生成来源索引和诊断清单；该独立 intake 命令本身不执行浏览器操作。
+
+Codex-native 的 `npm run easy -- run` / `npm run agent:test` 会直接读取原始 Excel 并按每个来源行建立完整 case 合同。重复 ID、缺步骤/预期结果和无法解析的自由文本会保留在 Manifest 与诊断中，由同一 Codex 线程结合原始材料判断；它们不会再把整份业务输入提前挡在浏览器之外。真正的启动阻断仅限输入身份、目标 URL、case 索引和 Manifest 一致性无法建立的情况。写入权限只由 Environment Profile 控制，不由推断的 case 风险替代。
 
 使用结构化执行证据生成工作流验收报告：
 

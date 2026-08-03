@@ -3,6 +3,7 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
+import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult } from '../agent/types.js'
@@ -264,6 +265,8 @@ function preExecutionBlockedResult(manifest: WorkflowIntakeManifest, message: st
       title: phase.title,
       outcome: 'blocked',
       summary: message,
+      failureSource: 'input',
+      failureKind: 'validation',
       evidence: [{ kind: 'observation', description: 'Pre-execution validation did not permit browser execution.' }],
     })),
     mutations: [],
@@ -285,6 +288,7 @@ async function writePreExecutionBlock(outputDirectory: string, manifest: Workflo
     stage: 'completed',
     outcome: 'blocked',
     resultPath,
+    finishedAt: result.finishedAt,
   })
   await writePrivateJson(statePath, state)
   console.log(`测试结果：blocked`)
@@ -337,9 +341,11 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     })
   }
   const imagePaths = options.resume ? [] : await persistAssets(options.outputDirectory, intake.assets)
-  if (intake.report.summary.errors > 0) {
-    if (options.resume) throw new Error(`恢复输入解析发现 ${intake.report.summary.errors} 个阻塞问题`)
-    return writePreExecutionBlock(options.outputDirectory, intake.manifest, `测试用例解析发现 ${intake.report.summary.errors} 个阻塞问题`)
+  const readiness = assessAgentIntakeReadiness(intake.manifest)
+  if (!readiness.executable) {
+    const message = `测试输入无法建立稳定执行合同：${readiness.problems.join('；')}`
+    if (options.resume) throw new Error(message)
+    return writePreExecutionBlock(options.outputDirectory, intake.manifest, message)
   }
 
   let profile

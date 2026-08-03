@@ -108,7 +108,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。复合字段 Gate、动态计划和逐用例 checkpoint 仍可作为诊断记录，但都不是提交或通过门禁。
 
-每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。`agent-workspace/case-results.json` 是同一 Codex thread 写入的逐 case 交付恢复文件：只有最终 JSON 响应在传输中断时，框架才会校验其输入身份、完整覆盖、证据路径和 Ledger 终态后使用它。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
 
 完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果新 origin 缺少登录、权限或业务授权，Codex 会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充条件。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
 

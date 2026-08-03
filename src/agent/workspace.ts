@@ -246,7 +246,6 @@ export async function prepareCodexAgentWorkspace(options: {
       targetUrls: options.manifest.targetUrls,
       allowedOrigins: options.profile.origins,
       caseIds: options.manifest.phases.map((phase) => phase.id),
-      caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     }
     const actualControl = {
       workflowId: existingControl.workflowId,
@@ -255,7 +254,6 @@ export async function prepareCodexAgentWorkspace(options: {
       targetUrls: existingControl.targetUrls,
       allowedOrigins: existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin),
       caseIds: existingControl.caseIds,
-      caseRisks: existingControl.caseRisks,
     }
     const immutableControlMatches = JSON.stringify({ ...actualControl, allowedOrigins: undefined }) ===
       JSON.stringify({ ...expectedControl, allowedOrigins: undefined })
@@ -386,7 +384,6 @@ export async function prepareCodexAgentWorkspace(options: {
     targetUrls: options.manifest.targetUrls,
     allowedOrigins: options.profile.origins,
     caseIds: options.manifest.phases.map((phase) => phase.id),
-    caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     evidenceDirectory,
     planPath,
     evidencePath: evidenceIndexPath,

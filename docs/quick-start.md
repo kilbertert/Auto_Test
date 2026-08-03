@@ -46,6 +46,12 @@ URL 可以通过运行参数提供，也可以写在 Excel 单元格中。Excel 
 
 默认完整 Agent 模式会把原始 Excel 和本轮 Environment Profile 测试值复制到权限受限的 run 工作区，让 Codex 能直接理解和转换业务数据。它们不会进入 Git。需要旧的 alias-only 行为时使用 `--opaque-test-data`。
 
+### Intake 的边界
+
+Codex-native 入口会按 Excel 的每个来源行建立完整 case 索引，不会因为重复用例编号、缺少步骤/预期结果或自由文本测试数据而丢弃整份工作簿。重复编号会按来源行生成稳定的内部 ID，缺字段会作为该 case 的来源疑点交给 Codex 结合原始 Excel 判断。
+
+解析诊断是审计提示，不是 Agent 启动门。只有无法建立不可变输入合同的情况才会在浏览器执行前阻断：原始文件身份无效、没有目标 URL、没有任何可追踪 case 或 Manifest case ID 不唯一。写入权限只由 Environment Profile 的最高授权风险控制；Manifest 中的风险推断不能替代 Codex 对当前页面动作的判断。
+
 ## 4. 执行
 
 交互菜单选择“开始一次新测试”，或运行：
@@ -100,6 +106,7 @@ Codex 自己决定工作计划和执行方式。对于需要中断恢复的外�
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
+- `agent-workspace/case-results.json`：由同一 Codex thread 写入的逐 case 交付恢复文件；只有最终 JSON 响应在传输中断开时，框架才会在校验输入身份、完整覆盖、证据路径和 Ledger 终态后使用它。
 
 终态含义：
 

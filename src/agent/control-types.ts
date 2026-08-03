@@ -8,7 +8,8 @@ export interface CodexTestControlConfig {
   targetUrls: string[]
   allowedOrigins?: string[]
   caseIds: string[]
-  caseRisks: Record<string, CodexTestRisk>
+  /** Legacy metadata retained for resume compatibility; mutation authorization never trusts inferred case risk. */
+  caseRisks?: Record<string, CodexTestRisk>
   evidenceDirectory: string
   planPath: string
   evidencePath: string

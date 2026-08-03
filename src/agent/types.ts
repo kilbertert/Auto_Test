@@ -98,6 +98,7 @@ export interface CodexTestAgentState {
   sourceSha256: string
   startedAt: string
   updatedAt: string
+  finishedAt?: string
   threadId?: string
   resultPath?: string
   outcome?: CodexTestOutcome
