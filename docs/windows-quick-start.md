@@ -4,6 +4,8 @@
 
 准备在新 Windows 目录中完整复现一次真实验收时，直接按 [Windows 从零验收清单](windows-acceptance-runbook.md) 操作；本文保留安装原理、私有 Provider 和高级命令细节。
 
+需要从 Linux/WSL 重新生成私有 ZIP 时，只看[Windows 私有包快速打包](windows-package-quick-start.md)；本文不重复打包命令。
+
 ## 第一次使用
 
 直接双击仓库根目录的 `Auto-Test.cmd`。
@@ -200,24 +202,7 @@ $env:AUTO_TEST_PERSIST_API_KEY = "0"
 
 内部私有包正常使用时无需输入 API Key。只有调试公开源码包或主动轮换凭据时，安装器才会使用隐藏输入；不要把 Key 写进命令行。
 
-私有发行管理员在受控服务器上构建零输入包时，可以直接运行快速脚本：
-
-```bash
-AUTO_TEST_CODEX_BASE_URL="https://model-api.example/v1" \
-AUTO_TEST_CODEX_MODEL="your-model-id" \
-bash scripts/build-private-windows-package-quick.sh
-```
-
-脚本会隐藏读取 API Key，完成后输出 ZIP 的绝对路径和 SHA-256。也可以使用底层脚本进行自动化构建：
-
-```bash
-printf '%s\n' "$MODEL_API_KEY" | \
-  AUTO_TEST_CODEX_BASE_URL="https://model-api.example/v1" \
-  AUTO_TEST_CODEX_MODEL="your-model-id" \
-  bash scripts/build-private-windows-package.sh
-```
-
-两种脚本都只允许从干净、已提交的工作树构建，输出位于被 Git 忽略的 `artifacts/private-release/`。包名形如 `Auto-Test-Windows-private-<commit>.zip`；把它复制到 Windows 后解压，双击 `Auto-Test.cmd` 即可。包内含可提取的模型 API Key，禁止提交 Git、上传 GitHub、网盘或公开制品库。
+私有包的完整打包流程、非交互构建方式、复制到 Windows 和 SHA-256 记录见[Windows 私有包快速打包](windows-package-quick-start.md)。本文只保留 Provider 轮换和运行时配置说明。
 
 ## 注意事项
 

@@ -14,7 +14,7 @@ npx playwright install chromium
 npm run check
 ```
 
-还需要一个可工作的 Codex CLI Provider。Windows 私有包会自动安装固定版本 Codex CLI、配置 Provider 并验证最小请求；Linux/macOS 复用当前用户已经可用的 Codex 配置。
+还需要一个可工作的 Codex CLI Provider。Windows 私有包会自动安装固定版本 Codex CLI、配置 Provider 并验证最小请求；Linux/macOS 复用当前用户已经可用的 Codex 配置。Windows 私有包的构建流程统一见[Windows 私有包快速打包](windows-package-quick-start.md)。
 
 ## 2. 注册测试环境
 
