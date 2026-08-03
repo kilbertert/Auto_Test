@@ -8,6 +8,8 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、同 thread 中断恢复和 Windows 启动器接入。`test_plan_update`、复合字段 Gate 和逐用例 checkpoint 仍可用于诊断，但不再是执行或通过门禁。基于 commit `c94ad77` 的最终 thin harness Windows 私有包已在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该结果仅证明本轮实际加载的 manifest，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 
+测试结束后，Windows 菜单会把同一份结构化结果确定性地整理为测试人员摘要：失败位置、原因类别、直接原因、建议操作、完成情况、Mutation Ledger 终态和证据路径。产品缺陷、代理执行失败、输入资料问题、环境阻断和基础设施故障分开显示；该展示层不调用新模型，也不覆盖执行 Codex 的业务结论。
+
 ## 当前文档
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)

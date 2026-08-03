@@ -126,8 +126,9 @@ Requirements:
 - Mark passed only when the requested operation and observable expected result were verified.
 - Use product_failed only for an observed product or business mismatch after the intended test action was correctly executed.
 - Use blocked for missing environment, authentication, test data, authority, ambiguous identity, incomplete execution, or unrecovered state.
+- Classify every non-passed case with one failureSource: product for a verified product mismatch; agent_execution when you could not correctly perform or verify the test despite sufficient input and environment; input for missing, ambiguous, or contradictory test material; environment for target-site authentication, authority, test data, service, or physical prerequisites; infrastructure for model-provider, Codex CLI, browser-process, MCP, local filesystem, or local connectivity failures.
 - Each case must cite concrete evidence descriptions and artifact paths when available.
-- Include concise blockers, product defects, and next actions without secrets.
+- Include concise user-facing blockers, product defects, and next actions without secrets. Use the test engineer's input language when practical.
 - Report the current Mutation Ledger and environment requirements as observed; the harness will independently enforce authoritative pending mutations.
 
 Return only the JSON object matching the supplied schema.`

@@ -20,7 +20,7 @@ export const codexTestResultSchema = {
           title: { type: 'string' },
           outcome: { type: 'string', enum: ['passed', 'product_failed', 'blocked'] },
           summary: { type: 'string' },
-          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input'] },
+          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure'] },
           failureKind: { type: 'string', enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'] },
           fieldGateIds: { type: 'array', items: { type: 'string' } },
           evidence: {
@@ -127,20 +127,24 @@ export function enforceMutationLedger(
     outcome: 'blocked',
     summary: `${result.summary} Unrecovered business mutations remain.`,
     mutations,
-    cases: result.cases.map((item) => pendingCases.has(item.caseId) ? {
-      ...item,
-      outcome: 'blocked',
-      summary: `${item.summary} Unrecovered business mutations remain for this case.`,
-      failureSource: 'agent_execution',
-      failureKind: 'execution',
-      evidence: [
-        ...item.evidence,
-        ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
-          kind: 'mutation' as const,
-          description: `Pending mutation ${entry.id}: ${entry.description}`,
-        })),
-      ],
-    } : item),
+    cases: result.cases.map((item) => {
+      if (!pendingCases.has(item.caseId)) return item
+      const preserveBlockedClassification = item.outcome === 'blocked'
+      return {
+        ...item,
+        outcome: 'blocked',
+        summary: `${item.summary} Unrecovered business mutations remain for this case.`,
+        failureSource: preserveBlockedClassification ? (item.failureSource ?? 'agent_execution') : 'agent_execution',
+        failureKind: preserveBlockedClassification ? (item.failureKind ?? 'execution') : 'execution',
+        evidence: [
+          ...item.evidence,
+          ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
+            kind: 'mutation' as const,
+            description: `Pending mutation ${entry.id}: ${entry.description}`,
+          })),
+        ],
+      }
+    }),
     blockers: [
       ...result.blockers,
       `Unrecovered mutations: ${pending.map((entry) => entry.id).join(', ')}`,

@@ -10,6 +10,8 @@ Auto-Test is a thin execution harness around one persistent Codex thread. It acc
 
 The framework does not implement a second planner, locator interpreter, form-composition engine, or business-specific Runtime for first-time scenarios.
 
+Every non-passed case has one failure source: `product`, `agent_execution`, `input`, `environment`, or `infrastructure`. Target-site authentication, permissions, test data, target-service availability, and physical prerequisites belong to `environment`; model providers, Codex CLI, browser processes, MCP, local filesystem, and local connectivity belong to `infrastructure`. The tester-facing summary is a deterministic projection of the same final result, environment requirements, and Mutation Ledger. It does not invoke another model or override the executing Codex thread.
+
 ## Default Full-Agent Mode
 
 Each run creates an isolated `agent-workspace/` containing:

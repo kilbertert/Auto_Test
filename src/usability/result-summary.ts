@@ -1,6 +1,15 @@
 import { access, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
-import type { CodexTestAgentResult, CodexTestAgentState } from '../agent/types.js'
+import type {
+  CodexTestAgentResult,
+  CodexTestAgentState,
+  CodexTestCaseResult,
+  CodexTestFailureKind,
+  CodexTestFailureSource,
+  CodexTestMutationLedgerEntry,
+  CodexTestMutationResult,
+} from '../agent/types.js'
+import { redactSensitiveText } from '../input/text.js'
 import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../workflow/autonomy-types.js'
 
 const questionLabels: Record<string, string> = {
@@ -23,6 +32,98 @@ export interface FriendlyRunSummary {
   lines: string[]
 }
 
+const failureSourceLabels: Record<CodexTestFailureSource, string> = {
+  product: '产品缺陷',
+  agent_execution: '代理执行失败',
+  input: '输入资料问题',
+  environment: '环境阻断',
+  infrastructure: '基础设施故障',
+}
+
+const failureKindLabels: Record<CodexTestFailureKind, string> = {
+  assertion: '业务断言未通过',
+  validation: '输入或页面校验未通过',
+  authentication: '登录或认证条件不可用',
+  environment: '测试环境条件不可用',
+  data: '测试数据缺失或不完整',
+  execution: '操作或验证未完成',
+}
+
+function cleanLine(value: string): string {
+  return redactSensitiveText(value).replace(/\s+/g, ' ').trim()
+}
+
+function uniqueLines(values: Iterable<string>): string[] {
+  return [...new Set([...values].map(cleanLine).filter(Boolean))]
+}
+
+function labeledLines(label: string, values: Iterable<string>, limit = 3): string[] {
+  const lines = uniqueLines(values)
+  const displayed = lines.slice(0, limit).map((line) => `${label}：${line}`)
+  if (lines.length > limit) displayed.push(`${label}：另有 ${lines.length - limit} 条，请查看详细结果。`)
+  return displayed
+}
+
+function failedCases(result: CodexTestAgentResult): CodexTestCaseResult[] {
+  return result.cases.filter((item) => item.outcome !== 'passed')
+}
+
+function resultFailureSources(result: CodexTestAgentResult): CodexTestFailureSource[] {
+  const sources = failedCases(result).flatMap((item) => item.failureSource ? [item.failureSource] : [])
+  if (sources.length === 0 && result.outcome === 'product_failed') sources.push('product')
+  if (sources.length === 0 && result.environmentRequirements.some((item) => item.status === 'pending')) sources.push('environment')
+  return [...new Set(sources)]
+}
+
+function failureCategory(result: CodexTestAgentResult): string {
+  const failures = failedCases(result)
+  const sources = resultFailureSources(result)
+  const sourceLabel = sources.length > 0
+    ? sources.map((source) => failureSourceLabels[source]).join('、')
+    : '未分类阻断'
+  const kinds = [...new Set(failures.flatMap((item) => item.failureKind ? [item.failureKind] : []))]
+  if (sources.length === 1 && kinds.length > 0) {
+    return `${sourceLabel}（${kinds.map((kind) => failureKindLabels[kind]).join('、')}）`
+  }
+  return sourceLabel
+}
+
+function failureLocation(result: CodexTestAgentResult): string {
+  const failures = failedCases(result)
+  if (failures.length === 0) {
+    return result.environmentRequirements.some((item) => item.status === 'pending') ? '环境准备' : '测试执行'
+  }
+  if (failures.some((item) => item.failureSource === 'infrastructure')) return 'Auto-Test 执行基础设施'
+  const preExecution = failures.every((item) => item.evidence.some((evidence) =>
+    evidence.description.includes('Pre-execution validation'),
+  ))
+  if (preExecution && failures.every((item) => item.failureSource === 'input')) return '测试材料解析'
+  if (preExecution && failures.every((item) => item.failureSource === 'environment')) return '环境准备'
+  const delivery = failures.every((item) => item.evidence.some((evidence) =>
+    evidence.description.includes('Structured delivery validation'),
+  ))
+  if (delivery) return '结构化结果交付'
+  const titles = uniqueLines(failures.map((item) => item.title))
+  return titles.length <= 3 ? titles.join('、') : `${titles.slice(0, 3).join('、')}等 ${titles.length} 个用例`
+}
+
+function mutationStatusLine(mutations: Array<Pick<CodexTestMutationResult | CodexTestMutationLedgerEntry, 'status'>>): string {
+  const pending = mutations.filter((item) => item.status === 'pending').length
+  if (pending > 0) return `业务残留：${pending} 项 Mutation 仍为 pending，继续前必须先核对或恢复。`
+  if (mutations.length > 0) return '业务残留：无未核销写入，Mutation Ledger pending=0。'
+  return '业务残留：Mutation Ledger 未记录待恢复写入（pending=0）。'
+}
+
+function defaultNextAction(result: CodexTestAgentResult): string {
+  const sources = resultFailureSources(result)
+  if (sources.includes('infrastructure')) return '恢复执行依赖后，使用原结果目录继续上次测试。'
+  if (sources.includes('environment')) return '补充所需登录、权限、测试数据或物理条件后，使用原结果目录继续。'
+  if (sources.includes('input')) return '修正 Excel/sidecar 输入包后开始一次新测试。'
+  if (sources.includes('agent_execution')) return '使用原结果目录继续同一 Codex 线程，不要重复已验证的业务写入。'
+  if (sources.includes('product')) return '修复产品问题或确认预期结果后，使用相同输入重新验收。'
+  return '查看详细结果和运行诊断后处理。'
+}
+
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, '')) as T
 }
@@ -42,7 +143,8 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '测试通过',
       outcome: 'passed',
       lines: [
-        `Codex 测试代理已完成 ${result.cases.length} 个用例，并验证全部业务结果。`,
+        `完成情况：${result.cases.length}/${result.cases.length} 个用例已验证通过。`,
+        mutationStatusLine(result.mutations),
         `详细结果和证据索引：${state.resultPath}`,
       ],
     }
@@ -52,7 +154,12 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '发现产品或业务结果不符合预期',
       outcome: 'product_failed',
       lines: [
-        ...(result.productDefects.length > 0 ? result.productDefects : [result.summary]),
+        `失败位置：${failureLocation(result)}`,
+        `原因类别：${failureCategory(result)}`,
+        ...labeledLines('直接原因', result.productDefects.length > 0 ? result.productDefects : [result.summary]),
+        ...labeledLines('建议操作', result.nextActions.length > 0 ? result.nextActions : [defaultNextAction(result)]),
+        `完成情况：${result.cases.filter((item) => item.outcome === 'passed').length}/${result.cases.length} 个用例已验证通过。`,
+        mutationStatusLine(result.mutations),
         `详细结果和证据索引：${state.resultPath}`,
         ...(diagnostics ? [diagnostics] : []),
       ],
@@ -63,7 +170,16 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '测试暂时无法继续',
       outcome: 'blocked',
       lines: [
-        ...(result.blockers.length > 0 ? result.blockers : [result.summary]),
+        `失败位置：${failureLocation(result)}`,
+        `原因类别：${failureCategory(result)}`,
+        ...labeledLines('直接原因', result.blockers.length > 0 ? result.blockers : [result.summary]),
+        ...labeledLines('需要补充的环境', result.environmentRequirements
+          .filter((item) => item.status === 'pending')
+          .map((item) => `${item.origin}：${item.reason}`)),
+        ...labeledLines('同时发现的产品问题', result.productDefects),
+        ...labeledLines('建议操作', result.nextActions.length > 0 ? result.nextActions : [defaultNextAction(result)]),
+        `完成情况：${result.cases.filter((item) => item.outcome === 'passed').length}/${result.cases.length} 个用例已验证通过。`,
+        mutationStatusLine(result.mutations),
         `详细结果和证据索引：${state.resultPath}`,
         ...(diagnostics ? [diagnostics] : []),
       ],
@@ -76,10 +192,19 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       lines: [`当前阶段：${state.stage}${state.threadId ? `，Codex 线程：${state.threadId}` : ''}。`],
     }
   }
+  const ledgerPath = resolve(dirname(statePath), '.agent-private', 'mutation-ledger.json')
+  const ledger = await readJson<CodexTestMutationLedgerEntry[]>(ledgerPath).catch(() => undefined)
   return {
     title: '测试执行异常结束',
     outcome: 'failed',
-    lines: [state.error ?? 'Codex 测试代理没有生成有效结果。', ...(diagnostics ? [diagnostics] : [])],
+    lines: [
+      '失败位置：Auto-Test 执行基础设施',
+      '原因类别：基础设施故障',
+      `直接原因：${cleanLine(state.error ?? 'Codex 测试代理没有生成有效结果。')}`,
+      '建议操作：修复运行依赖后优先使用原结果目录恢复，不要盲目开始新测试。',
+      ledger ? mutationStatusLine(ledger) : '业务残留：无法从当前结果确认，请先查看运行诊断。',
+      ...(diagnostics ? [diagnostics] : []),
+    ],
   }
 }
 

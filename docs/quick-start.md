@@ -108,6 +108,16 @@ Codex 自己决定工作计划和执行方式。对于需要中断恢复的外�
 - `blocked`：缺少数据、权限、认证、恢复能力，或模型/MCP/浏览器等执行依赖不可用；
 - `failed`：未知框架编程异常，没有被误分类为业务阻断。
 
+对于非通过结果，中文菜单会直接显示失败位置、原因类别、直接原因、建议操作、完成用例数、Mutation Ledger 终态和证据路径。这些内容来自同一份 `codex-agent.result.json`、Environment Requirement 和 Ledger，不会启动第二个 Reporter 重新解释业务结果。
+
+失败来源分为：
+
+- `product`：正确执行操作后，产品或业务结果与预期不符；
+- `agent_execution`：输入和环境已足够，但 Codex 未能正确完成操作或验证；
+- `input`：Excel、图片、brief 或 sidecar 缺失、矛盾或有歧义；
+- `environment`：缺少目标网站登录、权限、测试数据、目标服务或物理条件；
+- `infrastructure`：模型 Provider、Codex CLI、浏览器进程、MCP、本地文件系统或本地网络异常。
+
 模型、网络、浏览器或 MCP 在执行中断后，使用相同 Excel、URL、环境 Profile 和原输出目录显式恢复：
 
 ```bash

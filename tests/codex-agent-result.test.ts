@@ -70,4 +70,44 @@ describe('Codex test result contract', () => {
       failureSource: 'agent_execution', failureKind: 'validation', fieldGateIds: ['filter-catalog:query'],
     })
   })
+
+  it('accepts infrastructure as a distinct blocked failure source', () => {
+    const classified = result()
+    classified.outcome = 'blocked'
+    classified.cases[0] = {
+      ...classified.cases[0]!,
+      outcome: 'blocked',
+      summary: 'The model provider is unavailable.',
+      failureSource: 'infrastructure',
+      failureKind: 'execution',
+    }
+    classified.blockers = ['The model provider is unavailable.']
+
+    expect(parseCodexTestResult(JSON.stringify(classified)).cases[0]).toMatchObject({
+      failureSource: 'infrastructure', failureKind: 'execution',
+    })
+  })
+
+  it('preserves an existing blocked root cause when pending mutations also require recovery', () => {
+    const infrastructureFailure = result()
+    infrastructureFailure.outcome = 'blocked'
+    infrastructureFailure.cases[0] = {
+      ...infrastructureFailure.cases[0]!,
+      outcome: 'blocked',
+      summary: 'The model provider is unavailable.',
+      failureSource: 'infrastructure',
+      failureKind: 'execution',
+    }
+    infrastructureFailure.blockers = ['The model provider is unavailable.']
+
+    const enforced = enforceMutationLedger(infrastructureFailure, [{
+      id: 'pending-write', caseId: 'filter-catalog', description: 'Recover the interrupted write', risk: 'write', status: 'pending',
+      createdAt: '2026-08-01T00:00:10.000Z', updatedAt: '2026-08-01T00:00:10.000Z', evidence: [],
+    }])
+
+    expect(enforced.cases[0]).toMatchObject({
+      outcome: 'blocked', failureSource: 'infrastructure', failureKind: 'execution',
+    })
+    expect(enforced.blockers.join(' ')).toContain('pending-write')
+  })
 })
