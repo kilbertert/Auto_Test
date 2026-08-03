@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, reconcileEnvironmentRequirements, requestEnvironmentAccess } from '../src/agent/environment-requirements.js'
+import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, reconcileEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from '../src/agent/environment-requirements.js'
 
 const directories: string[] = []
 
@@ -23,6 +23,7 @@ describe('environment access requirements', () => {
       origin: 'https://app.example.test/path',
       reason: 'same registered application',
       evidence: [],
+      caseIds: ['case-allowed'],
     })).resolves.toMatchObject({ status: 'allowed', origin: 'https://app.example.test' })
 
     const blocked = await requestEnvironmentAccess({
@@ -31,6 +32,7 @@ describe('environment access requirements', () => {
       origin: 'https://admin.example.test/virtual/device',
       reason: 'page evidence linked to an admin console',
       evidence: ['image:device-route'],
+      caseIds: ['case-blocked'],
     })
     expect(blocked).toMatchObject({ status: 'blocked', origin: 'https://admin.example.test' })
     expect(await readEnvironmentRequirements(requirementsPath)).toHaveLength(1)
@@ -54,5 +56,35 @@ describe('environment access requirements', () => {
     ].join('\n')
 
     expect(blockedNavigationOriginsFromEvents(events, ['https://app.example.test'])).toEqual(['https://unregistered.example.test'])
+  })
+
+  it('records generic environment prerequisites with case linkage and evidence', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-environment-evidence-'))
+    directories.push(directory)
+    const requirementsPath = resolve(directory, 'environment-requirements.json')
+
+    const requirement = await recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: {
+        caseIds: ['case-filter'],
+        kind: 'test_data',
+        condition: 'The requested historical record was absent after the available read-only controls were applied.',
+        evidence: ['evidence/filter-state.png'],
+      },
+    })
+
+    expect(requirement).toMatchObject({
+      id: expect.stringMatching(/^environment-test_data-/),
+      caseIds: ['case-filter'], kind: 'test_data', status: 'pending', evidence: ['evidence/filter-state.png'],
+    })
+    await expect(recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: { caseIds: ['case-filter'], kind: 'test_data', condition: 'Missing evidence', evidence: [] },
+    })).rejects.toThrow(/saved evidence/)
+    await expect(satisfyEnvironmentRequirement({
+      requirementsPath,
+      id: requirement.id,
+      evidence: ['evidence/resolved.png'],
+    })).resolves.toMatchObject({ status: 'satisfied', evidence: ['evidence/filter-state.png', 'evidence/resolved.png'] })
   })
 })

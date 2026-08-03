@@ -8,12 +8,13 @@ import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverCodexDeliveryResult } from './delivery-recovery.js'
-import { codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
+import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
+import { codexTestAgentEvidenceDebtAuditPrompt, codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestMutationLedgerEntry } from './types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareCodexAgentWorkspace } from './workspace.js'
 
 export interface CodexTestAgentOptions {
@@ -220,10 +221,16 @@ function startSdkThread(options: {
     : codex.startThread(threadOptions)
 }
 
-async function appendEvent(path: string, event: ThreadEvent, secrets: string[]): Promise<void> {
+async function appendEvent(
+  path: string,
+  event: ThreadEvent,
+  secrets: string[],
+  receiptRecorder?: ExecutionReceiptRecorder,
+): Promise<void> {
   const serialized = redactAgentValue(JSON.stringify(event), [...secrets, ...transientAgentEventValues(event)])
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
+  await receiptRecorder?.observe(event)
 }
 
 async function runTurn(
@@ -234,11 +241,12 @@ async function runTurn(
   progress: CodexTestProgressReporter,
   onThreadStarted?: (threadId: string) => Promise<void>,
   outputSchema?: unknown,
+  receiptRecorder?: ExecutionReceiptRecorder,
 ): Promise<string> {
   const streamed = await thread.runStreamed(input, outputSchema ? { outputSchema } : undefined)
   let finalResponse = ''
   for await (const event of streamed.events) {
-    await appendEvent(eventsPath, event, secrets)
+    await appendEvent(eventsPath, event, secrets, receiptRecorder)
     progress.observe(event)
     if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
     if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
@@ -249,7 +257,12 @@ async function runTurn(
   return finalResponse
 }
 
-function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowIntakeManifest): string[] {
+function finalResultProblems(
+  result: CodexTestAgentResult,
+  manifest: WorkflowIntakeManifest,
+  recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
+  executionReceipts: CodexTestExecutionReceipt[] = [],
+): string[] {
   const problems: string[] = []
   if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
   if (result.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
@@ -264,6 +277,68 @@ function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowInt
     if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
     if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`product-failed case ${item.caseId} is not classified as product-sourced`)
     if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`blocked case ${item.caseId} is incorrectly classified as product-sourced`)
+    const caseReceipts = item.executionReceiptIds?.map((id) => executionReceipts.find((receipt) => receipt.id === id)).filter((receipt): receipt is CodexTestExecutionReceipt => Boolean(receipt)) ?? []
+    if (item.executionReceiptIds?.some((id) => !executionReceipts.some((receipt) => receipt.id === id))) {
+      problems.push(`case ${item.caseId} references unknown execution receipts`)
+    }
+    if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
+      problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
+    }
+    if (requiresExecutionReceipts(item)) {
+      if (!item.executionReceiptIds?.length) {
+        problems.push(`${item.outcome} case ${item.caseId} has no case-scoped execution receipts`)
+      } else {
+        if (!caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
+          problems.push(`${item.outcome} case ${item.caseId} has no browser interaction receipt`)
+        }
+        if (!caseReceipts.some((receipt) => receipt.kind === 'observation')) {
+          problems.push(`${item.outcome} case ${item.caseId} has no browser observation receipt`)
+        }
+      }
+    }
+    if (item.failureSource === 'environment') {
+      if (!item.environmentRequirementIds?.length) {
+        problems.push(`environment-blocked case ${item.caseId} has no recorded environment requirement reference`)
+        continue
+      }
+      for (const requirementId of item.environmentRequirementIds) {
+        const requirement = recordedEnvironmentRequirements.find((candidate) => candidate.id === requirementId)
+        if (!requirement) {
+          problems.push(`environment-blocked case ${item.caseId} references unknown environment requirement ${requirementId}`)
+          continue
+        }
+        if (!requirement.caseIds.includes(item.caseId)) {
+          problems.push(`environment-blocked case ${item.caseId} is not linked to environment requirement ${requirementId}`)
+        }
+        if (requirement.status !== 'pending') {
+          problems.push(`environment-blocked case ${item.caseId} references satisfied environment requirement ${requirementId}`)
+        }
+        if (requirement.evidence.length === 0) {
+          problems.push(`environment requirement ${requirementId} has no saved evidence`)
+        }
+      }
+    } else if (item.environmentRequirementIds?.length) {
+      problems.push(`non-environment case ${item.caseId} contains environment requirement references`)
+    }
+  }
+  const recordedById = new Map(recordedEnvironmentRequirements.map((item) => [item.id, item]))
+  for (const requirement of result.environmentRequirements) {
+    const recorded = recordedById.get(requirement.id)
+    if (!recorded) {
+      problems.push(`final result includes unrecorded environment requirement ${requirement.id}`)
+      continue
+    }
+    if (!sameEnvironmentRequirement(requirement, recorded)) {
+      problems.push(`final result environment requirement ${requirement.id} does not match the recorded requirement`)
+    }
+  }
+  for (const requirement of recordedEnvironmentRequirements.filter((item) => item.status === 'pending')) {
+    for (const caseId of requirement.caseIds) {
+      const caseResult = result.cases.find((item) => item.caseId === caseId)
+      if (!caseResult || caseResult.failureSource !== 'environment' || !caseResult.environmentRequirementIds?.includes(requirement.id)) {
+        problems.push(`pending environment requirement ${requirement.id} is not represented by environment-blocked case ${caseId}`)
+      }
+    }
   }
   const expectedOutcome = result.cases.some((item) => item.outcome === 'blocked')
     ? 'blocked'
@@ -275,24 +350,44 @@ function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowInt
   return problems
 }
 
+function requiresExecutionReceipts(item: CodexTestAgentResult['cases'][number]): boolean {
+  return item.outcome === 'passed' || item.outcome === 'product_failed' || item.failureSource === 'environment'
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value))
+}
+
+function sameEnvironmentRequirement(
+  left: CodexTestEnvironmentRequirement,
+  right: CodexTestEnvironmentRequirement,
+): boolean {
+  return left.id === right.id &&
+    left.kind === right.kind &&
+    left.origin === right.origin &&
+    left.condition === right.condition &&
+    left.status === right.status &&
+    left.requestedAt === right.requestedAt &&
+    sameStringSet(left.caseIds, right.caseIds) &&
+    sameStringSet(left.evidence, right.evidence)
+}
+
 function enforceEnvironmentRequirements(
   result: CodexTestAgentResult,
   requirements: CodexTestEnvironmentRequirement[],
 ): CodexTestAgentResult {
-  const byOrigin = new Map(result.environmentRequirements.map((item) => [item.origin, item]))
-  for (const item of requirements) byOrigin.set(item.origin, item)
-  const environmentRequirements = [...byOrigin.values()]
+  const environmentRequirements = requirements
   const pending = environmentRequirements.filter((item) => item.status === 'pending')
   if (pending.length === 0) return { ...result, environmentRequirements }
   return {
     ...result,
     outcome: 'blocked',
-    summary: `${result.summary} Required environment access remains unavailable.`,
+    summary: `${result.summary} Required environment prerequisites remain unavailable.`,
     environmentRequirements,
-    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.reason)])],
+    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.condition)])],
     nextActions: [...new Set([
       ...result.nextActions,
-      ...pending.map((item) => `Provide the required access or authentication for ${item.origin}, then resume the same run.`),
+      ...pending.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
     ])],
   }
 }
@@ -431,6 +526,7 @@ export async function runCodexTestAgent(
   }
   let mutationLedgerPath: string | undefined
   let environmentRequirementsPath: string | undefined
+  let executionReceiptsPath: string | undefined
   let activeThread: AgentThread | undefined
   const progress = new CodexTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
   await writePrivateJson(statePath, state)
@@ -462,7 +558,12 @@ export async function runCodexTestAgent(
     })
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath
+    executionReceiptsPath = workspace.executionReceiptsPath
     await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
+    const receiptRecorder = await ExecutionReceiptRecorder.create(
+      workspace.executionReceiptsPath,
+      options.manifest.phases.map((phase) => phase.id),
+    )
     progress.report('stage', '隔离测试工作区已准备，正在启动 Codex 测试线程')
     const activeCodexExecutable = await resolveCodexExecutable(options)
     const threadOptions = {
@@ -510,10 +611,21 @@ export async function runCodexTestAgent(
           ...(workspace.inputImagePaths.length > 0 ? workspace.inputImagePaths : options.imagePaths)
             .map((path) => ({ type: 'local_image' as const, path })),
         ]
-    await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId)
+    await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
-    progress.report('stage', '浏览器执行阶段结束，正在让 Codex 直接生成结构化测试交付')
+    progress.report('stage', '浏览器执行阶段结束，正在由同一 Codex 线程审计环境阻断证据')
+    await runTurn(
+      thread,
+      [{ type: 'text', text: codexTestAgentEvidenceDebtAuditPrompt() }],
+      eventsPath,
+      redactionSecrets,
+      progress,
+      persistThreadId,
+      undefined,
+      receiptRecorder,
+    )
+    progress.report('stage', '环境阻断证据审计结束，正在让 Codex 直接生成结构化测试交付')
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
     let result: CodexTestAgentResult | undefined
     let deliveryProblems: string[] = []
@@ -531,12 +643,14 @@ export async function runCodexTestAgent(
           progress,
           persistThreadId,
           codexTestResultSchema,
+          receiptRecorder,
         )
         const candidate = parseCodexTestResult(finalResponse)
-        deliveryProblems = finalResultProblems(candidate, options.manifest)
+        const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+        deliveryProblems = finalResultProblems(candidate, options.manifest, environmentRequirements, executionReceipts)
         if (deliveryProblems.length > 0) continue
         const ledger = await readMutationLedger(workspace.mutationLedgerPath)
-        const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
         result = enforceMutationLedger(enforceEnvironmentRequirements({
           ...candidate,
           startedAt: state.startedAt,
@@ -567,7 +681,8 @@ export async function runCodexTestAgent(
         startedAt: state.startedAt,
       })
       if (recovered.result) {
-        const recoveryProblems = finalResultProblems(recovered.result, options.manifest)
+        const executionReceipts = executionReceiptsPath ? await readExecutionReceipts(executionReceiptsPath) : []
+        const recoveryProblems = finalResultProblems(recovered.result, options.manifest, environmentRequirements, executionReceipts)
         if (recoveryProblems.length === 0) {
           progress.report('stage', '结构化响应断流，已从同一 Codex 工作区恢复交付记录')
           result = enforceMutationLedger(enforceEnvironmentRequirements(recovered.result, environmentRequirements), ledger)

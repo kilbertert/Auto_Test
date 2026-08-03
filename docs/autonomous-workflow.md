@@ -8,7 +8,7 @@ Auto-Test is a thin execution harness around one persistent Codex thread. It acc
 - `product_failed`: the intended test action completed, but an immutable product or business expectation did not hold;
 - `blocked`: execution could not finish because required environment, authentication, data, authority, identity, recovery state, or infrastructure was unavailable.
 
-For a blocked result, the executing Codex must also state one failure source. `input` is incomplete or contradictory supplied material; `environment` is target permissions, authentication, test data, or physical preconditions; `infrastructure` is the provider, Codex CLI, browser, MCP, host, or network; `agent_execution` is an incomplete execution, recovery, or delivery by the agent. The harness checks this declaration and preserves it. It does not infer a source from the business summary.
+For a blocked result, the executing Codex must also state one failure source. `input` is incomplete or contradictory supplied material; `environment` is target permissions, authentication, test data, or physical preconditions; `infrastructure` is the provider, Codex CLI, browser, MCP, host, or network; `agent_execution` is an incomplete execution, recovery, or delivery by the agent. An `environment` case must reference a case-scoped recorded requirement with saved evidence, after the agent has attempted applicable non-mutating page interaction. The harness checks this contract and preserves it. It does not infer a source from the business summary.
 
 The framework does not implement a second planner, locator interpreter, form-composition engine, or business-specific Runtime for first-time scenarios.
 
@@ -52,6 +52,8 @@ The framework remains responsible only for capabilities that must survive model 
 The harness does not require an `execution-plan.json`, field gate, or Control MCP evidence entry for a run to pass.
 
 Before final delivery, Codex writes its own versioned `agent-workspace/case-results.json` recovery artifact. It records the workflow ID, source hash, every case conclusion, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. This is not a second planner or reporter: the harness reads it only after transport failure, validates the exact artifact contract, immutable identity, case coverage, evidence paths, classifications, and Ledger terminal state, then preserves Codex's conclusion without inventing business facts.
+
+The same delivery contract also requires case-scoped execution receipts. Before supporting browser work for a case, the Codex thread calls `case_execution_begin`; the Runner automatically tags completed Playwright calls until `case_execution_end`. A `passed` or `product_failed` case must cite at least one interaction and one observation receipt belonging to that case. A receipt from another case, or a generic receipt list reused across cases, is rejected. Receipts prove that the browser execution episode occurred; they do not decide whether the business assertion is correct.
 
 The risk value attached to a Manifest case is advisory context. A mutation is authorized only when the same Codex thread declares its actual `write` or `destructive` risk and the Environment Profile permits that risk. This prevents a weak text inference from becoming a second business planner or permission system.
 

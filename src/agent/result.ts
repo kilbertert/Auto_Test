@@ -22,6 +22,8 @@ export const codexTestResultSchema = {
           summary: { type: 'string' },
           failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure'] },
           failureKind: { type: 'string', enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'] },
+          environmentRequirementIds: { type: 'array', items: { type: 'string' } },
+          executionReceiptIds: { type: 'array', items: { type: 'string' } },
           fieldGateIds: { type: 'array', items: { type: 'string' } },
           evidence: {
             type: 'array',
@@ -62,13 +64,16 @@ export const codexTestResultSchema = {
       items: {
         type: 'object',
         properties: {
+          id: { type: 'string' },
+          caseIds: { type: 'array', items: { type: 'string' } },
+          kind: { type: 'string', enum: ['origin', 'permission', 'authentication', 'test_data', 'physical'] },
           origin: { type: 'string' },
-          reason: { type: 'string' },
+          condition: { type: 'string' },
           evidence: { type: 'array', items: { type: 'string' } },
           status: { type: 'string', enum: ['pending', 'satisfied'] },
           requestedAt: { type: 'string' },
         },
-        required: ['origin', 'reason', 'evidence', 'status', 'requestedAt'],
+        required: ['id', 'caseIds', 'kind', 'condition', 'evidence', 'status', 'requestedAt'],
         additionalProperties: false,
       },
     },
@@ -127,20 +132,24 @@ export function enforceMutationLedger(
     outcome: 'blocked',
     summary: `${result.summary} Unrecovered business mutations remain.`,
     mutations,
-    cases: result.cases.map((item) => pendingCases.has(item.caseId) ? {
-      ...item,
-      outcome: 'blocked',
-      summary: `${item.summary} Unrecovered business mutations remain for this case.`,
-      failureSource: 'agent_execution',
-      failureKind: 'execution',
-      evidence: [
-        ...item.evidence,
-        ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
-          kind: 'mutation' as const,
-          description: `Pending mutation ${entry.id}: ${entry.description}`,
-        })),
-      ],
-    } : item),
+    cases: result.cases.map((item) => {
+      if (!pendingCases.has(item.caseId)) return item
+      const { environmentRequirementIds: _environmentRequirementIds, ...withoutEnvironmentRequirement } = item
+      return {
+        ...withoutEnvironmentRequirement,
+        outcome: 'blocked' as const,
+        summary: `${item.summary} Unrecovered business mutations remain for this case.`,
+        failureSource: 'agent_execution' as const,
+        failureKind: 'execution' as const,
+        evidence: [
+          ...item.evidence,
+          ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
+            kind: 'mutation' as const,
+            description: `Pending mutation ${entry.id}: ${entry.description}`,
+          })),
+        ],
+      }
+    }),
     blockers: [
       ...result.blockers,
       `Unrecovered mutations: ${pending.map((entry) => entry.id).join(', ')}`,

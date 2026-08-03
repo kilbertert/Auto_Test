@@ -101,6 +101,8 @@ Codex 自己决定工作计划和执行方式。对于需要中断恢复的外�
 
 - `codex-agent.state.json`：运行状态、Codex 线程 ID 和结果路径；
 - `codex-agent.result.json`：`passed`、`product_failed` 或 `blocked` 的结构化交付；
+- `agent-workspace/execution-receipts.json`：Runner 自动捕获的逐 case Playwright 调用回执；只保留工具名、类型、状态和 case 归属，不保留表单参数或响应正文；
+- `原文件名-Auto-Test-结果.xlsx`：原 Excel 的结果副本，按来源行回写每条 case 的状态、失败归类、摘要、证据索引和环境需求；原文件保持不变；
 - `codex-agent.events.jsonl`：脱敏后的 Codex 事件；
 - `agent-workspace/input/`：原始测试材料和本轮输入；
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；

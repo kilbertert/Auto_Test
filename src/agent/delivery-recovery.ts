@@ -13,6 +13,8 @@ interface AgentCaseArtifact {
   productDefects?: string[]
   failureSource?: CodexTestFailureSource
   failureKind?: CodexTestFailureKind
+  environmentRequirementIds?: string[]
+  executionReceiptIds?: string[]
 }
 
 interface AgentDeliveryArtifact {
@@ -49,6 +51,12 @@ function validateArtifact(
     if (!['passed', 'product_failed', 'blocked'].includes(item.outcome)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid outcome`)
     if (item.failureSource && !failureSources.has(item.failureSource)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid failureSource`)
     if (item.failureKind && !failureKinds.has(item.failureKind)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid failureKind`)
+    if (item.environmentRequirementIds && (!Array.isArray(item.environmentRequirementIds) || item.environmentRequirementIds.some((id) => !id.trim()))) {
+      problems.push(`Codex delivery artifact case ${item.caseId} has invalid environment requirement references`)
+    }
+    if (item.executionReceiptIds && (!Array.isArray(item.executionReceiptIds) || item.executionReceiptIds.some((id) => !id.trim()))) {
+      problems.push(`Codex delivery artifact case ${item.caseId} has invalid execution receipt references`)
+    }
     if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`Codex delivery artifact passed case ${item.caseId} has a failure classification`)
     if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`Codex delivery artifact non-passed case ${item.caseId} has no explicit failure classification`)
     if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`Codex delivery artifact product-failed case ${item.caseId} is not product-sourced`)
@@ -95,6 +103,8 @@ export async function recoverCodexDeliveryResult(options: {
     outcome: item.outcome,
     summary: item.summary,
     ...(item.failureSource && item.failureKind ? { failureSource: item.failureSource, failureKind: item.failureKind } : {}),
+    ...(item.environmentRequirementIds?.length ? { environmentRequirementIds: item.environmentRequirementIds } : {}),
+    ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
     evidence: (item.evidencePaths?.length ?? 0) > 0
       ? item.evidencePaths!.map((path) => ({ kind: 'observation' as const, path, description: `Codex recorded evidence for ${item.caseId}: ${path}` }))
       : [{ kind: 'observation' as const, path: 'agent-workspace/case-results.json', description: `Codex recorded ${item.caseId} as ${item.outcome} in the delivery artifact.` }],

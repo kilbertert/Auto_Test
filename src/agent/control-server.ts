@@ -5,9 +5,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { writePrivateJson } from './state.js'
-import { readEnvironmentRequirements, requestEnvironmentAccess } from './environment-requirements.js'
+import { readEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from './environment-requirements.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
+import { readExecutionReceipts } from './execution-receipts.js'
 import { validateFieldCompositionGate } from './field-composition.js'
 import { getRunScopedTestValue, parseAgentSecretValues } from './test-data-access.js'
 import type { CodexTestCaseDecision, CodexTestFailureKind, CodexTestFailureSource, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry, CodexTestRisk } from './types.js'
@@ -64,6 +65,8 @@ async function main(): Promise<void> {
     ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'environment-requirements.json')
   const fieldCompositionPath = config.fieldCompositionPath
     ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'field-compositions.json')
+  const executionReceiptsPath = config.executionReceiptsPath
+    ?? resolve(config.evidenceDirectory, '..', 'execution-receipts.json')
   const caseIds = new Set(config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
@@ -101,8 +104,8 @@ async function main(): Promise<void> {
   })
 
   server.registerTool('environment_requirements', {
-    title: 'List environment access requirements',
-    description: 'Return origins requested by the agent that are not in the registered environment allowlist.',
+    title: 'List recorded environment requirements',
+    description: 'Return the evidence-backed environment prerequisites recorded for this run.',
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async () => text(await readEnvironmentRequirements(environmentRequirementsPath)))
 
@@ -110,20 +113,95 @@ async function main(): Promise<void> {
     title: 'Request access to an origin',
     description: 'Check whether a newly discovered origin is registered. Missing origins are recorded as a resumable environment requirement; this tool never grants access or navigates the browser.',
     inputSchema: {
+      caseId: z.string().min(1),
       origin: z.string().min(1),
       reason: z.string().min(1),
-      evidence: z.array(z.string().min(1)).default([]),
+      evidence: z.array(z.string().min(1)).min(1),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ origin, reason, evidence }) => {
+  }, async ({ caseId, origin, reason, evidence }) => {
+    if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
+    const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
     return text(await requestEnvironmentAccess({
       allowedOrigins: allowedOrigins(config),
       requirementsPath: environmentRequirementsPath,
       origin,
       reason,
-      evidence,
+      evidence: evidencePaths.filter((path): path is string => Boolean(path)),
+      caseIds: [caseId],
     }))
   })
+
+  server.registerTool('environment_requirement_record', {
+    title: 'Record an observed environment prerequisite',
+    description: 'After live observation, record a case-scoped missing permission, authentication state, test data, physical condition, or unregistered origin. This is required before classifying a case as environment-blocked.',
+    inputSchema: {
+      caseIds: z.array(z.string().min(1)).min(1),
+      kind: z.enum(['origin', 'permission', 'authentication', 'test_data', 'physical']),
+      origin: z.string().min(1).optional(),
+      condition: z.string().min(1),
+      evidence: z.array(z.string().min(1)).min(1),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ caseIds: requestedCaseIds, kind, origin, condition, evidence }) => {
+    for (const caseId of requestedCaseIds) {
+      if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
+    }
+    const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
+    return text(await recordEnvironmentRequirement({
+      requirementsPath: environmentRequirementsPath,
+      requirement: {
+        caseIds: requestedCaseIds,
+        kind,
+        ...(origin ? { origin } : {}),
+        condition,
+        evidence: evidencePaths.filter((path): path is string => Boolean(path)),
+      },
+    }))
+  })
+
+  server.registerTool('environment_requirement_satisfy', {
+    title: 'Mark an environment prerequisite as satisfied',
+    description: 'After re-observing that a previously missing environment prerequisite is now available, record the live evidence and mark it satisfied before resuming affected cases.',
+    inputSchema: {
+      id: z.string().min(1),
+      evidence: z.array(z.string().min(1)).min(1),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ id, evidence }) => {
+    const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
+    return text(await satisfyEnvironmentRequirement({
+      requirementsPath: environmentRequirementsPath,
+      id,
+      evidence: evidencePaths.filter((path): path is string => Boolean(path)),
+    }))
+  })
+
+  server.registerTool('case_execution_begin', {
+    title: 'Begin one case execution episode',
+    description: 'Declare the one test case whose subsequent browser interactions and observations should become execution receipts. This does not plan, authorize, or judge the business operation.',
+    inputSchema: { caseId: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ caseId }) => {
+    if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
+    return text({ caseId, status: 'started' })
+  })
+
+  server.registerTool('case_execution_end', {
+    title: 'End one case execution episode',
+    description: 'End the current case execution episode after its browser evidence has been collected. This does not decide the outcome.',
+    inputSchema: { caseId: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ caseId }) => {
+    if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
+    return text({ caseId, status: 'ended' })
+  })
+
+  server.registerTool('execution_receipts', {
+    title: 'List captured browser execution receipts',
+    description: 'Return safe metadata for completed Playwright browser operations. Use the receipt IDs that belong to a case in its final structured result.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async () => text(await readExecutionReceipts(executionReceiptsPath)))
 
   server.registerTool('test_plan_update', {
     title: 'Update dynamic execution plan',
@@ -228,10 +306,12 @@ async function main(): Promise<void> {
       productDefects: z.array(z.string().min(1)).default([]),
       failureSource: z.enum(['product', 'agent_execution', 'environment', 'input', 'infrastructure']).optional(),
       failureKind: z.enum(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution']).optional(),
+      environmentRequirementIds: z.array(z.string().min(1)).default([]),
+      executionReceiptIds: z.array(z.string().min(1)).default([]),
       fieldGateIds: z.array(z.string().min(1)).default([]),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ caseId, outcome, summary, blockers, productDefects, failureSource, failureKind, fieldGateIds }) => {
+  }, async ({ caseId, outcome, summary, blockers, productDefects, failureSource, failureKind, environmentRequirementIds, executionReceiptIds, fieldGateIds }) => {
     if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
     if (outcome === 'passed' && (blockers.length > 0 || productDefects.length > 0)) {
       throw new Error('Passed case results cannot include blockers or product defects')
@@ -247,6 +327,8 @@ async function main(): Promise<void> {
       productDefects: [...new Set(productDefects)],
       ...(failureSource ? { failureSource: failureSource as CodexTestFailureSource } : {}),
       ...(failureKind ? { failureKind: failureKind as CodexTestFailureKind } : {}),
+      ...(environmentRequirementIds.length > 0 ? { environmentRequirementIds: [...new Set(environmentRequirementIds)] } : {}),
+      ...(executionReceiptIds.length > 0 ? { executionReceiptIds: [...new Set(executionReceiptIds)] } : {}),
       ...(fieldGateIds.length > 0 ? { fieldGateIds: [...new Set(fieldGateIds)] } : {}),
       recordedAt: new Date().toISOString(),
     }

@@ -89,7 +89,7 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFrom-Json
 ```
 
-对其中的 origin 完成一次环境注册或更新后，必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续；不要改用新目录绕过环境边界。
+每条记录都应包含 `caseIds`、`kind`、`condition` 和已保存的 `evidence`。先确认页面可用的只读操作已经执行：可筛选、搜索、改日期范围、翻页、刷新或查看详情时，不应直接把结果报成环境问题。`origin` 类记录完成一次环境注册或更新后，其他类型在补足权限、认证、测试数据或物理条件后，都必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续。恢复中的 Codex 会重新观察并以新证据标记已满足的需求；不要改用新目录绕过环境边界。
 
 ## 5. 判断验收是否真正通过
 
@@ -103,7 +103,10 @@ $Result.outcome
 $Result.cases | Format-Table caseId, outcome, summary
 $Result.cases | ForEach-Object { $_.evidence }
 $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
+Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 ```
+
+结果目录中的 `原文件名-Auto-Test-结果.xlsx` 是交付给测试工程师复核的工作簿副本。它逐来源行写入状态、失败归类、摘要、证据索引和环境需求；原始 `$Cases` 不会被框架修改。结构化 JSON 仍是权威证据索引，Excel 是对同一结果的确定性回写，不会另行判断业务结论。
 
 只有同时满足以下条件，才算该 run 通过：
 
@@ -142,9 +145,11 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 - `codex-agent.state.json`
 - `codex-agent.result.json`
 - `codex-agent.events.jsonl`
+- `agent-workspace\execution-receipts.json`
 - `agent-workspace\case-results.json`（如存在）
 - `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`
+- `原文件名-Auto-Test-结果.xlsx`
 - Codex 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录
 - `.agent-private\environment-requirements.json`（如存在）
 

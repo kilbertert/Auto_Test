@@ -106,11 +106,11 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 默认执行主体是一个持久 Codex 测试线程。原始 Excel、测试说明、图片和本轮环境值会复制到隔离的可写 run 工作区；Codex 可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
-框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。复合字段 Gate、动态计划和逐用例 checkpoint 仍可作为诊断记录，但都不是提交或通过门禁。
+框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
 
-每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。`agent-workspace/case-results.json` 是同一 Codex thread 写入的版本化逐 case 交付恢复文件：只有最终 JSON 响应在传输中断时，框架才会校验其版本、输入身份、完整覆盖、证据路径、显式失败来源和 Ledger 终态后使用它。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 自动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，证据索引中也会列出执行回执 ID，原 Excel 不会被改写。`agent-workspace/case-results.json` 是同一 Codex thread 写入的版本化逐 case 交付恢复文件：只有最终 JSON 响应在传输中断时，框架才会校验其版本、输入身份、完整覆盖、证据路径、逐 case 执行回执、显式失败来源和 Ledger 终态后使用它。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
 
-完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果新 origin 缺少登录、权限或业务授权，Codex 会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充条件。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
+完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，Codex 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Codex 会重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
 
 启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
 

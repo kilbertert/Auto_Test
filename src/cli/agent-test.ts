@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
 import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
+import { writeResultWorkbook } from '../agent/result-workbook.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult } from '../agent/types.js'
 import { redactSensitiveContent } from '../input/text.js'
@@ -277,7 +278,20 @@ function preExecutionBlockedResult(manifest: WorkflowIntakeManifest, message: st
   }
 }
 
-async function writePreExecutionBlock(outputDirectory: string, manifest: WorkflowIntakeManifest, error: unknown): Promise<number> {
+async function writeResultWorkbookDelivery(options: {
+  outputDirectory: string
+  sourceFilePath: string
+  manifest: WorkflowIntakeManifest
+  result: CodexTestAgentResult
+}): Promise<string> {
+  const artifact = await writeResultWorkbook(options)
+  const statePath = resolve(options.outputDirectory, 'codex-agent.state.json')
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as ReturnType<typeof initialCodexTestState>
+  await writePrivateJson(statePath, updateCodexTestState(state, { resultWorkbookPath: artifact.path }))
+  return artifact.path
+}
+
+async function writePreExecutionBlock(outputDirectory: string, sourceFilePath: string, manifest: WorkflowIntakeManifest, error: unknown): Promise<number> {
   const message = error instanceof Error ? error.message : String(error)
   const resultPath = resolve(outputDirectory, 'codex-agent.result.json')
   const statePath = resolve(outputDirectory, 'codex-agent.state.json')
@@ -291,9 +305,11 @@ async function writePreExecutionBlock(outputDirectory: string, manifest: Workflo
     finishedAt: result.finishedAt,
   })
   await writePrivateJson(statePath, state)
+  const workbookPath = await writeResultWorkbookDelivery({ outputDirectory, sourceFilePath, manifest, result })
   console.log(`测试结果：blocked`)
   console.log(`阻断原因：${message}`)
   console.log(`结果文件：${resultPath}`)
+  console.log(`测试用例结果文件：${workbookPath}`)
   return 3
 }
 
@@ -345,7 +361,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   if (!readiness.executable) {
     const message = `测试输入无法建立稳定执行合同：${readiness.problems.join('；')}`
     if (options.resume) throw new Error(message)
-    return writePreExecutionBlock(options.outputDirectory, intake.manifest, message)
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, message)
   }
 
   let profile
@@ -362,7 +378,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       ? await readEnvironmentRequirements(resolve(options.outputDirectory, '.agent-private', 'environment-requirements.json'))
       : []
     const additionalOrigins = priorRequirements
-      .map((requirement) => requirement.origin)
+      .flatMap((requirement) => requirement.kind === 'origin' && requirement.origin ? [requirement.origin] : [])
     const requestedProfileId = options.profileId ?? priorSelection?.profileId
     profile = scopeEnvironmentProfile(
       selectEnvironmentProfile(registry, intake.manifest.targetUrls, requestedProfileId),
@@ -399,7 +415,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   } catch (error) {
     if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, intake.manifest, error)
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error)
   }
 
   const run = await runCodexTestAgent({
@@ -426,8 +442,23 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
   console.log(`状态文件：${resolve(options.outputDirectory, 'codex-agent.state.json')}`)
   if (run.result) console.log(`结果文件：${resolve(options.outputDirectory, 'codex-agent.result.json')}`)
+  if (run.result) {
+    try {
+      const workbookPath = await writeResultWorkbookDelivery({
+        outputDirectory: options.outputDirectory,
+        sourceFilePath: options.filePath,
+        manifest: intake.manifest,
+        result: run.result,
+      })
+      console.log(`测试用例结果文件：${workbookPath}`)
+    } catch (error) {
+      console.error(`测试用例结果文件生成失败：${error instanceof Error ? error.message : String(error)}`)
+      return 1
+    }
+  }
   for (const requirement of run.result?.environmentRequirements ?? []) {
-    console.log(`环境需求：${requirement.origin}（${requirement.status}，完成注册后使用 --resume）`)
+    const target = requirement.origin ?? requirement.kind
+    console.log(`环境需求：${target}（${requirement.status}，${requirement.condition}）`)
   }
   if (run.state.error) console.log(`错误：${run.state.error}`)
   if (run.result?.outcome === 'passed') return 0
