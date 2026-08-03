@@ -2,7 +2,7 @@
 
 ## Product Contract
 
-Auto-Test is a thin execution harness around one persistent Codex thread. It accepts the original test materials and a registered environment, then runs without interactive steering until one terminal outcome is produced:
+Auto-Test is a thin execution harness around Codex-native execution contexts. A short suite uses one persistent thread. A long suite is partitioned by immutable manifest case order into bounded case windows; each window has a fresh Codex context while the run keeps one input identity, authenticated environment, evidence store, environment-requirement journal, and Mutation Ledger. It runs without interactive steering until one terminal outcome is produced:
 
 - `passed`: the requested operations and observable expected results were verified;
 - `product_failed`: the intended test action completed, but an immutable product or business expectation did not hold;
@@ -22,7 +22,7 @@ Each run creates an isolated `agent-workspace/` containing:
 - a run-scoped values file containing only Excel and Environment Profile values needed by this test;
 - Codex-created notes, temporary scripts, and evidence artifacts.
 
-The persistent Codex thread receives:
+The active Codex case window receives:
 
 - a writable run workspace;
 - shell commands and temporary code execution;
@@ -32,7 +32,7 @@ The persistent Codex thread receives:
 - the authenticated browser state and registered environment context;
 - optional Auto-Test Control MCP tools for plan snapshots, evidence checkpoints, field diagnostics, environment requirements, and Mutation Ledger operations.
 
-Codex owns test understanding, working plans, exploration, execution, assertions, recovery, and the final structured result. A native Codex todo list, Markdown note, JavaScript helper, or direct Playwright code is valid. `test_plan_update`, `field_composition_check`, and `case_result_record` are optional diagnostics, not execution gates.
+Codex owns test understanding, working plans, exploration, execution, assertions, recovery, and the structured result for its active window. A native Codex todo list, Markdown note, JavaScript helper, or direct Playwright code is valid. `test_plan_update`, `field_composition_check`, and `case_result_record` are optional diagnostics, not execution gates. The scheduler sees case identity and completion state only; it cannot infer selectors, actions, assertions, or failure sources.
 
 `--opaque-test-data` retains the previous restricted compatibility mode. In that mode the raw workbook and run-values file are not staged, the workspace is read-only, shell and Web Search are disabled, and browser requests remain limited to registered origins.
 
@@ -43,17 +43,17 @@ The framework remains responsible only for capabilities that must survive model 
 1. index every source row in the Excel to establish immutable workflow and case identity; row-local diagnostics remain evidence for Codex, not an execution gate;
 2. select and refresh the Environment Profile and browser authentication;
 3. create the isolated Codex Home and run workspace;
-4. start or resume the same Codex thread;
+4. start one thread for a short suite, or start/resume the current bounded case window for a long suite without replaying completed windows;
 5. expose safe progress and preserve redacted event history;
 6. retain the Mutation Ledger and environment requirements;
-7. request one final JSON result from the same thread and validate its schema, workflow identity, exact case coverage, evidence presence, outcome consistency, and failure classification;
+7. request one JSON result from each active Codex window, validate its schema, scoped case coverage, evidence, receipts and failure classification, then merge only those validated case facts in immutable manifest order;
 8. force `blocked` when an authoritative Mutation Ledger entry remains pending.
 
 The harness does not require an `execution-plan.json`, field gate, or Control MCP evidence entry for a run to pass.
 
-Before final delivery, Codex writes its own versioned `agent-workspace/case-results.json` recovery artifact. It records the workflow ID, source hash, every case conclusion, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. This is not a second planner or reporter: the harness reads it only after transport failure, validates the exact artifact contract, immutable identity, case coverage, evidence paths, classifications, and Ledger terminal state, then preserves Codex's conclusion without inventing business facts.
+Before final delivery, Codex writes a versioned recovery artifact for the active case window. It records the workflow ID, source hash, that window's case conclusions, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. Completed window results are stored below `.agent-private/case-batches/`; the final `agent-workspace/case-results.json` contains the full aggregate. This is not a second planner or reporter: the harness validates exact scoped coverage and merges existing case facts without inventing business actions or conclusions.
 
-The same delivery contract also requires case-scoped execution receipts. Before supporting browser work for a case, the Codex thread calls `case_execution_begin`; the Runner automatically tags completed Playwright calls until `case_execution_end`. A `passed` or `product_failed` case must cite at least one interaction and one observation receipt belonging to that case. A receipt from another case, or a generic receipt list reused across cases, is rejected. Receipts prove that the browser execution episode occurred; they do not decide whether the business assertion is correct.
+The same delivery contract also requires case-scoped execution receipts. Before supporting browser work for a case, the Codex thread calls `case_execution_begin`; the Runner automatically tags completed Playwright calls until `case_execution_end`. A `passed` or `product_failed` case must cite at least one interaction and one observation receipt belonging to that case. Receipt IDs are namespaced by case window and turn because Codex item IDs restart in fresh contexts and subsequent turns. The `execution_receipts` MCP query defaults to a compact summary for the active window and recommends the minimum same-case IDs; the complete receipt log remains on disk for deterministic validation and audit. A receipt from another case, or a generic receipt list reused across cases, is rejected. Receipts prove that the browser execution episode occurred; they do not decide whether the business assertion is correct.
 
 The risk value attached to a Manifest case is advisory context. A mutation is authorized only when the same Codex thread declares its actual `write` or `destructive` risk and the Environment Profile permits that risk. This prevents a weak text inference from becoming a second business planner or permission system.
 
@@ -63,7 +63,7 @@ Mutation Ledger entries are coarse crash-recovery records for externally persist
 
 After interruption, Codex must re-observe the actual business state before continuing or compensating a pending operation. It must not repeat a write merely because the browser was recreated. The harness independently blocks the final result while any ledger entry remains `pending`.
 
-On `--resume`, the harness first checks whether the same Codex thread already left a complete `case-results.json` with valid case-scoped receipts, evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. If any fact is missing or any mutation remains pending, normal same-thread recovery continues and must re-observe live state before further writes.
+On `--resume`, the harness first checks whether the run already left a complete `case-results.json` with valid case-scoped receipts, evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. Otherwise a long suite reloads completed batch results and resumes only `activeBatch`; any pending mutation must be re-observed by that same batch thread before further writes.
 
 ## Environment Profiles
 
@@ -75,7 +75,7 @@ Full-agent mode treats profile origins as known starting context rather than a b
 
 ## Result Boundary
 
-After browser execution, the same Codex thread returns the final result directly under the repository JSON Schema. The harness performs deterministic checks only:
+After browser execution, each Codex window returns its scoped result directly under the repository strict JSON Schema. The harness performs deterministic checks only:
 
 - immutable workflow and source hashes match;
 - every input case appears exactly once;

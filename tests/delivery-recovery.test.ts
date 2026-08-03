@@ -30,6 +30,41 @@ function manifest(): WorkflowIntakeManifest {
 }
 
 describe('Codex delivery recovery', () => {
+  it('fails closed when an interrupted workspace still contains the initialized result array', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-initial-array-'))
+    directories.push(directory)
+    const artifactPath = resolve(directory, 'case-results.json')
+    await writeFile(artifactPath, '[]')
+
+    const recovered = await recoverCodexDeliveryResult({
+      artifactPath,
+      manifest: manifest(),
+      startedAt: '2026-08-03T00:00:00.000Z',
+    })
+
+    expect(recovered.result).toBeUndefined()
+    expect(recovered.problems).toContain('Codex delivery artifact cases must be an array')
+  })
+
+  it('fails closed for null artifacts and invalid case entries', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-invalid-shape-'))
+    directories.push(directory)
+    const artifactPath = resolve(directory, 'case-results.json')
+    await writeFile(artifactPath, 'null')
+    await expect(recoverCodexDeliveryResult({
+      artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
+    })).resolves.toEqual({ problems: ['Codex delivery artifact must be a JSON object'] })
+
+    await writeFile(artifactPath, JSON.stringify({
+      version: '1.0', kind: 'case-results', workflowId: 'fixture-workflow', sourceSha256: 'a'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z', cases: [null], mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+    const invalidCases = await recoverCodexDeliveryResult({
+      artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
+    })
+    expect(invalidCases.problems).toContain('Codex delivery artifact cases must contain objects')
+  })
+
   it('accepts a complete same-run artifact after structured response transport failure', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-recovery-'))
     directories.push(directory)

@@ -8,7 +8,7 @@ import { writePrivateJson } from './state.js'
 import { readEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from './environment-requirements.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
-import { readExecutionReceipts } from './execution-receipts.js'
+import { readExecutionReceipts, summarizeExecutionReceipts } from './execution-receipts.js'
 import { validateFieldCompositionGate } from './field-composition.js'
 import { getRunScopedTestValue, parseAgentSecretValues } from './test-data-access.js'
 import type { CodexTestCaseDecision, CodexTestFailureKind, CodexTestFailureSource, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry, CodexTestRisk } from './types.js'
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'field-compositions.json')
   const executionReceiptsPath = config.executionReceiptsPath
     ?? resolve(config.evidenceDirectory, '..', 'execution-receipts.json')
-  const caseIds = new Set(config.caseIds)
+  const caseIds = new Set(config.activeCaseIds ?? config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
       'These tools are an optional run journal; they do not replace Codex planning, shell work, Playwright exploration, or final structured delivery.',
@@ -88,7 +88,8 @@ async function main(): Promise<void> {
     allowedRisk: config.allowedRisk,
     targetUrls: config.targetUrls,
     allowedOrigins: allowedOrigins(config),
-    caseIds: config.caseIds,
+    caseIds: [...caseIds],
+    totalCaseCount: config.caseIds.length,
     testDataAccess: config.testDataAccess ?? 'opaque',
   }))
 
@@ -199,9 +200,20 @@ async function main(): Promise<void> {
 
   server.registerTool('execution_receipts', {
     title: 'List captured browser execution receipts',
-    description: 'Return safe metadata for completed Playwright browser operations. Use the receipt IDs that belong to a case in its final structured result.',
+    description: 'Return compact, same-case metadata for completed Playwright browser operations in the active case window. Use the recommended receipt IDs in the final structured result; the complete receipt log remains on disk for deterministic validation and audit.',
+    inputSchema: {
+      caseId: z.string().min(1).optional(),
+      detail: z.enum(['compact', 'full']).optional(),
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, async () => text(await readExecutionReceipts(executionReceiptsPath)))
+  }, async ({ caseId, detail }) => {
+    if (caseId && !caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
+    const receipts = await readExecutionReceipts(executionReceiptsPath)
+    const scopedCaseIds = caseId ? [caseId] : [...caseIds]
+    const scopedReceipts = receipts.filter((receipt) => receipt.caseId && scopedCaseIds.includes(receipt.caseId))
+    if (detail === 'full') return text(scopedReceipts)
+    return text(summarizeExecutionReceipts(receipts, scopedCaseIds))
+  })
 
   server.registerTool('test_plan_update', {
     title: 'Update dynamic execution plan',

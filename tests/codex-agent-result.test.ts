@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { enforceMutationLedger, parseCodexTestResult } from '../src/agent/result.js'
+import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from '../src/agent/result.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 
 function result(): CodexTestAgentResult {
@@ -27,6 +27,24 @@ function result(): CodexTestAgentResult {
 }
 
 describe('Codex test result contract', () => {
+  it('uses a strict-provider-compatible schema with every object property required', () => {
+    const problems: string[] = []
+    const visit = (schema: unknown, path: string): void => {
+      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return
+      const value = schema as Record<string, unknown>
+      if (value.properties && typeof value.properties === 'object' && !Array.isArray(value.properties)) {
+        const properties = Object.keys(value.properties as Record<string, unknown>)
+        const required = Array.isArray(value.required) ? value.required : []
+        for (const property of properties) if (!required.includes(property)) problems.push(`${path}.${property}`)
+        for (const [property, child] of Object.entries(value.properties as Record<string, unknown>)) visit(child, `${path}.${property}`)
+      }
+      if (value.items) visit(value.items, `${path}[]`)
+    }
+
+    visit(codexTestResultSchema, '$')
+    expect(problems).toEqual([])
+  })
+
   it('deeply validates nested cases and evidence', () => {
     const invalid = result() as unknown as Record<string, unknown>
     invalid.cases = [{ caseId: 'filter-catalog', title: 'Filter', outcome: 'passed', summary: 'ok' }]
@@ -69,6 +87,31 @@ describe('Codex test result contract', () => {
     expect(parseCodexTestResult(JSON.stringify(classified)).cases[0]).toMatchObject({
       failureSource: 'agent_execution', failureKind: 'validation', fieldGateIds: ['filter-catalog:query'],
     })
+  })
+
+  it('accepts strict-provider nullable optional fields and normalizes them at the result boundary', () => {
+    const strictResult = {
+      ...result(),
+      cases: [{
+        ...result().cases[0],
+        failureSource: null,
+        failureKind: null,
+        environmentRequirementIds: null,
+        executionReceiptIds: null,
+        fieldGateIds: null,
+        evidence: [{ kind: 'observation', path: null, description: 'Observed.' }],
+      }],
+      environmentRequirements: [{
+        id: 'environment-test_data-fixture', caseIds: ['filter-catalog'], kind: 'test_data', origin: null,
+        condition: 'Fixture was observed.', evidence: ['evidence/fixture.md'], status: 'satisfied', requestedAt: '2026-08-01T00:00:00.000Z',
+      }],
+    }
+
+    const parsed = parseCodexTestResult(JSON.stringify(strictResult))
+    expect(parsed.cases[0]).not.toHaveProperty('failureSource')
+    expect(parsed.cases[0]).not.toHaveProperty('executionReceiptIds')
+    expect(parsed.cases[0]?.evidence[0]).not.toHaveProperty('path')
+    expect(parsed.environmentRequirements[0]).not.toHaveProperty('origin')
   })
 
   it('accepts infrastructure as a distinct failure source', () => {

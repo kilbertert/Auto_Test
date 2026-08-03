@@ -36,6 +36,7 @@ export interface AgentTestCliOptions {
   slowMo?: number
   maxIterations?: number
   maxFinalizationTurns?: number
+  caseBatchSize?: number
   codexExecutable?: string
   codexHome?: string
   resume?: boolean
@@ -88,6 +89,7 @@ function help(): string {
     '  --slow-mo <ms>              浏览器动作减速',
     '  --max-iterations <count>    列表型数据最多执行 N 条',
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
+    '  --case-batch-size <count>    长用例集每个 Codex 上下文的 case 数，默认 8',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
     '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
@@ -138,6 +140,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
   const maxIterations = positiveInteger(args, '--max-iterations')
   const maxFinalizationTurns = positiveInteger(args, '--max-finalization-turns')
+  const caseBatchSize = positiveInteger(args, '--case-batch-size')
   const slowMo = nonNegativeInteger(args, '--slow-mo')
   const resolvedFilePath = resolve(filePath)
   return {
@@ -155,6 +158,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(slowMo !== undefined ? { slowMo } : {}),
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
+    ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
     ...(valueAfter(args, '--codex-bin') ? { codexExecutable: resolve(valueAfter(args, '--codex-bin')!) } : {}),
     ...(valueAfter(args, '--codex-home') ? { codexHome: resolve(valueAfter(args, '--codex-home')!) } : {}),
   }
@@ -434,6 +438,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexExecutable ? { codexExecutable: options.codexExecutable } : {}),
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
+    ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
     ...(options.resume ? { resume: true } : {}),
     testDataAccess: options.testDataAccess,
     onProgress: (progress) => printProgress(progress.message),

@@ -41,12 +41,15 @@ function validateArtifact(
   if (artifact.sourceSha256 !== manifest.source.sha256) problems.push('Codex delivery artifact sourceSha256 does not match the immutable contract')
   if (!artifact.generatedAt?.trim()) problems.push('Codex delivery artifact has no generatedAt timestamp')
   if (!Array.isArray(artifact.cases)) problems.push('Codex delivery artifact cases must be an array')
+  const rawCases = Array.isArray(artifact.cases) ? artifact.cases : []
+  const cases = rawCases.filter((item): item is AgentCaseArtifact => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+  if (cases.length !== rawCases.length) problems.push('Codex delivery artifact cases must contain objects')
   const required = new Set(manifest.phases.map((phase) => phase.id))
-  const returned = artifact.cases.map((item) => item.caseId)
+  const returned = cases.map((item) => item.caseId)
   if (new Set(returned).size !== returned.length) problems.push('Codex delivery artifact contains duplicate case IDs')
   for (const id of required) if (!returned.includes(id)) problems.push(`Codex delivery artifact is missing case ${id}`)
   for (const id of returned) if (!required.has(id)) problems.push(`Codex delivery artifact contains unexpected case ${id}`)
-  for (const item of artifact.cases) {
+  for (const item of cases) {
     if (!item.summary?.trim()) problems.push(`Codex delivery artifact case ${item.caseId} has no summary`)
     if (!['passed', 'product_failed', 'blocked'].includes(item.outcome)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid outcome`)
     if (item.failureSource && !failureSources.has(item.failureSource)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid failureSource`)
@@ -76,7 +79,11 @@ export async function recoverCodexDeliveryResult(options: {
   if (!await access(options.artifactPath).then(() => true, () => false)) return { problems: ['Codex delivery artifact was not created'] }
   let artifact: AgentDeliveryArtifact
   try {
-    artifact = JSON.parse(await readFile(options.artifactPath, 'utf8')) as AgentDeliveryArtifact
+    const parsed = JSON.parse(await readFile(options.artifactPath, 'utf8')) as unknown
+    if (parsed === null || (typeof parsed !== 'object' && !Array.isArray(parsed))) {
+      return { problems: ['Codex delivery artifact must be a JSON object'] }
+    }
+    artifact = parsed as AgentDeliveryArtifact
   } catch (error) {
     return { problems: [`Codex delivery artifact could not be parsed: ${error instanceof Error ? error.message : String(error)}`] }
   }

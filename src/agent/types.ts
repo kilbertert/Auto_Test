@@ -120,6 +120,17 @@ export interface CodexTestAgentState {
   resultWorkbookPath?: string
   outcome?: CodexTestOutcome
   error?: string
+  executionMode?: 'single_thread' | 'case_windows'
+  caseBatchSize?: number
+  caseBatchCount?: number
+  completedBatchIds?: string[]
+  activeBatch?: {
+    id: string
+    index: number
+    caseIds: string[]
+    stage: 'executing' | 'auditing' | 'finalizing'
+    threadId?: string
+  }
 }
 
 export interface CodexTestMutationLedgerEntry {

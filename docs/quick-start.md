@@ -2,9 +2,9 @@
 
 默认流程是：
 
-`Excel Intake -> 环境与认证 -> 持久 Codex 线程 -> 页面探索与动态计划 -> 执行与断言 -> 恢复 -> 结构化结果`
+`Excel Intake -> 环境与认证 -> Codex case 窗口 -> 页面探索与动态计划 -> 执行与断言 -> 窗口恢复 -> 逐 case 聚合结果`
 
-测试工程师不需要编写 Execution Plan。Codex 在同一线程里根据实际页面证据持续修订工作计划，并直接使用 Playwright MCP 操作网站。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
+测试工程师不需要编写 Execution Plan。短用例集在同一线程里执行；长用例集默认每 8 个 case 使用一个独立 Codex 上下文。每个上下文都直接读取原始材料、根据页面证据修订自己的工作计划并使用 Playwright MCP 操作网站。窗口调度不解释业务语义，也不会替代 Codex 生成结论。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
 
 ## 1. 首次准备
 
@@ -82,11 +82,12 @@ npm run agent:test -- \
 - `--brief <path>`：不含秘密的业务补充说明；
 - `--model <id>`：覆盖当前 Provider 的默认模型；
 - `--max-iterations <N>`：列表型数据先执行 N 条 canary；
+- `--case-batch-size <N>`：长用例集每个 Codex 上下文负责的 case 数，默认 8；恢复时必须与原 run 一致；
 - `--headed` / `--headless`：显示或隐藏浏览器。
 
 ## 5. 运行机制
 
-每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向同一个 Codex thread 提供：
+每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向当前 Codex case 窗口提供：
 
 - 原始 Excel、说明、图片和本轮测试值；
 - shell、临时脚本、网络和 Web Search；
@@ -95,7 +96,11 @@ npm run agent:test -- \
 
 Codex 自己决定工作计划和执行方式。对于需要中断恢复的外部业务写入，应以完整业务操作为单位登记 Mutation；普通导航、读取和字段输入不需要登记。仍有 pending Mutation 时，结果必定是 `blocked`。
 
+Manifest case 数超过窗口大小时，Runner 按原顺序创建 `batch-0001`、`batch-0002` 等窗口。每个窗口使用新的 Codex 对话上下文，只能通过 Control MCP 为当前 case ID 建立执行回执；原始 Excel、登录状态、workspace、证据目录、环境需求和 Ledger 仍属于同一个 run。每个窗口完成后保存经过结果合同校验的逐 case 事实，最终只按 manifest 顺序合并这些事实。它不把标题映射成固定动作，也不生成第二份 Execution Plan。
+
 ## 6. 结果
+
+`execution_receipts` MCP 查询默认只返回当前窗口的紧凑同 case 推荐 ID；完整回执文件仍用于确定性校验和审计。回执 ID 包含窗口和 turn 序号，跨上下文或恢复时重复出现的 `item_*` 不会互相覆盖。
 
 主要文件：
 
@@ -107,8 +112,10 @@ Codex 自己决定工作计划和执行方式。对于需要中断恢复的外�
 - `agent-workspace/input/`：原始测试材料和本轮输入；
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
+- `.agent-private/case-batches/`：长用例集每个已完成窗口的结构化结果；
+- `agent-workspace/active-case-window.json`：当前窗口 ID、顺序和 case 范围；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
-- `agent-workspace/case-results.json`：由同一 Codex thread 写入的逐 case 交付恢复文件；当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验输入身份、完整覆盖、逐 case 回执、证据路径、环境需求和权威 Ledger 终态后使用它。
+- `agent-workspace/case-results.json`：全部窗口完成后的逐 case 聚合恢复文件；当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验输入身份、完整覆盖、逐 case 回执、证据路径、环境需求和权威 Ledger 终态后使用它。
 
 终态含义：
 
@@ -127,11 +134,11 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会复用原 Codex thread、原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有逐 case 交付；输入身份、回执、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果，不重新启动浏览器或 Codex。否则才重建浏览器与 MCP，并由原线程先重新观察 pending Mutation 的真实业务状态。环境身份或权限策略不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
+恢复会复用原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有逐 case 交付；输入身份、回执、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果。否则只恢复 `activeBatch` 指向的当前 Codex thread，已完成窗口从 `.agent-private/case-batches/` 读取，不重新执行。环境身份、权限策略或窗口大小不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 
-以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、持久线程恢复、Codex 直接结构化结果校验、Mutation Ledger、Windows 启动器、Linux Verify 和 Windows Verify。
+以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、strict Provider 结构化结果 Schema、长 suite case 分窗、逐窗口回执隔离、当前窗口恢复、Codex 直接结果校验、Mutation Ledger、Windows 启动器、Linux Verify 和 Windows Verify。长 suite 分窗目前先由业务无关的合成 fixture 验证，不能替代新的真实业务 canary。
 
 2026-08-03，基于 `c94ad77` 的最终 thin harness Windows 私有包使用充电 Excel、测试 URL 和一次 Environment Profile 注册完成真实业务 canary：同一个 Codex thread 自主执行 3/3 manifest case 和 7 组测试数据，记录 26 条 Mutation Ledger 且 pending 为 0，生成 129 个证据文件，最终结果为 `passed`。运行中的模型重连和页面工具错误由同一 thread 恢复，没有人工编辑 Execution Plan。
 
