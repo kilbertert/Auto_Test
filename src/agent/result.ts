@@ -70,7 +70,7 @@ export const codexTestResultSchema = {
           origin: { type: 'string' },
           condition: { type: 'string' },
           evidence: { type: 'array', items: { type: 'string' } },
-          status: { type: 'string', enum: ['pending', 'satisfied'] },
+          status: { type: 'string', enum: ['pending', 'satisfied', 'superseded'] },
           requestedAt: { type: 'string' },
         },
         required: ['id', 'caseIds', 'kind', 'condition', 'evidence', 'status', 'requestedAt'],

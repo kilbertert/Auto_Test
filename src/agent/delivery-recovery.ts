@@ -125,7 +125,7 @@ export async function recoverCodexDeliveryResult(options: {
       workflowId: options.manifest.workflowId,
       sourceSha256: options.manifest.source.sha256,
       outcome,
-      summary: `Recovered Codex delivery artifact with ${cases.length} case results after structured response transport failure.`,
+      summary: `Recovered Codex delivery artifact with ${cases.length} case results after the original structured delivery could not be accepted.`,
       startedAt: options.startedAt,
       finishedAt: new Date().toISOString(),
       cases,

@@ -6,7 +6,7 @@ import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverCodexDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { codexTestAgentEvidenceDebtAuditPrompt, codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
@@ -311,7 +311,7 @@ function finalResultProblems(
           problems.push(`environment-blocked case ${item.caseId} is not linked to environment requirement ${requirementId}`)
         }
         if (requirement.status !== 'pending') {
-          problems.push(`environment-blocked case ${item.caseId} references satisfied environment requirement ${requirementId}`)
+          problems.push(`environment-blocked case ${item.caseId} references non-pending environment requirement ${requirementId}`)
         }
         if (requirement.evidence.length === 0) {
           problems.push(`environment requirement ${requirementId} has no saved evidence`)
@@ -507,13 +507,12 @@ export async function runCodexTestAgent(
     if (state.status === 'completed' && state.outcome !== 'blocked') {
       throw new Error(`Completed ${state.outcome ?? 'terminal'} Codex test runs cannot be resumed`)
     }
-    resumeThreadId = state.threadId ?? await threadIdFromEvents(eventsPath)
-    if (!resumeThreadId) throw new Error('Existing Codex test run has no recoverable persistent thread id')
+    resumeThreadId = state.threadId
     const { resultPath: _resultPath, outcome: _outcome, error: _error, ...unfinishedState } = state
     state = updateCodexTestState(unfinishedState, {
       status: 'running',
       stage: 'preparing',
-      threadId: resumeThreadId,
+      ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
     })
   } else {
     for (const path of [statePath, existingLedgerPath]) {
@@ -537,9 +536,11 @@ export async function runCodexTestAgent(
       : '正在检查 Chromium 并准备隔离测试工作区')
     progress.startHeartbeat()
     const browserExecutablePath = dependencies.browserExecutablePath ?? chromium.executablePath()
-    await access(browserExecutablePath).catch(() => {
-      throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
-    })
+    if (!options.resume) {
+      await access(browserExecutablePath).catch(() => {
+        throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
+      })
+    }
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory,
       manifest: options.manifest,
@@ -560,6 +561,55 @@ export async function runCodexTestAgent(
     environmentRequirementsPath = workspace.environmentRequirementsPath
     executionReceiptsPath = workspace.executionReceiptsPath
     await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
+    if (options.resume) {
+      const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      if (!ledger.some((entry) => entry.status === 'pending')) {
+        const recovered = await recoverCodexDeliveryResult({
+          artifactPath: workspace.caseResultsPath,
+          manifest: options.manifest,
+          startedAt: state.startedAt,
+        })
+        if (recovered.result) {
+          const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+            workspace.environmentRequirementsPath,
+            recovered.result.cases,
+          )
+          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+          const recoveryProblems = finalResultProblems(
+            recovered.result,
+            options.manifest,
+            environmentRequirements,
+            executionReceipts,
+          )
+          if (recoveryProblems.length === 0) {
+            const result = enforceMutationLedger(
+              enforceEnvironmentRequirements(recovered.result, environmentRequirements),
+              ledger,
+            )
+            await writePrivateJson(resultPath, result)
+            progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 Codex：${result.outcome}`)
+            state = updateCodexTestState(state, {
+              status: 'completed',
+              stage: 'completed',
+              outcome: result.outcome,
+              resultPath,
+              finishedAt: new Date().toISOString(),
+            })
+            await writePrivateJson(statePath, state)
+            return { state, result }
+          }
+        }
+      }
+      resumeThreadId ??= await threadIdFromEvents(eventsPath)
+      if (!resumeThreadId) throw new Error('Existing Codex test run has no recoverable persistent thread id')
+      if (state.threadId !== resumeThreadId) {
+        state = updateCodexTestState(state, { threadId: resumeThreadId })
+        await writePrivateJson(statePath, state)
+      }
+      await access(browserExecutablePath).catch(() => {
+        throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
+      })
+    }
     const receiptRecorder = await ExecutionReceiptRecorder.create(
       workspace.executionReceiptsPath,
       options.manifest.phases.map((phase) => phase.id),
@@ -646,7 +696,10 @@ export async function runCodexTestAgent(
           receiptRecorder,
         )
         const candidate = parseCodexTestResult(finalResponse)
-        const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+        const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+          workspace.environmentRequirementsPath,
+          candidate.cases,
+        )
         const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
         deliveryProblems = finalResultProblems(candidate, options.manifest, environmentRequirements, executionReceipts)
         if (deliveryProblems.length > 0) continue
@@ -673,7 +726,7 @@ export async function runCodexTestAgent(
     }
     if (!result) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
-      const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+      let environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
       const artifactPath = resolve(workspace.workspaceDirectory, 'case-results.json')
       const recovered = await recoverCodexDeliveryResult({
         artifactPath,
@@ -681,6 +734,10 @@ export async function runCodexTestAgent(
         startedAt: state.startedAt,
       })
       if (recovered.result) {
+        environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+          workspace.environmentRequirementsPath,
+          recovered.result.cases,
+        )
         const executionReceipts = executionReceiptsPath ? await readExecutionReceipts(executionReceiptsPath) : []
         const recoveryProblems = finalResultProblems(recovered.result, options.manifest, environmentRequirements, executionReceipts)
         if (recoveryProblems.length === 0) {

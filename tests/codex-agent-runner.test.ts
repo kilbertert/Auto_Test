@@ -498,6 +498,72 @@ describe('Codex test agent runner', () => {
     expect(run.result?.cases[0]?.evidence[0]?.path).toBe('evidence/observed.md')
   })
 
+  it('finalizes a complete blocked run artifact on resume without restarting Codex or Chromium', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-fast-resume-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test')
+    const profile = {
+      id: 'fixture', origins: ['https://tasks.example.test'], auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+
+    await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({ id: 'thread-resume-artifact', runStreamed: async () => failedStream('network connection lost', 'thread-resume-artifact') }),
+    })
+
+    const workspace = resolve(outputDirectory, 'agent-workspace')
+    await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+    await writeFile(resolve(workspace, 'evidence', 'observed.md'), 'observed')
+    await writeFile(resolve(workspace, 'execution-receipts.json'), JSON.stringify([
+      { id: 'receipt-interaction', caseId: 'inspect-task', tool: 'browser_click', kind: 'interaction', status: 'completed', recordedAt: '2026-08-03T00:00:00.000Z' },
+      { id: 'receipt-observation', caseId: 'inspect-task', tool: 'browser_snapshot', kind: 'observation', status: 'completed', recordedAt: '2026-08-03T00:00:01.000Z' },
+    ]))
+    await writeFile(resolve(workspace, 'case-results.json'), JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
+      workflowId: workflow.workflowId,
+      sourceSha256: workflow.source.sha256,
+      generatedAt: '2026-08-03T00:01:00.000Z',
+      cases: [{
+        caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.',
+        evidencePaths: ['evidence/observed.md'], executionReceiptIds: ['receipt-interaction', 'receipt-observation'],
+      }],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+
+    const resumeThread = vi.fn(() => {
+      throw new Error('resumeThread must not be called for a complete delivery artifact')
+    })
+    const resumed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      resume: true,
+    }, {
+      browserExecutablePath: resolve(directory, 'missing-chromium'),
+      resumeThread,
+    })
+
+    expect(resumeThread).not.toHaveBeenCalled()
+    expect(resumed.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'passed', threadId: 'thread-resume-artifact' })
+    expect(resumed.result).toMatchObject({ outcome: 'passed', summary: expect.stringContaining('Recovered Codex delivery artifact') })
+    expect(resumed.result?.cases[0]?.executionReceiptIds).toEqual(['receipt-interaction', 'receipt-observation'])
+  })
+
   it('resumes the same persistent thread and preserves pending mutation recovery state', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-resume-'))
     directories.push(directory)

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, reconcileEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from '../src/agent/environment-requirements.js'
+import { blockedNavigationOriginsFromEvents, normalizeEnvironmentOrigin, readEnvironmentRequirements, reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from '../src/agent/environment-requirements.js'
 
 const directories: string[] = []
 
@@ -86,5 +86,86 @@ describe('environment access requirements', () => {
       id: requirement.id,
       evidence: ['evidence/resolved.png'],
     })).resolves.toMatchObject({ status: 'satisfied', evidence: ['evidence/filter-state.png', 'evidence/resolved.png'] })
+  })
+
+  it('removes stale case links from a shared pending requirement after explicit non-environment results', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-environment-case-links-'))
+    directories.push(directory)
+    const requirementsPath = resolve(directory, 'environment-requirements.json')
+    const requirement = await recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: {
+        caseIds: ['case-environment', 'case-product', 'case-input'],
+        kind: 'test_data',
+        condition: 'The shared fixture is unavailable.',
+        evidence: ['evidence/shared-fixture.md'],
+      },
+    })
+
+    const reconciled = await reconcileEnvironmentRequirementCaseLinks(requirementsPath, [
+      {
+        caseId: 'case-environment',
+        failureSource: 'environment',
+        environmentRequirementIds: [requirement.id],
+      },
+      { caseId: 'case-product', failureSource: 'product' },
+      { caseId: 'case-input', failureSource: 'input' },
+    ])
+
+    expect(reconciled[0]).toMatchObject({ id: requirement.id, status: 'pending', caseIds: ['case-environment'] })
+    expect((await readEnvironmentRequirements(requirementsPath))[0]?.caseIds).toEqual(['case-environment'])
+  })
+
+  it('supersedes an orphaned requirement but preserves an environment case missing its reference', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-environment-case-links-guard-'))
+    directories.push(directory)
+    const requirementsPath = resolve(directory, 'environment-requirements.json')
+    const requirement = await recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: {
+        caseIds: ['case-a', 'case-b'],
+        kind: 'test_data',
+        condition: 'The fixture is unavailable.',
+        evidence: ['evidence/fixture.md'],
+      },
+    })
+
+    await expect(reconcileEnvironmentRequirementCaseLinks(requirementsPath, [
+      { caseId: 'case-a', failureSource: 'product' },
+      { caseId: 'case-b', failureSource: 'input' },
+    ])).resolves.toEqual([{ ...requirement, status: 'superseded' }])
+    await recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: {
+        caseIds: ['case-a', 'case-b'],
+        kind: 'test_data',
+        condition: 'The fixture is unavailable.',
+        evidence: ['evidence/fixture-again.md'],
+      },
+    })
+    await expect(reconcileEnvironmentRequirementCaseLinks(requirementsPath, [
+      { caseId: 'case-a', failureSource: 'environment', environmentRequirementIds: [] },
+      { caseId: 'case-b', failureSource: 'product' },
+    ])).resolves.toEqual([{ ...requirement, caseIds: ['case-a'], evidence: ['evidence/fixture.md', 'evidence/fixture-again.md'], requestedAt: expect.any(String) }])
+  })
+
+  it('supersedes an older shared requirement when environment cases cite newer requirement ids', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-environment-case-links-superseded-'))
+    directories.push(directory)
+    const requirementsPath = resolve(directory, 'environment-requirements.json')
+    const requirement = await recordEnvironmentRequirement({
+      requirementsPath,
+      requirement: {
+        caseIds: ['case-a', 'case-b'],
+        kind: 'test_data',
+        condition: 'The broad fixture is unavailable.',
+        evidence: ['evidence/broad.md'],
+      },
+    })
+
+    await expect(reconcileEnvironmentRequirementCaseLinks(requirementsPath, [
+      { caseId: 'case-a', failureSource: 'environment', environmentRequirementIds: ['environment-test_data-new-a'] },
+      { caseId: 'case-b', failureSource: 'environment', environmentRequirementIds: ['environment-test_data-new-b'] },
+    ])).resolves.toEqual([{ ...requirement, status: 'superseded' }])
   })
 })

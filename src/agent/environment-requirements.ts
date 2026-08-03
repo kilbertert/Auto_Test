@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { writePrivateJson } from './state.js'
-import type { CodexTestEnvironmentRequirement, CodexTestEnvironmentRequirementKind } from './types.js'
+import type { CodexTestCaseResult, CodexTestEnvironmentRequirement, CodexTestEnvironmentRequirementKind } from './types.js'
 
 export interface EnvironmentAccessResult {
   status: 'allowed' | 'blocked'
@@ -61,7 +61,7 @@ function normalizeRequirement(input: unknown): CodexTestEnvironmentRequirement {
     evidence: Array.isArray(item.evidence)
       ? [...new Set(item.evidence.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())))]
       : [],
-    status: item.status === 'satisfied' ? 'satisfied' : 'pending',
+    status: item.status === 'satisfied' || item.status === 'superseded' ? item.status : 'pending',
     requestedAt: typeof item.requestedAt === 'string' && item.requestedAt.trim()
       ? item.requestedAt
       : new Date(0).toISOString(),
@@ -211,6 +211,32 @@ export async function reconcileEnvironmentRequirements(
       return { ...item, status: 'satisfied' as const }
     }
     return item
+  })
+  if (changed) await writePrivateJson(path, reconciled)
+  return reconciled
+}
+
+export async function reconcileEnvironmentRequirementCaseLinks(
+  path: string,
+  cases: Array<Pick<CodexTestCaseResult, 'caseId' | 'failureSource' | 'environmentRequirementIds'>>,
+): Promise<CodexTestEnvironmentRequirement[]> {
+  const requirements = await readRequirements(path)
+  const resultByCaseId = new Map(cases.map((item) => [item.caseId, item]))
+  let changed = false
+  const reconciled = requirements.map((requirement) => {
+    if (requirement.status !== 'pending') return requirement
+    const caseIds = requirement.caseIds.filter((caseId) => {
+      const result = resultByCaseId.get(caseId)
+      if (!result) return true
+      if (result.failureSource !== 'environment') return false
+      if (result.environmentRequirementIds?.includes(requirement.id)) return true
+      return !result.environmentRequirementIds?.length
+    })
+    if (caseIds.length === requirement.caseIds.length) return requirement
+    changed = true
+    return caseIds.length > 0
+      ? { ...requirement, caseIds }
+      : { ...requirement, status: 'superseded' as const }
   })
   if (changed) await writePrivateJson(path, reconciled)
   return reconciled

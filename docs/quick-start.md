@@ -108,7 +108,7 @@ Codex 自己决定工作计划和执行方式。对于需要中断恢复的外�
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
-- `agent-workspace/case-results.json`：由同一 Codex thread 写入的逐 case 交付恢复文件；只有最终 JSON 响应在传输中断开时，框架才会在校验输入身份、完整覆盖、证据路径和 Ledger 终态后使用它。
+- `agent-workspace/case-results.json`：由同一 Codex thread 写入的逐 case 交付恢复文件；当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验输入身份、完整覆盖、逐 case 回执、证据路径、环境需求和权威 Ledger 终态后使用它。
 
 终态含义：
 
@@ -127,7 +127,7 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会复用原 Codex thread、原始材料副本、工作区脚本、证据和 Mutation Ledger，只重建浏览器与 MCP 进程。框架会校验工作流来源哈希、环境身份和权限策略；任何不一致都会 fail closed。恢复 Agent 必须先重新观察 pending Mutation 的真实业务状态，不会把浏览器断线当成重复写操作的理由。不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
+恢复会复用原 Codex thread、原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有逐 case 交付；输入身份、回执、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果，不重新启动浏览器或 Codex。否则才重建浏览器与 MCP，并由原线程先重新观察 pending Mutation 的真实业务状态。环境身份或权限策略不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 

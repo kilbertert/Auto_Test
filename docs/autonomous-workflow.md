@@ -63,9 +63,13 @@ Mutation Ledger entries are coarse crash-recovery records for externally persist
 
 After interruption, Codex must re-observe the actual business state before continuing or compensating a pending operation. It must not repeat a write merely because the browser was recreated. The harness independently blocks the final result while any ledger entry remains `pending`.
 
+On `--resume`, the harness first checks whether the same Codex thread already left a complete `case-results.json` with valid case-scoped receipts, evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. If any fact is missing or any mutation remains pending, normal same-thread recovery continues and must re-observe live state before further writes.
+
 ## Environment Profiles
 
 The default registry path is `~/.config/auto-test/environment-profiles.json` on Linux/macOS and `%APPDATA%\auto-test\environment-profiles.json` on Windows. A profile stores reusable authentication state and the highest pre-authorized test risk for that environment.
+
+When one pending environment requirement was originally shared by several cases, the deterministic delivery boundary removes only case links that the same Codex result explicitly reclassified as non-environment failures or linked to a newer, more precise requirement. If no case still depends on the old requirement, it becomes `superseded`: the record remains auditable but no longer blocks the run. Observing the same condition again reactivates the stable requirement as pending.
 
 Full-agent mode treats profile origins as known starting context rather than a browser network allowlist. Codex may follow application redirects and discover supporting origins. Missing authentication or authority should be reported as a resumable environment requirement, not guessed or converted into a product defect.
 

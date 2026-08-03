@@ -91,6 +91,10 @@ Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFr
 
 每条记录都应包含 `caseIds`、`kind`、`condition` 和已保存的 `evidence`。先确认页面可用的只读操作已经执行：可筛选、搜索、改日期范围、翻页、刷新或查看详情时，不应直接把结果报成环境问题。`origin` 类记录完成一次环境注册或更新后，其他类型在补足权限、认证、测试数据或物理条件后，都必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续。恢复中的 Codex 会重新观察并以新证据标记已满足的需求；不要改用新目录绕过环境边界。
 
+共享环境需求在审计后可能只继续阻断其中一部分 case。最终交付会保留 requirement ID 和仍受阻的 case，只解除已被同一 Codex 证据重新归类为产品、输入或代理执行问题的 case。已被更精确 requirement 完全替代的旧记录标记为 `superseded`，保留审计历史但不再阻断运行；它不会被误标为条件已经满足。
+
+执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、执行回执、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 Codex；它不是跳过业务执行，而是在原线程已经留下完整事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，框架必须恢复原 Codex thread 继续核对现场。
+
 ## 5. 判断验收是否真正通过
 
 启动窗口显示“测试通过”后，仍应核对结构化产物：

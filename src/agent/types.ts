@@ -77,7 +77,7 @@ export interface CodexTestEnvironmentRequirement {
   origin?: string
   condition: string
   evidence: string[]
-  status: 'pending' | 'satisfied'
+  status: 'pending' | 'satisfied' | 'superseded'
   requestedAt: string
 }
 

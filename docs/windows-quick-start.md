@@ -108,7 +108,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
 
-每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 自动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，证据索引中也会列出执行回执 ID，原 Excel 不会被改写。`agent-workspace/case-results.json` 是同一 Codex thread 写入的版本化逐 case 交付恢复文件：只有最终 JSON 响应在传输中断时，框架才会校验其版本、输入身份、完整覆盖、证据路径、逐 case 执行回执、显式失败来源和 Ledger 终态后使用它。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 自动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，证据索引中也会列出执行回执 ID，原 Excel 不会被改写。`agent-workspace/case-results.json` 是同一 Codex thread 写入的版本化逐 case 交付恢复文件：当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验其版本、输入身份、完整覆盖、证据路径、逐 case 执行回执、显式失败来源、环境需求和权威 Ledger 终态后使用它。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
 
 完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，Codex 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Codex 会重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
 
@@ -153,7 +153,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --headed
 ```
 
-恢复继续使用同一个 Codex thread 和 Mutation Ledger。它只重建浏览器/MCP 进程，并先根据页面证据核对未完成业务写入。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对于本次 run 已记录为环境需求、后来完成注册的 origin，框架允许在同一 Profile 下追加并恢复，其他环境替换或权限收窄都会拒绝恢复。
+恢复继续使用同一个 Codex thread 和 Mutation Ledger。框架会先校验已有逐 case 交付；如果输入身份、执行回执、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果，不重新启动浏览器或 Codex。否则才重建浏览器/MCP 进程，并由原线程根据页面证据核对未完成业务写入。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对于本次 run 已记录为环境需求、后来完成注册的 origin，框架允许在同一 Profile 下追加并恢复，其他环境替换或权限收窄都会拒绝恢复。
 
 只有排查旧链路兼容性时才使用：
 
