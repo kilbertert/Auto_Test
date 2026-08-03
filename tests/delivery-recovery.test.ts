@@ -35,15 +35,19 @@ describe('Codex delivery recovery', () => {
     directories.push(directory)
     await mkdir(resolve(directory, 'evidence'))
     await writeFile(resolve(directory, 'evidence', 'case-1.md'), 'observed')
+    await writeFile(resolve(directory, 'test-manifest.json'), '{}')
     const artifactPath = resolve(directory, 'case-results.json')
     await writeFile(artifactPath, JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
       workflowId: 'fixture-workflow',
-      source: { sha256: 'a'.repeat(64) },
+      sourceSha256: 'a'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z',
       cases: [
-        { caseId: 'case-1', outcome: 'passed', summary: 'Observed', evidence: ['evidence/case-1.md'] },
-        { caseId: 'case-2', outcome: 'blocked', summary: 'Write was not authorized', blockers: ['allowedRisk=read'], evidence: [] },
+        { caseId: 'case-1', outcome: 'passed', summary: 'Observed', evidencePaths: ['evidence/case-1.md', 'test-manifest.json'] },
+        { caseId: 'case-2', outcome: 'blocked', summary: 'Write was not authorized', blockers: ['allowedRisk=read'], failureSource: 'input', failureKind: 'validation', evidencePaths: [] },
       ],
-      mutationLedger: { pending: 0, entries: [] },
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
     }))
 
     const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
@@ -54,6 +58,7 @@ describe('Codex delivery recovery', () => {
     expect(recovered.result?.cases[0]).toMatchObject({ caseId: 'case-1', outcome: 'passed' })
     expect(recovered.result?.cases[1]).toMatchObject({ caseId: 'case-2', outcome: 'blocked', failureSource: 'input', failureKind: 'validation' })
     expect(recovered.result?.cases[1]?.evidence).not.toHaveLength(0)
+    expect(recovered.result?.cases[0]?.evidence.map((item) => item.path)).toContain('test-manifest.json')
   })
 
   it('rejects stale or incomplete artifacts instead of guessing a result', async () => {
@@ -61,10 +66,13 @@ describe('Codex delivery recovery', () => {
     directories.push(directory)
     const artifactPath = resolve(directory, 'case-results.json')
     await writeFile(artifactPath, JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
       workflowId: 'other-workflow',
-      source: { sha256: 'b'.repeat(64) },
+      sourceSha256: 'b'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z',
       cases: [],
-      mutationLedger: { pending: 1, entries: [{}] },
+      mutationLedger: { state: 'terminal', pendingCount: 1, entries: [{}] },
     }))
 
     const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
@@ -76,5 +84,70 @@ describe('Codex delivery recovery', () => {
       expect.stringContaining('missing case case-1'),
       expect.stringContaining('unresolved mutations'),
     ]))
+  })
+
+  it('rejects an unclassified delivery artifact instead of inferring a business failure source', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-recovery-unclassified-'))
+    directories.push(directory)
+    const artifactPath = resolve(directory, 'case-results.json')
+    await writeFile(artifactPath, JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
+      workflowId: 'fixture-workflow',
+      sourceSha256: 'a'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z',
+      cases: [
+        { caseId: 'case-1', outcome: 'passed', summary: 'Observed', evidencePaths: [] },
+        { caseId: 'case-2', outcome: 'blocked', summary: 'A dependency was unavailable', evidencePaths: [] },
+      ],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+
+    const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
+
+    expect(recovered.result).toBeUndefined()
+    expect(recovered.problems).toContain('Codex delivery artifact non-passed case case-2 has no explicit failure classification')
+  })
+
+  it('preserves an explicit infrastructure classification from the Codex artifact', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-recovery-infrastructure-'))
+    directories.push(directory)
+    const artifactPath = resolve(directory, 'case-results.json')
+    await writeFile(artifactPath, JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
+      workflowId: 'fixture-workflow',
+      sourceSha256: 'a'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z',
+      cases: [
+        { caseId: 'case-1', outcome: 'passed', summary: 'Observed', evidencePaths: [] },
+        { caseId: 'case-2', outcome: 'blocked', summary: 'Browser transport disconnected', failureSource: 'infrastructure', failureKind: 'execution', evidencePaths: [] },
+      ],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+
+    const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
+
+    expect(recovered.problems).toEqual([])
+    expect(recovered.result?.cases[1]).toMatchObject({ failureSource: 'infrastructure', failureKind: 'execution' })
+  })
+
+  it('rejects an evidence path that escapes the Codex workspace', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-delivery-recovery-escape-'))
+    directories.push(directory)
+    const artifactPath = resolve(directory, 'case-results.json')
+    await writeFile(artifactPath, JSON.stringify({
+      version: '1.0', kind: 'case-results', workflowId: 'fixture-workflow', sourceSha256: 'a'.repeat(64), generatedAt: '2026-08-03T00:01:00.000Z',
+      cases: [
+        { caseId: 'case-1', outcome: 'passed', summary: 'Observed', evidencePaths: ['../outside.md'] },
+        { caseId: 'case-2', outcome: 'blocked', summary: 'No target permission', failureSource: 'environment', failureKind: 'environment', blockers: ['permission'], evidencePaths: [] },
+      ],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+
+    const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
+
+    expect(recovered.result).toBeUndefined()
+    expect(recovered.problems).toContain('Codex delivery artifact case case-1 references missing evidence ../outside.md')
   })
 })

@@ -302,7 +302,7 @@ describe('Codex test agent runner', () => {
 
     expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked', threadId: 'thread-fixture' })
     expect(run.result?.blockers).toContain('429 usage limit reached')
-    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'environment', failureKind: 'environment' })
+    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'infrastructure', failureKind: 'execution' })
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
   })
 
@@ -333,12 +333,15 @@ describe('Codex test agent runner', () => {
           await mkdir(resolve(workspace, 'evidence'), { recursive: true })
           await writeFile(resolve(workspace, 'evidence', 'observed.md'), 'observed')
           await writeFile(resolve(workspace, 'case-results.json'), JSON.stringify({
+            version: '1.0',
+            kind: 'case-results',
             workflowId: workflow.workflowId,
-            source: { sha256: workflow.source.sha256 },
+            sourceSha256: workflow.source.sha256,
+            generatedAt: '2026-08-03T00:01:00.000Z',
             cases: [{
-              caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.', evidence: ['evidence/observed.md'],
+              caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.', evidencePaths: ['evidence/observed.md'],
             }],
-            mutationLedger: { pending: 0, entries: [] },
+            mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
           }))
           return streamedResponse('Execution complete.')
         },

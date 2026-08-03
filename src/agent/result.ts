@@ -20,7 +20,7 @@ export const codexTestResultSchema = {
           title: { type: 'string' },
           outcome: { type: 'string', enum: ['passed', 'product_failed', 'blocked'] },
           summary: { type: 'string' },
-          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input'] },
+          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure'] },
           failureKind: { type: 'string', enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'] },
           fieldGateIds: { type: 'array', items: { type: 'string' } },
           evidence: {

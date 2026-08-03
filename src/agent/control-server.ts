@@ -226,7 +226,7 @@ async function main(): Promise<void> {
       summary: z.string().min(1),
       blockers: z.array(z.string().min(1)).default([]),
       productDefects: z.array(z.string().min(1)).default([]),
-      failureSource: z.enum(['product', 'agent_execution', 'environment', 'input']).optional(),
+      failureSource: z.enum(['product', 'agent_execution', 'environment', 'input', 'infrastructure']).optional(),
       failureKind: z.enum(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution']).optional(),
       fieldGateIds: z.array(z.string().min(1)).default([]),
     },

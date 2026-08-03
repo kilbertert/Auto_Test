@@ -1,6 +1,6 @@
 export type CodexTestOutcome = 'passed' | 'product_failed' | 'blocked'
 export type CodexTestRisk = 'read' | 'write' | 'destructive'
-export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input'
+export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input' | 'infrastructure'
 export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution'
 
 export interface CodexTestEvidence {

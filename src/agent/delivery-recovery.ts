@@ -8,7 +8,7 @@ interface AgentCaseArtifact {
   title?: string
   outcome: 'passed' | 'product_failed' | 'blocked'
   summary: string
-  evidence?: string[]
+  evidencePaths?: string[]
   blockers?: string[]
   productDefects?: string[]
   failureSource?: CodexTestFailureSource
@@ -16,36 +16,28 @@ interface AgentCaseArtifact {
 }
 
 interface AgentDeliveryArtifact {
+  version: '1.0'
+  kind: 'case-results'
   workflowId: string
-  source?: { sha256?: string }
-  generatedAt?: string
+  sourceSha256: string
+  generatedAt: string
   cases: AgentCaseArtifact[]
-  mutationLedger?: { pending?: number; entries?: unknown[] }
+  mutationLedger: { state: 'terminal'; pendingCount: number; entries: unknown[] }
 }
 
-const failureSources = new Set<CodexTestFailureSource>(['product', 'agent_execution', 'environment', 'input'])
+const failureSources = new Set<CodexTestFailureSource>(['product', 'agent_execution', 'environment', 'input', 'infrastructure'])
 const failureKinds = new Set<CodexTestFailureKind>(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'])
-
-function failureForArtifact(item: AgentCaseArtifact): { failureSource: CodexTestFailureSource; failureKind: CodexTestFailureKind } | undefined {
-  if (item.outcome === 'passed') return undefined
-  if (item.failureSource && item.failureKind) return { failureSource: item.failureSource, failureKind: item.failureKind }
-  if (item.outcome === 'product_failed') return { failureSource: 'product', failureKind: 'assertion' }
-  const text = `${item.summary} ${(item.blockers ?? []).join(' ')}`
-  if (/missing|not provided|test data|数据|缺少/i.test(text)) return { failureSource: 'environment', failureKind: 'data' }
-  if (/permission|policy|authorization|allowedRisk|not authorized|权限|策略|授权/i.test(text)) {
-    return { failureSource: 'input', failureKind: 'validation' }
-  }
-  if (/authentication|login|captcha|登录|验证码/i.test(text)) return { failureSource: 'environment', failureKind: 'authentication' }
-  return { failureSource: 'agent_execution', failureKind: 'execution' }
-}
 
 function validateArtifact(
   artifact: AgentDeliveryArtifact,
   manifest: WorkflowIntakeManifest,
 ): string[] {
   const problems: string[] = []
+  if (artifact.version !== '1.0') problems.push('Codex delivery artifact version is unsupported')
+  if (artifact.kind !== 'case-results') problems.push('Codex delivery artifact kind is unsupported')
   if (artifact.workflowId !== manifest.workflowId) problems.push('Codex delivery artifact workflowId does not match the immutable contract')
-  if (artifact.source?.sha256 !== manifest.source.sha256) problems.push('Codex delivery artifact sourceSha256 does not match the immutable contract')
+  if (artifact.sourceSha256 !== manifest.source.sha256) problems.push('Codex delivery artifact sourceSha256 does not match the immutable contract')
+  if (!artifact.generatedAt?.trim()) problems.push('Codex delivery artifact has no generatedAt timestamp')
   if (!Array.isArray(artifact.cases)) problems.push('Codex delivery artifact cases must be an array')
   const required = new Set(manifest.phases.map((phase) => phase.id))
   const returned = artifact.cases.map((item) => item.caseId)
@@ -57,9 +49,14 @@ function validateArtifact(
     if (!['passed', 'product_failed', 'blocked'].includes(item.outcome)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid outcome`)
     if (item.failureSource && !failureSources.has(item.failureSource)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid failureSource`)
     if (item.failureKind && !failureKinds.has(item.failureKind)) problems.push(`Codex delivery artifact case ${item.caseId} has an invalid failureKind`)
+    if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`Codex delivery artifact passed case ${item.caseId} has a failure classification`)
+    if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`Codex delivery artifact non-passed case ${item.caseId} has no explicit failure classification`)
+    if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`Codex delivery artifact product-failed case ${item.caseId} is not product-sourced`)
+    if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`Codex delivery artifact blocked case ${item.caseId} is incorrectly product-sourced`)
   }
-  const pending = artifact.mutationLedger?.pending ?? 0
-  if (pending !== 0) problems.push('Codex delivery artifact reports unresolved mutations')
+  if (!artifact.mutationLedger || artifact.mutationLedger.state !== 'terminal') problems.push('Codex delivery artifact does not report a terminal mutation ledger')
+  if (!Array.isArray(artifact.mutationLedger?.entries)) problems.push('Codex delivery artifact mutation ledger entries must be an array')
+  if (artifact.mutationLedger?.pendingCount !== 0) problems.push('Codex delivery artifact reports unresolved mutations')
   return problems
 }
 
@@ -79,8 +76,8 @@ export async function recoverCodexDeliveryResult(options: {
   if (problems.length > 0) return { problems }
   const artifactRoot = dirname(options.artifactPath)
   for (const item of artifact.cases) {
-    for (const evidence of item.evidence ?? []) {
-      if (!evidence.startsWith('evidence/')) {
+    for (const evidence of item.evidencePaths ?? []) {
+      if (!evidence || isAbsolute(evidence)) {
         problems.push(`Codex delivery artifact case ${item.caseId} has an invalid evidence path`)
         continue
       }
@@ -97,9 +94,9 @@ export async function recoverCodexDeliveryResult(options: {
     title: item.title ?? options.manifest.phases.find((phase) => phase.id === item.caseId)?.title ?? item.caseId,
     outcome: item.outcome,
     summary: item.summary,
-    ...(failureForArtifact(item) ?? {}),
-    evidence: (item.evidence?.length ?? 0) > 0
-      ? item.evidence!.map((path) => ({ kind: 'observation' as const, path, description: `Codex recorded evidence for ${item.caseId}: ${path}` }))
+    ...(item.failureSource && item.failureKind ? { failureSource: item.failureSource, failureKind: item.failureKind } : {}),
+    evidence: (item.evidencePaths?.length ?? 0) > 0
+      ? item.evidencePaths!.map((path) => ({ kind: 'observation' as const, path, description: `Codex recorded evidence for ${item.caseId}: ${path}` }))
       : [{ kind: 'observation' as const, path: 'agent-workspace/case-results.json', description: `Codex recorded ${item.caseId} as ${item.outcome} in the delivery artifact.` }],
   }))
   const outcome = cases.some((item) => item.outcome === 'blocked')

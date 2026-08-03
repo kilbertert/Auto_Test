@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
-import type { CodexTestAgentResult, CodexTestAgentState } from '../agent/types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestFailureSource } from '../agent/types.js'
 import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../workflow/autonomy-types.js'
 
 const questionLabels: Record<string, string> = {
@@ -23,6 +23,14 @@ export interface FriendlyRunSummary {
   lines: string[]
 }
 
+const failureSourceLabels: Record<CodexTestFailureSource, string> = {
+  product: '产品或业务结果不符合预期',
+  input: '测试材料需要补充',
+  environment: '测试环境、权限或测试数据不可用',
+  infrastructure: '执行基础设施不可用',
+  agent_execution: 'Codex 执行或交付未完成',
+}
+
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, '')) as T
 }
@@ -30,6 +38,27 @@ async function readJson<T>(path: string): Promise<T> {
 async function diagnosticLine(statePath: string, fileName = 'run-events.jsonl'): Promise<string | undefined> {
   const path = resolve(dirname(statePath), fileName)
   return access(path).then(() => `运行诊断：${path}`, () => undefined)
+}
+
+function codexRunDetails(result: CodexTestAgentResult): string[] {
+  const counts = result.cases.reduce<Record<'passed' | 'product_failed' | 'blocked', number>>((all, item) => {
+    all[item.outcome] += 1
+    return all
+  }, { passed: 0, product_failed: 0, blocked: 0 })
+  const lines = [`用例完成情况：通过 ${counts.passed}，产品不符预期 ${counts.product_failed}，暂时阻断 ${counts.blocked}。`]
+  const nonPassed = result.cases.filter((item) => item.outcome !== 'passed')
+  const groups = new Map<string, typeof nonPassed>()
+  for (const item of nonPassed) {
+    const source = item.failureSource ?? (item.outcome === 'product_failed' ? 'product' : 'unclassified')
+    const existing = groups.get(source) ?? []
+    existing.push(item)
+    groups.set(source, existing)
+  }
+  for (const [source, cases] of groups) {
+    const label = source === 'unclassified' ? '交付结果缺少失败来源分类' : failureSourceLabels[source as CodexTestFailureSource]
+    lines.push(`${label}：${cases.length} 条。${cases[0]?.summary}`)
+  }
+  return lines
 }
 
 async function codexAgentSummary(statePath: string, state: CodexTestAgentState): Promise<FriendlyRunSummary> {
@@ -52,6 +81,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '发现产品或业务结果不符合预期',
       outcome: 'product_failed',
       lines: [
+        ...codexRunDetails(result),
         ...(result.productDefects.length > 0 ? result.productDefects : [result.summary]),
         `详细结果和证据索引：${state.resultPath}`,
         ...(diagnostics ? [diagnostics] : []),
@@ -63,7 +93,8 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '测试暂时无法继续',
       outcome: 'blocked',
       lines: [
-        ...(result.blockers.length > 0 ? result.blockers : [result.summary]),
+        ...codexRunDetails(result),
+        ...(result.blockers.length > 0 ? [`主要阻断：${result.blockers[0]}`] : [result.summary]),
         `详细结果和证据索引：${state.resultPath}`,
         ...(diagnostics ? [diagnostics] : []),
       ],

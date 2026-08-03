@@ -133,7 +133,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 
 恢复会继续使用原 Codex thread、原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在同一线程写入的 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后恢复交付，不能从日志或页面猜测结果。Excel、URL、Profile 和风险策略必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
-`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。
+`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。即使本轮还有其他用例 `blocked`，终端摘要仍会保留已确认产品差异，并按输入材料、环境/权限/测试数据、基础设施和 Codex 执行交付分别显示阻断数量与首个直接原因。
 
 ## 7. 验收交付
 

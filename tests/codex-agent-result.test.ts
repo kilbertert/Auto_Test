@@ -70,4 +70,20 @@ describe('Codex test result contract', () => {
       failureSource: 'agent_execution', failureKind: 'validation', fieldGateIds: ['filter-catalog:query'],
     })
   })
+
+  it('accepts infrastructure as a distinct failure source', () => {
+    const classified = result()
+    classified.outcome = 'blocked'
+    classified.cases[0] = {
+      ...classified.cases[0]!,
+      outcome: 'blocked',
+      failureSource: 'infrastructure',
+      failureKind: 'execution',
+    }
+    classified.blockers = ['The model provider was unavailable.']
+
+    expect(parseCodexTestResult(JSON.stringify(classified)).cases[0]).toMatchObject({
+      failureSource: 'infrastructure', failureKind: 'execution',
+    })
+  })
 })
