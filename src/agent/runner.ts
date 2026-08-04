@@ -399,6 +399,55 @@ function isOperationalBlock(message: string): boolean {
   return /usage limit|quota|credit|rate.?limit|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response/i.test(message)
 }
 
+function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {
+  if (/usage limit|quota|credit|rate.?limit|\b429\b/i.test(message)) {
+    return {
+      reason: '模型服务额度不足或调用频率受限。',
+      nextAction: '恢复或切换可用的模型 API 额度后，使用原结果目录继续上次测试。',
+    }
+  }
+  if (/unauthorized|forbidden|\b401\b|\b403\b/i.test(message)) {
+    return {
+      reason: '模型或本地执行依赖的身份验证失败。',
+      nextAction: '修复 Provider 或执行依赖的认证配置后，使用原结果目录继续上次测试。',
+    }
+  }
+  if (/bad gateway|upstream|\b5\d\d\b/i.test(message)) {
+    return {
+      reason: '模型服务或上游接口暂时不可用。',
+      nextAction: '等待模型服务恢复后，使用原结果目录继续上次测试。',
+    }
+  }
+  if (/chromium executable|spawn .*enoent/i.test(message)) {
+    return {
+      reason: '浏览器或本地执行程序未正确安装，或无法启动。',
+      nextAction: '运行环境检查并修复 Chromium/Codex CLI 后，使用原结果目录继续上次测试。',
+    }
+  }
+  if (/mcp/i.test(message)) {
+    return {
+      reason: '浏览器控制服务（MCP）暂时不可用。',
+      nextAction: '恢复 MCP 或重启 Auto-Test 运行依赖后，使用原结果目录继续上次测试。',
+    }
+  }
+  if (/no final response/i.test(message)) {
+    return {
+      reason: 'Codex 本轮没有返回完整执行结果。',
+      nextAction: '使用原结果目录继续同一 Codex 线程，不要重复已验证的业务写入。',
+    }
+  }
+  if (/reconnect|timed? out|timeout|connection|network|dns|certificate|tls/i.test(message)) {
+    return {
+      reason: '模型、浏览器或本地网络连接中断。',
+      nextAction: '恢复网络和运行依赖后，使用原结果目录继续上次测试。',
+    }
+  }
+  return {
+    reason: 'Auto-Test 的执行依赖出现异常，测试尚未完成。',
+    nextAction: '查看运行诊断并修复执行依赖后，使用原结果目录继续上次测试。',
+  }
+}
+
 function blockedResult(
   manifest: WorkflowIntakeManifest,
   state: CodexTestAgentState,
@@ -406,28 +455,29 @@ function blockedResult(
   ledger: CodexTestMutationLedgerEntry[],
   environmentRequirements: CodexTestEnvironmentRequirement[] = [],
 ): CodexTestAgentResult {
+  const details = infrastructureBlockDetails(message)
   const result: CodexTestAgentResult = {
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
     outcome: 'blocked',
-    summary: 'The test agent could not complete because a required execution dependency became unavailable.',
+    summary: details.reason,
     startedAt: state.startedAt,
     finishedAt: new Date().toISOString(),
     cases: manifest.phases.map((phase) => ({
       caseId: phase.id,
       title: phase.title,
       outcome: 'blocked',
-      summary: message,
+      summary: details.reason,
       failureSource: 'infrastructure',
       failureKind: 'execution',
       evidence: [{ kind: 'observation', description: 'Execution dependency failure recorded in codex-agent.events.jsonl.' }],
     })),
     mutations: [],
     environmentRequirements,
-    blockers: [message],
+    blockers: [details.reason],
     productDefects: [],
-    nextActions: ['Restore the unavailable model, browser, MCP, network, or authorization dependency and rerun the same input.'],
+    nextActions: [details.nextAction],
   }
   return enforceMutationLedger(result, ledger)
 }
@@ -1171,7 +1221,7 @@ export async function runCodexTestAgent(
   } catch (error) {
     const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
     if (isOperationalBlock(message)) {
-      progress.report('warning', '模型、浏览器、网络或测试权限暂时不可用，正在保存可恢复的 blocked 结果')
+      progress.report('warning', '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
       const ledger = mutationLedgerPath ? await readMutationLedger(mutationLedgerPath).catch(() => []) : []
       const environmentRequirements = environmentRequirementsPath
         ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])

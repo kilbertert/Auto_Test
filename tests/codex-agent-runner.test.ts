@@ -469,7 +469,9 @@ describe('Codex test agent runner', () => {
     })
 
     expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked', threadId: 'thread-fixture' })
-    expect(run.result?.blockers).toContain('429 usage limit reached')
+    expect(run.result?.blockers).toContain('模型服务额度不足或调用频率受限。')
+    expect(run.result?.blockers.join(' ')).not.toContain('429 usage limit reached')
+    expect(run.result?.nextActions.join(' ')).toContain('原结果目录')
     expect(run.result?.cases[0]).toMatchObject({ failureSource: 'infrastructure', failureKind: 'execution' })
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
   })

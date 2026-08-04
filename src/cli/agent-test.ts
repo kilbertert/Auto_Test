@@ -7,8 +7,8 @@ import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { writeResultWorkbook } from '../agent/result-workbook.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
-import type { CodexTestAgentResult } from '../agent/types.js'
-import { redactSensitiveContent } from '../input/text.js'
+import type { CodexTestAgentResult, CodexTestFailureKind, CodexTestFailureSource } from '../agent/types.js'
+import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
 import { ensureEnvironmentAuthentication } from '../workflow/auth-broker.js'
 import {
   defaultEnvironmentProfileRegistryPath,
@@ -255,8 +255,16 @@ async function persistAssets(
   return index.map((item) => item.path)
 }
 
-function preExecutionBlockedResult(manifest: WorkflowIntakeManifest, message: string): CodexTestAgentResult {
+function preExecutionBlockedResult(
+  manifest: WorkflowIntakeManifest,
+  message: string,
+  failureSource: Extract<CodexTestFailureSource, 'input' | 'environment'>,
+  failureKind: Extract<CodexTestFailureKind, 'data' | 'environment'>,
+): CodexTestAgentResult {
   const now = new Date().toISOString()
+  const nextAction = failureSource === 'input'
+    ? '修正 Excel 与同名 .auto-test sidecar 输入包后，使用新结果目录开始测试。'
+    : '补充或修复所列环境条件后，使用同一 Excel 和环境 Profile 重新执行。'
   return {
     version: '1.0',
     workflowId: manifest.workflowId,
@@ -270,15 +278,15 @@ function preExecutionBlockedResult(manifest: WorkflowIntakeManifest, message: st
       title: phase.title,
       outcome: 'blocked',
       summary: message,
-      failureSource: 'input',
-      failureKind: 'validation',
+      failureSource,
+      failureKind,
       evidence: [{ kind: 'observation', description: 'Pre-execution validation did not permit browser execution.' }],
     })),
     mutations: [],
     environmentRequirements: [],
     blockers: [message],
     productDefects: [],
-    nextActions: ['补充或修复所列环境条件后，使用同一 Excel 和环境 Profile 重新执行。'],
+    nextActions: [nextAction],
   }
 }
 
@@ -295,11 +303,18 @@ async function writeResultWorkbookDelivery(options: {
   return artifact.path
 }
 
-async function writePreExecutionBlock(outputDirectory: string, sourceFilePath: string, manifest: WorkflowIntakeManifest, error: unknown): Promise<number> {
-  const message = error instanceof Error ? error.message : String(error)
+async function writePreExecutionBlock(
+  outputDirectory: string,
+  sourceFilePath: string,
+  manifest: WorkflowIntakeManifest,
+  error: unknown,
+  failureSource: Extract<CodexTestFailureSource, 'input' | 'environment'> = 'environment',
+  failureKind: Extract<CodexTestFailureKind, 'data' | 'environment'> = 'environment',
+): Promise<number> {
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error))
   const resultPath = resolve(outputDirectory, 'codex-agent.result.json')
   const statePath = resolve(outputDirectory, 'codex-agent.state.json')
-  const result = preExecutionBlockedResult(manifest, message)
+  const result = preExecutionBlockedResult(manifest, message, failureSource, failureKind)
   await writePrivateJson(resultPath, result)
   const state = updateCodexTestState(initialCodexTestState(manifest.workflowId, manifest.source.sha256), {
     status: 'completed',
@@ -361,6 +376,17 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     })
   }
   const imagePaths = options.resume ? [] : await persistAssets(options.outputDirectory, intake.assets)
+  if (intake.report.summary.errors > 0) {
+    if (options.resume) throw new Error(`恢复输入解析发现 ${intake.report.summary.errors} 个阻塞问题`)
+    return writePreExecutionBlock(
+      options.outputDirectory,
+      options.filePath,
+      intake.manifest,
+      `测试用例解析发现 ${intake.report.summary.errors} 个阻塞问题`,
+      'input',
+      'data',
+    )
+  }
   const readiness = assessAgentIntakeReadiness(intake.manifest)
   if (!readiness.executable) {
     const message = `测试输入无法建立稳定执行合同：${readiness.problems.join('；')}`
@@ -419,7 +445,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   } catch (error) {
     if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error)
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
   }
 
   const run = await runCodexTestAgent({
@@ -465,7 +491,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     const target = requirement.origin ?? requirement.kind
     console.log(`环境需求：${target}（${requirement.status}，${requirement.condition}）`)
   }
-  if (run.state.error) console.log(`错误：${run.state.error}`)
+  if (run.state.error) console.log(`错误：${redactSensitiveText(run.state.error)}`)
   if (run.result?.outcome === 'passed') return 0
   if (run.result?.outcome === 'product_failed') return 2
   if (run.result?.outcome === 'blocked') return 3
@@ -483,7 +509,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   void main().catch((error: unknown) => {
-    console.error(`Codex 测试代理启动失败：${error instanceof Error ? error.message : String(error)}`)
+    console.error(`Codex 测试代理启动失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`)
     process.exitCode = 1
   })
 }

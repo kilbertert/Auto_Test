@@ -200,13 +200,13 @@ export function enforceMutationLedger(
     mutations,
     cases: result.cases.map((item) => {
       if (!pendingCases.has(item.caseId)) return item
-      const { environmentRequirementIds: _environmentRequirementIds, ...withoutEnvironmentRequirement } = item
+      const preserveBlockedClassification = item.outcome === 'blocked'
       return {
-        ...withoutEnvironmentRequirement,
-        outcome: 'blocked' as const,
+        ...item,
+        outcome: 'blocked',
         summary: `${item.summary} Unrecovered business mutations remain for this case.`,
-        failureSource: 'agent_execution' as const,
-        failureKind: 'execution' as const,
+        failureSource: preserveBlockedClassification ? (item.failureSource ?? 'agent_execution') : 'agent_execution',
+        failureKind: preserveBlockedClassification ? (item.failureKind ?? 'execution') : 'execution',
         evidence: [
           ...item.evidence,
           ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
