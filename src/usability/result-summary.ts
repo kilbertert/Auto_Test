@@ -133,6 +133,35 @@ async function diagnosticLine(statePath: string, fileName = 'run-events.jsonl'):
   return access(path).then(() => `运行诊断：${path}`, () => undefined)
 }
 
+function codexRunDetails(result: CodexTestAgentResult): string[] {
+  const counts = result.cases.reduce<Record<'passed' | 'product_failed' | 'blocked', number>>((all, item) => {
+    all[item.outcome] += 1
+    return all
+  }, { passed: 0, product_failed: 0, blocked: 0 })
+  const lines = [`用例完成情况：通过 ${counts.passed}，产品不符预期 ${counts.product_failed}，暂时阻断 ${counts.blocked}。`]
+  const nonPassed = result.cases.filter((item) => item.outcome !== 'passed')
+  const groups = new Map<string, typeof nonPassed>()
+  for (const item of nonPassed) {
+    const source = item.failureSource ?? (item.outcome === 'product_failed' ? 'product' : 'unclassified')
+    const existing = groups.get(source) ?? []
+    existing.push(item)
+    groups.set(source, existing)
+  }
+  for (const [source, cases] of groups) {
+    const label = source === 'unclassified'
+      ? '交付结果缺少失败来源分类'
+      : ({
+          product: '产品或业务结果不符合预期',
+          input: '测试材料需要补充',
+          environment: '测试环境、权限或测试数据不可用',
+          infrastructure: '执行基础设施不可用',
+          agent_execution: 'Codex 执行或交付未完成',
+        } satisfies Record<CodexTestFailureSource, string>)[source as CodexTestFailureSource]
+    lines.push(`${label}：${cases.length} 条。${cleanLine(cases[0]?.summary ?? '')}`)
+  }
+  return lines
+}
+
 async function codexAgentSummary(statePath: string, state: CodexTestAgentState): Promise<FriendlyRunSummary> {
   const result = state.resultPath
     ? await readJson<CodexTestAgentResult>(state.resultPath).catch(() => undefined)
@@ -154,6 +183,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '发现产品或业务结果不符合预期',
       outcome: 'product_failed',
       lines: [
+        ...codexRunDetails(result),
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
         ...labeledLines('直接原因', result.productDefects.length > 0 ? result.productDefects : [result.summary]),
@@ -170,12 +200,13 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '测试暂时无法继续',
       outcome: 'blocked',
       lines: [
+        ...codexRunDetails(result),
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
         ...labeledLines('直接原因', result.blockers.length > 0 ? result.blockers : [result.summary]),
         ...labeledLines('需要补充的环境', result.environmentRequirements
           .filter((item) => item.status === 'pending')
-          .map((item) => `${item.origin}：${item.reason}`)),
+          .map((item) => `${item.origin ?? item.kind}：${item.condition}`)),
         ...labeledLines('同时发现的产品问题', result.productDefects),
         ...labeledLines('建议操作', result.nextActions.length > 0 ? result.nextActions : [defaultNextAction(result)]),
         `完成情况：${result.cases.filter((item) => item.outcome === 'passed').length}/${result.cases.length} 个用例已验证通过。`,

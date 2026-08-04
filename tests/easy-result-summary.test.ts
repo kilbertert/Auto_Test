@@ -100,6 +100,7 @@ describe('friendly autonomous result summary', () => {
       expect(summary.lines.some((line) => line.startsWith('建议操作：'))).toBe(true)
       expect(summary.lines).toContain('完成情况：0/1 个用例已验证通过。')
       expect(summary.lines).toContain('业务残留：Mutation Ledger 未记录待恢复写入（pending=0）。')
+      expect(summary.lines).toContain('用例完成情况：通过 0，产品不符预期 1，暂时阻断 0。')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -125,7 +126,7 @@ describe('friendly autonomous result summary', () => {
           id: 'create-record', caseId: 'create', description: '创建测试记录', risk: 'write', status: 'pending', evidence: [],
         }],
         environmentRequirements: [{
-          origin: 'https://admin.example.test', reason: '需要审批权限', evidence: ['approval action missing'],
+          origin: 'https://admin.example.test', condition: '需要审批权限', caseIds: ['approve'], id: 'approval', kind: 'permission', evidence: ['approval action missing'],
           status: 'pending', requestedAt: '2026-08-01T00:00:30.000Z',
         }],
         blockers: ['当前账号缺少审批权限。', '密码: should-not-be-printed'], productDefects: [],
@@ -176,6 +177,38 @@ describe('friendly autonomous result summary', () => {
       expect(summary.lines).toContain('直接原因：browser process exited')
       expect(summary.lines).toContain('业务残留：1 项 Mutation 仍为 pending，继续前必须先核对或恢复。')
       expect(summary.lines.some((line) => line.includes('codex-agent.events.jsonl'))).toBe(true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps confirmed product failures visible when the overall Codex run is blocked', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-mixed-result-'))
+    try {
+      const resultPath = resolve(directory, 'codex-agent.result.json')
+      const statePath = resolve(directory, 'codex-agent.state.json')
+      const result: CodexTestAgentResult = {
+        version: '1.0', workflowId: 'mixed', sourceSha256: 'e'.repeat(64), outcome: 'blocked',
+        summary: 'The suite needs an environment prerequisite.', startedAt: '2026-08-01T00:00:00.000Z', finishedAt: '2026-08-01T00:01:00.000Z',
+        cases: [
+          { caseId: 'expected-mismatch', title: 'Expected mismatch', outcome: 'product_failed', summary: 'Expected value differs.', failureSource: 'product', failureKind: 'assertion', evidence: [{ kind: 'observation', description: 'Observed mismatch.' }] },
+          { caseId: 'missing-data', title: 'Missing data', outcome: 'blocked', summary: 'Required test data is absent.', failureSource: 'environment', failureKind: 'data', evidence: [{ kind: 'observation', description: 'No matching data.' }] },
+        ],
+        mutations: [], environmentRequirements: [], blockers: ['Required test data is absent.'], productDefects: ['Expected value differs.'], nextActions: [],
+      }
+      const agentState: CodexTestAgentState = {
+        version: '1.0', status: 'completed', stage: 'completed', workflowId: 'mixed', sourceSha256: 'e'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', outcome: 'blocked', resultPath,
+      }
+      await writeFile(resultPath, JSON.stringify(result))
+      await writeFile(statePath, JSON.stringify(agentState))
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.outcome).toBe('blocked')
+      expect(summary.lines).toContain('用例完成情况：通过 0，产品不符预期 1，暂时阻断 1。')
+      expect(summary.lines).toContain('产品或业务结果不符合预期：1 条。Expected value differs.')
+      expect(summary.lines).toContain('测试环境、权限或测试数据不可用：1 条。Required test data is absent.')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

@@ -3,7 +3,9 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
+import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
+import { writeResultWorkbook } from '../agent/result-workbook.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult, CodexTestFailureKind, CodexTestFailureSource } from '../agent/types.js'
 import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
@@ -34,6 +36,7 @@ export interface AgentTestCliOptions {
   slowMo?: number
   maxIterations?: number
   maxFinalizationTurns?: number
+  caseBatchSize?: number
   codexExecutable?: string
   codexHome?: string
   resume?: boolean
@@ -86,6 +89,7 @@ function help(): string {
     '  --slow-mo <ms>              浏览器动作减速',
     '  --max-iterations <count>    列表型数据最多执行 N 条',
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
+    '  --case-batch-size <count>    长用例集每个 Codex 上下文的 case 数，默认 8',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
     '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
@@ -136,6 +140,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
   const maxIterations = positiveInteger(args, '--max-iterations')
   const maxFinalizationTurns = positiveInteger(args, '--max-finalization-turns')
+  const caseBatchSize = positiveInteger(args, '--case-batch-size')
   const slowMo = nonNegativeInteger(args, '--slow-mo')
   const resolvedFilePath = resolve(filePath)
   return {
@@ -153,6 +158,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(slowMo !== undefined ? { slowMo } : {}),
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
+    ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
     ...(valueAfter(args, '--codex-bin') ? { codexExecutable: resolve(valueAfter(args, '--codex-bin')!) } : {}),
     ...(valueAfter(args, '--codex-home') ? { codexHome: resolve(valueAfter(args, '--codex-home')!) } : {}),
   }
@@ -284,12 +290,26 @@ function preExecutionBlockedResult(
   }
 }
 
+async function writeResultWorkbookDelivery(options: {
+  outputDirectory: string
+  sourceFilePath: string
+  manifest: WorkflowIntakeManifest
+  result: CodexTestAgentResult
+}): Promise<string> {
+  const artifact = await writeResultWorkbook(options)
+  const statePath = resolve(options.outputDirectory, 'codex-agent.state.json')
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as ReturnType<typeof initialCodexTestState>
+  await writePrivateJson(statePath, updateCodexTestState(state, { resultWorkbookPath: artifact.path }))
+  return artifact.path
+}
+
 async function writePreExecutionBlock(
   outputDirectory: string,
+  sourceFilePath: string,
   manifest: WorkflowIntakeManifest,
   error: unknown,
-  failureSource: Extract<CodexTestFailureSource, 'input' | 'environment'>,
-  failureKind: Extract<CodexTestFailureKind, 'data' | 'environment'>,
+  failureSource: Extract<CodexTestFailureSource, 'input' | 'environment'> = 'environment',
+  failureKind: Extract<CodexTestFailureKind, 'data' | 'environment'> = 'environment',
 ): Promise<number> {
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error))
   const resultPath = resolve(outputDirectory, 'codex-agent.result.json')
@@ -301,11 +321,14 @@ async function writePreExecutionBlock(
     stage: 'completed',
     outcome: 'blocked',
     resultPath,
+    finishedAt: result.finishedAt,
   })
   await writePrivateJson(statePath, state)
+  const workbookPath = await writeResultWorkbookDelivery({ outputDirectory, sourceFilePath, manifest, result })
   console.log(`测试结果：blocked`)
   console.log(`阻断原因：${message}`)
   console.log(`结果文件：${resultPath}`)
+  console.log(`测试用例结果文件：${workbookPath}`)
   return 3
 }
 
@@ -357,11 +380,18 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     if (options.resume) throw new Error(`恢复输入解析发现 ${intake.report.summary.errors} 个阻塞问题`)
     return writePreExecutionBlock(
       options.outputDirectory,
+      options.filePath,
       intake.manifest,
       `测试用例解析发现 ${intake.report.summary.errors} 个阻塞问题`,
       'input',
       'data',
     )
+  }
+  const readiness = assessAgentIntakeReadiness(intake.manifest)
+  if (!readiness.executable) {
+    const message = `测试输入无法建立稳定执行合同：${readiness.problems.join('；')}`
+    if (options.resume) throw new Error(message)
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, message)
   }
 
   let profile
@@ -378,7 +408,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       ? await readEnvironmentRequirements(resolve(options.outputDirectory, '.agent-private', 'environment-requirements.json'))
       : []
     const additionalOrigins = priorRequirements
-      .map((requirement) => requirement.origin)
+      .flatMap((requirement) => requirement.kind === 'origin' && requirement.origin ? [requirement.origin] : [])
     const requestedProfileId = options.profileId ?? priorSelection?.profileId
     profile = scopeEnvironmentProfile(
       selectEnvironmentProfile(registry, intake.manifest.targetUrls, requestedProfileId),
@@ -415,7 +445,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   } catch (error) {
     if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, intake.manifest, error, 'environment', 'environment')
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
   }
 
   const run = await runCodexTestAgent({
@@ -434,6 +464,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexExecutable ? { codexExecutable: options.codexExecutable } : {}),
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
+    ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
     ...(options.resume ? { resume: true } : {}),
     testDataAccess: options.testDataAccess,
     onProgress: (progress) => printProgress(progress.message),
@@ -442,8 +473,23 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
   console.log(`状态文件：${resolve(options.outputDirectory, 'codex-agent.state.json')}`)
   if (run.result) console.log(`结果文件：${resolve(options.outputDirectory, 'codex-agent.result.json')}`)
+  if (run.result) {
+    try {
+      const workbookPath = await writeResultWorkbookDelivery({
+        outputDirectory: options.outputDirectory,
+        sourceFilePath: options.filePath,
+        manifest: intake.manifest,
+        result: run.result,
+      })
+      console.log(`测试用例结果文件：${workbookPath}`)
+    } catch (error) {
+      console.error(`测试用例结果文件生成失败：${error instanceof Error ? error.message : String(error)}`)
+      return 1
+    }
+  }
   for (const requirement of run.result?.environmentRequirements ?? []) {
-    console.log(`环境需求：${requirement.origin}（${requirement.status}，完成注册后使用 --resume）`)
+    const target = requirement.origin ?? requirement.kind
+    console.log(`环境需求：${target}（${requirement.status}，${requirement.condition}）`)
   }
   if (run.state.error) console.log(`错误：${redactSensitiveText(run.state.error)}`)
   if (run.result?.outcome === 'passed') return 0

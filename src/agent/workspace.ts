@@ -41,6 +41,7 @@ export interface CodexAgentWorkspace {
   controlConfigPath: string
   mutationLedgerPath: string
   environmentRequirementsPath: string
+  executionReceiptsPath: string
   fieldCompositionPath: string
   evidenceIndexPath: string
   caseResultsPath: string
@@ -205,6 +206,7 @@ export async function prepareCodexAgentWorkspace(options: {
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
   const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
   const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
+  const executionReceiptsPath = resolve(workspaceDirectory, 'execution-receipts.json')
   const fieldCompositionPath = resolve(privateDirectory, 'field-compositions.json')
   const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
   const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
@@ -246,7 +248,6 @@ export async function prepareCodexAgentWorkspace(options: {
       targetUrls: options.manifest.targetUrls,
       allowedOrigins: options.profile.origins,
       caseIds: options.manifest.phases.map((phase) => phase.id),
-      caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     }
     const actualControl = {
       workflowId: existingControl.workflowId,
@@ -255,7 +256,6 @@ export async function prepareCodexAgentWorkspace(options: {
       targetUrls: existingControl.targetUrls,
       allowedOrigins: existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin),
       caseIds: existingControl.caseIds,
-      caseRisks: existingControl.caseRisks,
     }
     const immutableControlMatches = JSON.stringify({ ...actualControl, allowedOrigins: undefined }) ===
       JSON.stringify({ ...expectedControl, allowedOrigins: undefined })
@@ -367,16 +367,19 @@ export async function prepareCodexAgentWorkspace(options: {
   })
 
   const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
+  const executionReceiptsMissing = await access(executionReceiptsPath).then(() => false, () => true)
   const fieldCompositionMissing = await access(fieldCompositionPath).then(() => false, () => true)
   if (!options.resume) {
     await writePrivateJson(mutationLedgerPath, [])
     await writePrivateJson(environmentRequirementsPath, [])
+    await writePrivateJson(executionReceiptsPath, [])
     await writePrivateJson(fieldCompositionPath, [])
     await writePrivateJson(evidenceIndexPath, [])
     await writePrivateJson(caseResultsPath, [])
   } else if (requirementsMissing) {
     await writePrivateJson(environmentRequirementsPath, [])
   }
+  if (options.resume && executionReceiptsMissing) await writePrivateJson(executionReceiptsPath, [])
   if (options.resume && fieldCompositionMissing) await writePrivateJson(fieldCompositionPath, [])
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
@@ -386,13 +389,13 @@ export async function prepareCodexAgentWorkspace(options: {
     targetUrls: options.manifest.targetUrls,
     allowedOrigins: options.profile.origins,
     caseIds: options.manifest.phases.map((phase) => phase.id),
-    caseRisks: Object.fromEntries(options.manifest.phases.map((phase) => [phase.id, phase.risk])),
     evidenceDirectory,
     planPath,
     evidencePath: evidenceIndexPath,
     caseResultsPath,
     mutationLedgerPath,
     environmentRequirementsPath,
+    executionReceiptsPath,
     fieldCompositionPath,
     secretValuesPath: playwrightSecretsPath,
     testDataAccess: options.testDataAccess ?? 'direct',
@@ -413,6 +416,7 @@ export async function prepareCodexAgentWorkspace(options: {
     controlConfigPath,
     mutationLedgerPath,
     environmentRequirementsPath,
+    executionReceiptsPath,
     fieldCompositionPath,
     evidenceIndexPath,
     caseResultsPath,

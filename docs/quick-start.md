@@ -2,9 +2,9 @@
 
 默认流程是：
 
-`Excel Intake -> 环境与认证 -> 持久 Codex 线程 -> 页面探索与动态计划 -> 执行与断言 -> 恢复 -> 结构化结果`
+`Excel Intake -> 环境与认证 -> Codex case 窗口 -> 页面探索与动态计划 -> 执行与断言 -> 窗口恢复 -> 逐 case 聚合结果`
 
-测试工程师不需要编写 Execution Plan。Codex 在同一线程里根据实际页面证据持续修订工作计划，并直接使用 Playwright MCP 操作网站。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
+测试工程师不需要编写 Execution Plan。短用例集在同一线程里执行；长用例集默认每 8 个 case 使用一个独立 Codex 上下文。每个上下文都直接读取原始材料、根据页面证据修订自己的工作计划并使用 Playwright MCP 操作网站。窗口调度不解释业务语义，也不会替代 Codex 生成结论。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
 
 ## 1. 首次准备
 
@@ -14,7 +14,7 @@ npx playwright install chromium
 npm run check
 ```
 
-还需要一个可工作的 Codex CLI Provider。Windows 私有包会自动安装固定版本 Codex CLI、配置 Provider 并验证最小请求；Linux/macOS 复用当前用户已经可用的 Codex 配置。
+还需要一个可工作的 Codex CLI Provider。Windows 私有包会自动安装固定版本 Codex CLI、配置 Provider 并验证最小请求；Linux/macOS 复用当前用户已经可用的 Codex 配置。Windows 私有包的构建流程统一见[Windows 私有包快速打包](windows-package-quick-start.md)。
 
 ## 2. 注册测试环境
 
@@ -46,6 +46,12 @@ URL 可以通过运行参数提供，也可以写在 Excel 单元格中。Excel 
 
 默认完整 Agent 模式会把原始 Excel 和本轮 Environment Profile 测试值复制到权限受限的 run 工作区，让 Codex 能直接理解和转换业务数据。它们不会进入 Git。需要旧的 alias-only 行为时使用 `--opaque-test-data`。
 
+### Intake 的边界
+
+Codex-native 入口会按 Excel 的每个来源行建立完整 case 索引，不会因为重复用例编号、缺少步骤/预期结果或自由文本测试数据而丢弃整份工作簿。重复编号会按来源行生成稳定的内部 ID，缺字段会作为该 case 的来源疑点交给 Codex 结合原始 Excel 判断。
+
+解析诊断是审计提示，不是 Agent 启动门。只有无法建立不可变输入合同的情况才会在浏览器执行前阻断：原始文件身份无效、没有目标 URL、没有任何可追踪 case 或 Manifest case ID 不唯一。写入权限只由 Environment Profile 的最高授权风险控制；Manifest 中的风险推断不能替代 Codex 对当前页面动作的判断。
+
 ## 4. 执行
 
 交互菜单选择“开始一次新测试”，或运行：
@@ -76,11 +82,12 @@ npm run agent:test -- \
 - `--brief <path>`：不含秘密的业务补充说明；
 - `--model <id>`：覆盖当前 Provider 的默认模型；
 - `--max-iterations <N>`：列表型数据先执行 N 条 canary；
+- `--case-batch-size <N>`：长用例集每个 Codex 上下文负责的 case 数，默认 8；恢复时必须与原 run 一致；
 - `--headed` / `--headless`：显示或隐藏浏览器。
 
 ## 5. 运行机制
 
-每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向同一个 Codex thread 提供：
+每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向当前 Codex case 窗口提供：
 
 - 原始 Excel、说明、图片和本轮测试值；
 - shell、临时脚本、网络和 Web Search；
@@ -89,17 +96,26 @@ npm run agent:test -- \
 
 Codex 自己决定工作计划和执行方式。对于需要中断恢复的外部业务写入，应以完整业务操作为单位登记 Mutation；普通导航、读取和字段输入不需要登记。仍有 pending Mutation 时，结果必定是 `blocked`。
 
+Manifest case 数超过窗口大小时，Runner 按原顺序创建 `batch-0001`、`batch-0002` 等窗口。每个窗口使用新的 Codex 对话上下文，只能通过 Control MCP 为当前 case ID 建立执行回执；原始 Excel、登录状态、workspace、证据目录、环境需求和 Ledger 仍属于同一个 run。每个窗口完成后保存经过结果合同校验的逐 case 事实，最终只按 manifest 顺序合并这些事实。它不把标题映射成固定动作，也不生成第二份 Execution Plan。
+
 ## 6. 结果
+
+`execution_receipts` MCP 查询默认只返回当前窗口的紧凑同 case 推荐 ID；完整回执文件仍用于确定性校验和审计。回执 ID 包含窗口和 turn 序号，跨上下文或恢复时重复出现的 `item_*` 不会互相覆盖。
 
 主要文件：
 
 - `codex-agent.state.json`：运行状态、Codex 线程 ID 和结果路径；
 - `codex-agent.result.json`：`passed`、`product_failed` 或 `blocked` 的结构化交付；
+- `agent-workspace/execution-receipts.json`：Runner 自动捕获的逐 case Playwright 调用回执；只保留工具名、类型、状态和 case 归属，不保留表单参数或响应正文；
+- `原文件名-Auto-Test-结果.xlsx`：原 Excel 的结果副本，按来源行回写每条 case 的状态、失败归类、摘要、证据索引和环境需求；原文件保持不变；
 - `codex-agent.events.jsonl`：脱敏后的 Codex 事件；
 - `agent-workspace/input/`：原始测试材料和本轮输入；
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
+- `.agent-private/case-batches/`：长用例集每个已完成窗口的结构化结果；
+- `agent-workspace/active-case-window.json`：当前窗口 ID、顺序和 case 范围；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
+- `agent-workspace/case-results.json`：全部窗口完成后的逐 case 聚合恢复文件；当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验输入身份、完整覆盖、逐 case 回执、证据路径、环境需求和权威 Ledger 终态后使用它。
 
 终态含义：
 
@@ -128,11 +144,11 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会复用原 Codex thread、原始材料副本、工作区脚本、证据和 Mutation Ledger，只重建浏览器与 MCP 进程。框架会校验工作流来源哈希、环境身份和权限策略；任何不一致都会 fail closed。恢复 Agent 必须先重新观察 pending Mutation 的真实业务状态，不会把浏览器断线当成重复写操作的理由。不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
+恢复会复用原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有逐 case 交付；输入身份、回执、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果。否则只恢复 `activeBatch` 指向的当前 Codex thread，已完成窗口从 `.agent-private/case-batches/` 读取，不重新执行。环境身份、权限策略或窗口大小不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 
-以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、持久线程恢复、Codex 直接结构化结果校验、Mutation Ledger、Windows 启动器、Linux Verify 和 Windows Verify。
+以下已经通过确定性验证：Excel/图片 Intake、URL 自动发现、环境选择、认证刷新、Storage State 合并、原始材料和 run-values 工作区、完整与受限两种 Agent 配置、strict Provider 结构化结果 Schema、长 suite case 分窗、逐窗口回执隔离、当前窗口恢复、Codex 直接结果校验、Mutation Ledger、Windows 启动器、Linux Verify 和 Windows Verify。长 suite 分窗目前先由业务无关的合成 fixture 验证，不能替代新的真实业务 canary。
 
 2026-08-03，基于 `c94ad77` 的最终 thin harness Windows 私有包使用充电 Excel、测试 URL 和一次 Environment Profile 注册完成真实业务 canary：同一个 Codex thread 自主执行 3/3 manifest case 和 7 组测试数据，记录 26 条 Mutation Ledger 且 pending 为 0，生成 129 个证据文件，最终结果为 `passed`。运行中的模型重连和页面工具错误由同一 thread 恢复，没有人工编辑 Execution Plan。
 

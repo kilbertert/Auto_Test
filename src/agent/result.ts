@@ -20,24 +20,26 @@ export const codexTestResultSchema = {
           title: { type: 'string' },
           outcome: { type: 'string', enum: ['passed', 'product_failed', 'blocked'] },
           summary: { type: 'string' },
-          failureSource: { type: 'string', enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure'] },
-          failureKind: { type: 'string', enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'] },
-          fieldGateIds: { type: 'array', items: { type: 'string' } },
+          failureSource: { type: ['string', 'null'], enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure', null] },
+          failureKind: { type: ['string', 'null'], enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', null] },
+          environmentRequirementIds: { type: ['array', 'null'], items: { type: 'string' } },
+          executionReceiptIds: { type: ['array', 'null'], items: { type: 'string' } },
+          fieldGateIds: { type: ['array', 'null'], items: { type: 'string' } },
           evidence: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
                 kind: { type: 'string', enum: ['snapshot', 'screenshot', 'console', 'network', 'observation', 'mutation'] },
-                path: { type: 'string' },
+                path: { type: ['string', 'null'] },
                 description: { type: 'string' },
               },
-              required: ['kind', 'description'],
+              required: ['kind', 'path', 'description'],
               additionalProperties: false,
             },
           },
         },
-        required: ['caseId', 'title', 'outcome', 'summary', 'evidence'],
+        required: ['caseId', 'title', 'outcome', 'summary', 'failureSource', 'failureKind', 'environmentRequirementIds', 'executionReceiptIds', 'fieldGateIds', 'evidence'],
         additionalProperties: false,
       },
     },
@@ -62,13 +64,16 @@ export const codexTestResultSchema = {
       items: {
         type: 'object',
         properties: {
-          origin: { type: 'string' },
-          reason: { type: 'string' },
+          id: { type: 'string' },
+          caseIds: { type: 'array', items: { type: 'string' } },
+          kind: { type: 'string', enum: ['origin', 'permission', 'authentication', 'test_data', 'physical'] },
+          origin: { type: ['string', 'null'] },
+          condition: { type: 'string' },
           evidence: { type: 'array', items: { type: 'string' } },
-          status: { type: 'string', enum: ['pending', 'satisfied'] },
+          status: { type: 'string', enum: ['pending', 'satisfied', 'superseded'] },
           requestedAt: { type: 'string' },
         },
-        required: ['origin', 'reason', 'evidence', 'status', 'requestedAt'],
+        required: ['id', 'caseIds', 'kind', 'origin', 'condition', 'evidence', 'status', 'requestedAt'],
         additionalProperties: false,
       },
     },
@@ -102,9 +107,75 @@ function validationMessage(error: ErrorObject): string {
 }
 
 export function parseCodexTestResult(value: string): CodexTestAgentResult {
-  const input = JSON.parse(value) as unknown
-  if (validateResult(input)) return input
+  const input = prepareResultForValidation(JSON.parse(value) as unknown)
+  if (validateResult(input)) return normalizeParsedResult(input as CodexTestAgentResult & { cases: Array<Record<string, unknown>>; environmentRequirements: Array<Record<string, unknown>> })
   throw new Error(`Codex test result failed schema validation: ${(validateResult.errors ?? []).map(validationMessage).join('; ')}`)
+}
+
+function prepareResultForValidation(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
+  const value = input as Record<string, unknown>
+  return {
+    ...value,
+    cases: Array.isArray(value.cases)
+      ? value.cases.map((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return item
+          const caseValue = item as Record<string, unknown>
+          return {
+            failureSource: null,
+            failureKind: null,
+            environmentRequirementIds: null,
+            executionReceiptIds: null,
+            fieldGateIds: null,
+            ...caseValue,
+            evidence: Array.isArray(caseValue.evidence)
+              ? caseValue.evidence.map((evidence) => (
+                  evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+                    ? { path: null, ...(evidence as Record<string, unknown>) }
+                    : evidence
+                ))
+              : caseValue.evidence,
+          }
+        })
+      : value.cases,
+    environmentRequirements: Array.isArray(value.environmentRequirements)
+      ? value.environmentRequirements.map((item) => (
+          item && typeof item === 'object' && !Array.isArray(item)
+            ? { origin: null, ...(item as Record<string, unknown>) }
+            : item
+        ))
+      : value.environmentRequirements,
+  }
+}
+
+function normalizeParsedResult(
+  input: CodexTestAgentResult & { cases: Array<Record<string, unknown>>; environmentRequirements: Array<Record<string, unknown>> },
+): CodexTestAgentResult {
+  return {
+    ...input,
+    cases: input.cases.map((item) => {
+      const { failureSource, failureKind, environmentRequirementIds, executionReceiptIds, fieldGateIds, evidence, ...rest } = item
+      return {
+        ...rest,
+        ...(failureSource == null ? {} : { failureSource }),
+        ...(failureKind == null ? {} : { failureKind }),
+        ...(environmentRequirementIds == null ? {} : { environmentRequirementIds }),
+        ...(executionReceiptIds == null ? {} : { executionReceiptIds }),
+        ...(fieldGateIds == null ? {} : { fieldGateIds }),
+        evidence: Array.isArray(evidence)
+          ? evidence.map((entry) => {
+              const value = entry as unknown as Record<string, unknown>
+              const { path, ...withoutPath } = value
+              return { ...withoutPath, ...(path == null ? {} : { path }) }
+            })
+          : evidence,
+      }
+    }) as CodexTestAgentResult['cases'],
+    environmentRequirements: input.environmentRequirements.map((item) => {
+      const { origin, ...rest } = item
+      return { ...rest, ...(origin == null ? {} : { origin }) }
+    }) as CodexTestAgentResult['environmentRequirements'],
+  }
 }
 
 export function enforceMutationLedger(

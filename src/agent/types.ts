@@ -2,6 +2,8 @@ export type CodexTestOutcome = 'passed' | 'product_failed' | 'blocked'
 export type CodexTestRisk = 'read' | 'write' | 'destructive'
 export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input' | 'infrastructure'
 export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution'
+export type CodexTestEnvironmentRequirementKind = 'origin' | 'permission' | 'authentication' | 'test_data' | 'physical'
+export type CodexTestExecutionReceiptKind = 'interaction' | 'observation'
 
 export interface CodexTestEvidence {
   kind: 'snapshot' | 'screenshot' | 'console' | 'network' | 'observation' | 'mutation'
@@ -16,6 +18,8 @@ export interface CodexTestCaseResult {
   summary: string
   failureSource?: CodexTestFailureSource
   failureKind?: CodexTestFailureKind
+  environmentRequirementIds?: string[]
+  executionReceiptIds?: string[]
   fieldGateIds?: string[]
   evidence: CodexTestEvidence[]
 }
@@ -67,11 +71,23 @@ export interface CodexTestMutationResult {
 }
 
 export interface CodexTestEnvironmentRequirement {
-  origin: string
-  reason: string
+  id: string
+  caseIds: string[]
+  kind: CodexTestEnvironmentRequirementKind
+  origin?: string
+  condition: string
   evidence: string[]
-  status: 'pending' | 'satisfied'
+  status: 'pending' | 'satisfied' | 'superseded'
   requestedAt: string
+}
+
+export interface CodexTestExecutionReceipt {
+  id: string
+  caseId?: string
+  tool: string
+  kind: CodexTestExecutionReceiptKind
+  status: 'completed'
+  recordedAt: string
 }
 
 export interface CodexTestAgentResult {
@@ -98,10 +114,23 @@ export interface CodexTestAgentState {
   sourceSha256: string
   startedAt: string
   updatedAt: string
+  finishedAt?: string
   threadId?: string
   resultPath?: string
+  resultWorkbookPath?: string
   outcome?: CodexTestOutcome
   error?: string
+  executionMode?: 'single_thread' | 'case_windows'
+  caseBatchSize?: number
+  caseBatchCount?: number
+  completedBatchIds?: string[]
+  activeBatch?: {
+    id: string
+    index: number
+    caseIds: string[]
+    stage: 'executing' | 'auditing' | 'finalizing'
+    threadId?: string
+  }
 }
 
 export interface CodexTestMutationLedgerEntry {
@@ -123,6 +152,8 @@ export interface CodexTestCaseDecision {
   productDefects: string[]
   failureSource?: CodexTestFailureSource
   failureKind?: CodexTestFailureKind
+  environmentRequirementIds?: string[]
+  executionReceiptIds?: string[]
   fieldGateIds?: string[]
   recordedAt: string
 }
