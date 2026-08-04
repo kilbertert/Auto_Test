@@ -200,7 +200,7 @@ async function main(): Promise<void> {
 
   server.registerTool('execution_receipts', {
     title: 'List captured browser execution receipts',
-    description: 'Return compact, same-case metadata for completed Playwright browser operations in the active case window. Use the recommended receipt IDs in the final structured result; the complete receipt log remains on disk for deterministic validation and audit.',
+    description: 'Return compact metadata for completed Playwright browser operations in the active run, narrowed to the active case window when one is explicitly configured. Use recommended receipt IDs when precise case attribution is available; the complete receipt log remains on disk for deterministic validation and audit.',
     inputSchema: {
       caseId: z.string().min(1).optional(),
       detail: z.enum(['compact', 'full']).optional(),
@@ -212,7 +212,11 @@ async function main(): Promise<void> {
     const scopedCaseIds = caseId ? [caseId] : [...caseIds]
     const scopedReceipts = receipts.filter((receipt) => receipt.caseId && scopedCaseIds.includes(receipt.caseId))
     if (detail === 'full') return text(scopedReceipts)
-    return text(summarizeExecutionReceipts(receipts, scopedCaseIds))
+    return text(summarizeExecutionReceipts(
+      receipts,
+      scopedCaseIds,
+      config.activeCaseIds ? 'active_case_window' : 'active_run',
+    ))
   })
 
   server.registerTool('test_plan_update', {

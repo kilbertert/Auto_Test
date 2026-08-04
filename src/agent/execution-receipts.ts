@@ -4,7 +4,7 @@ import { writePrivateJson } from './state.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
 export interface CodexTestExecutionReceiptSummary {
-  scope: 'active_case_window'
+  scope: 'active_run' | 'active_case_window'
   cases: Array<{
     caseId: string
     recommendedReceiptIds: string[]
@@ -65,13 +65,14 @@ export async function readExecutionReceipts(path: string): Promise<CodexTestExec
 }
 
 /**
- * Keep the full receipt log on disk, but give the agent only the minimum
- * same-case evidence references needed for deterministic delivery validation.
- * The representative IDs are metadata, not a business verdict.
+ * Keep the full receipt log on disk, but give the agent only compact
+ * same-case references when the run has explicit case attribution.
+ * The representative IDs are optional audit metadata, not a business verdict.
  */
 export function summarizeExecutionReceipts(
   receipts: CodexTestExecutionReceipt[],
   activeCaseIds: Iterable<string>,
+  scope: CodexTestExecutionReceiptSummary['scope'] = 'active_case_window',
 ): CodexTestExecutionReceiptSummary {
   const caseIds = [...new Set(activeCaseIds)]
   const active = new Set(caseIds)
@@ -84,7 +85,7 @@ export function summarizeExecutionReceipts(
     included += 1
   }
   return {
-    scope: 'active_case_window',
+    scope,
     cases: caseIds.map((caseId) => {
       const caseReceipts = grouped.get(caseId) ?? []
       const interactions = caseReceipts.filter((receipt) => receipt.kind === 'interaction')

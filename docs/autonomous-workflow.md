@@ -2,7 +2,7 @@
 
 ## Product Contract
 
-Auto-Test is a thin execution harness around Codex-native execution contexts. A short suite uses one persistent thread. A long suite is partitioned by immutable manifest case order into bounded case windows; each window has a fresh Codex context while the run keeps one input identity, authenticated environment, evidence store, environment-requirement journal, and Mutation Ledger. It runs without interactive steering until one terminal outcome is produced:
+Auto-Test is a thin execution harness around one persistent Codex-native context by default. The caller may explicitly select bounded case windows when a suite exceeds the available context or needs window-level recovery; otherwise the agent keeps one cross-case working context while the run preserves one input identity, authenticated environment, evidence store, environment-requirement journal, and Mutation Ledger. It runs without interactive steering until one terminal outcome is produced:
 
 - `passed`: the requested operations and observable expected results were verified;
 - `product_failed`: the intended test action completed, but an immutable product or business expectation did not hold;
@@ -24,7 +24,7 @@ Each run creates an isolated `agent-workspace/` containing:
 - a run-scoped values file containing only Excel and Environment Profile values needed by this test;
 - Codex-created notes, temporary scripts, and evidence artifacts.
 
-The active Codex case window receives:
+The active Codex run receives:
 
 - a writable run workspace;
 - shell commands and temporary code execution;
@@ -45,17 +45,17 @@ The framework remains responsible only for capabilities that must survive model 
 1. index every source row in the Excel to establish immutable workflow and case identity; row-local diagnostics remain evidence for Codex, not an execution gate;
 2. select and refresh the Environment Profile and browser authentication;
 3. create the isolated Codex Home and run workspace;
-4. start one thread for a short suite, or start/resume the current bounded case window for a long suite without replaying completed windows;
+4. start/resume one persistent Codex thread by default; use a bounded case window only when the caller explicitly selects the capacity/recovery fallback;
 5. expose safe progress and preserve redacted event history;
 6. retain the Mutation Ledger and environment requirements;
-7. request one JSON result from each active Codex window, validate its schema, scoped case coverage, evidence, receipts and failure classification, then merge only those validated case facts in immutable manifest order;
+7. request one JSON result from the persistent Codex thread (or each explicitly selected case window), validate its schema, scoped case coverage, evidence, any cited receipts and failure classification, then merge only those validated case facts in immutable manifest order;
 8. force `blocked` when an authoritative Mutation Ledger entry remains pending.
 
 The harness does not require an `execution-plan.json`, field gate, or Control MCP evidence entry for a run to pass.
 
-Before final delivery, Codex writes a versioned recovery artifact for the active case window. It records the workflow ID, source hash, that window's case conclusions, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. Completed window results are stored below `.agent-private/case-batches/`; the final `agent-workspace/case-results.json` contains the full aggregate. This is not a second planner or reporter: the harness validates exact scoped coverage and merges existing case facts without inventing business actions or conclusions.
+Before final delivery, Codex writes a versioned recovery artifact for the run or explicit active case window. It records the workflow ID, source hash, scoped case conclusions, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. Explicit window results are stored below `.agent-private/case-batches/`; the final `agent-workspace/case-results.json` contains the full aggregate. This is not a second planner or reporter: the harness validates exact scoped coverage and merges existing case facts without inventing business actions or conclusions.
 
-The same delivery contract also requires case-scoped execution receipts. Before supporting browser work for a case, the Codex thread calls `case_execution_begin`; the Runner automatically tags completed Playwright calls until `case_execution_end`. A `passed` or `product_failed` case must cite at least one interaction and one observation receipt belonging to that case. Receipt IDs are namespaced by case window and turn because Codex item IDs restart in fresh contexts and subsequent turns. The `execution_receipts` MCP query defaults to a compact summary for the active window and recommends the minimum same-case IDs; the complete receipt log remains on disk for deterministic validation and audit. A receipt from another case, or a generic receipt list reused across cases, is rejected. Receipts prove that the browser execution episode occurred; they do not decide whether the business assertion is correct.
+The same delivery contract records Playwright execution receipts passively. `case_execution_begin`, `case_execution_end`, and `execution_receipts` are optional bookkeeping tools for precise case attribution; they do not gate browser work. A `passed` or `product_failed` case must cite concrete case-specific evidence, and any receipt IDs it cites must belong to that case. Receipt IDs are namespaced by execution mode and turn because Codex item IDs can restart in fresh contexts and subsequent turns. The `execution_receipts` MCP query defaults to a compact run summary and narrows to an active window only in explicit case-window mode. Receipts prove that browser operations occurred; they do not decide whether the business assertion is correct.
 
 The risk value attached to a Manifest case is advisory context. A mutation is authorized only when the same Codex thread declares its actual `write` or `destructive` risk and the Environment Profile permits that risk. This prevents a weak text inference from becoming a second business planner or permission system.
 
@@ -65,7 +65,7 @@ Mutation Ledger entries are coarse crash-recovery records for externally persist
 
 After interruption, Codex must re-observe the actual business state before continuing or compensating a pending operation. It must not repeat a write merely because the browser was recreated. The harness independently blocks the final result while any ledger entry remains `pending`.
 
-On `--resume`, the harness first checks whether the run already left a complete `case-results.json` with valid case-scoped receipts, evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. Otherwise a long suite reloads completed batch results and resumes only `activeBatch`; any pending mutation must be re-observed by that same batch thread before further writes.
+On `--resume`, the harness first checks whether the run already left a complete `case-results.json` with valid evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. Otherwise native mode resumes the same Codex thread; explicit case-window mode reloads completed batch results and resumes only `activeBatch`. Any pending mutation must be re-observed by the same Codex thread before further writes.
 
 ## Environment Profiles
 
