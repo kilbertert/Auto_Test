@@ -763,18 +763,22 @@ export async function runCodexTestAgent(
     const batchSize = state.executionMode === 'case_windows'
       ? state.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
       : options.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
-    if (options.resume && state.executionMode !== 'case_windows' && options.caseBatchSize !== undefined) {
+    // A run that crashed before its execution mode was persisted leaves
+    // executionMode undefined; resuming with the original --case-batch-size
+    // is the same command, not a mode switch. Only block an explicit switch
+    // away from a native (single_thread) run.
+    if (options.resume && state.executionMode === 'single_thread' && options.caseBatchSize !== undefined) {
       throw new Error('Resume native Codex runs cannot switch to case-window mode; resume with the original command or start a new run')
     }
     if (options.resume && state.executionMode === 'case_windows' && options.caseBatchSize !== undefined && options.caseBatchSize !== batchSize) {
       throw new Error('Resume case batch size does not match the existing Codex test state')
     }
-    const caseWindows = buildCodexCaseWindows(options.manifest, batchSize)
     // A persistent Codex thread is the native execution path. Case windows
     // remain an explicit capacity/recovery fallback instead of silently
     // replacing the agent's cross-case working context for every long suite.
     const useCaseWindows = state.executionMode === 'case_windows' || options.caseBatchSize !== undefined
     if (useCaseWindows) {
+      const caseWindows = buildCodexCaseWindows(options.manifest, batchSize)
       await mkdir(resolve(workspace.privateDirectory, 'case-batches'), { recursive: true, mode: 0o700 })
       const completedBatchIds = new Set(state.completedBatchIds ?? [])
       const batchResults: CodexTestAgentResult[] = []
@@ -1104,6 +1108,20 @@ export async function runCodexTestAgent(
     await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
+    const ledgerBeforeFinalization = await readMutationLedger(workspace.mutationLedgerPath)
+    if (ledgerBeforeFinalization.some((entry) => entry.status === 'pending')) {
+      progress.report('stage', '仍有未核销业务写入，正在由同一线程恢复')
+      await runTurn(
+        thread,
+        [{ type: 'text', text: codexTestAgentResumePrompt(fullAgentAccess) }],
+        eventsPath,
+        redactionSecrets,
+        progress,
+        persistThreadId,
+        undefined,
+        receiptRecorder,
+      )
+    }
     progress.report('stage', '浏览器执行阶段结束，正在让同一 Codex 线程直接生成结构化测试交付')
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
     let result: CodexTestAgentResult | undefined
