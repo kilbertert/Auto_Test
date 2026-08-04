@@ -2,9 +2,9 @@
 
 默认流程是：
 
-`Excel Intake -> 环境与认证 -> Codex case 窗口 -> 页面探索与动态计划 -> 执行与断言 -> 窗口恢复 -> 逐 case 聚合结果`
+`Excel Intake -> 环境与认证 -> 持久 Codex thread -> 页面探索与动态计划 -> 执行与断言 -> 同 thread 恢复 -> 逐 case 结果`
 
-测试工程师不需要编写 Execution Plan。短用例集在同一线程里执行；长用例集默认每 8 个 case 使用一个独立 Codex 上下文。每个上下文都直接读取原始材料、根据页面证据修订自己的工作计划并使用 Playwright MCP 操作网站。窗口调度不解释业务语义，也不会替代 Codex 生成结论。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
+测试工程师不需要编写 Execution Plan。默认所有用例在同一持久 Codex thread 中执行；只有显式加入 `--case-batch-size` 才启用独立上下文作为容量和恢复兜底。Codex 直接读取原始材料、根据页面证据修订自己的工作计划并使用 Playwright MCP 操作网站。框架不解释业务语义，也不会替代 Codex 生成结论。旧 IR/Runtime 只有显式加入 `--legacy-runtime` 时才启用。
 
 ## 1. 首次准备
 
@@ -82,38 +82,38 @@ npm run agent:test -- \
 - `--brief <path>`：不含秘密的业务补充说明；
 - `--model <id>`：覆盖当前 Provider 的默认模型；
 - `--max-iterations <N>`：列表型数据先执行 N 条 canary；
-- `--case-batch-size <N>`：长用例集每个 Codex 上下文负责的 case 数，默认 8；恢复时必须与原 run 一致；
+- `--case-batch-size <N>`：显式启用 case-window 兜底，每个 Codex 上下文负责 N 个 case；省略时使用一个持续的 native Codex thread；恢复时必须与原 run 一致；
 - `--headed` / `--headless`：显示或隐藏浏览器。
 
 ## 5. 运行机制
 
-每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向当前 Codex case 窗口提供：
+每次运行使用独立 Codex Home 和可写 Agent 工作区。默认向同一个 native Codex thread 提供：
 
 - 原始 Excel、说明、图片和本轮测试值；
 - shell、临时脚本、网络和 Web Search；
 - 完整 Playwright MCP，包括页面 JavaScript、网络、视觉和 Playwright 代码执行；
 - 可选 Auto-Test Control MCP 日志和 Mutation Ledger。
 
-Codex 自己决定工作计划和执行方式。对于需要中断恢复的外部业务写入，应以完整业务操作为单位登记 Mutation；普通导航、读取和字段输入不需要登记。仍有 pending Mutation 时，结果必定是 `blocked`。
+Codex 自己决定工作计划、case 顺序和执行方式。Runner 被动记录 Playwright 操作和进度；Control MCP 的 case episode、Execution Plan 和 checkpoint 都是可选工作记忆，不是浏览器执行前置条件。对于需要中断恢复的外部业务写入，应以完整业务操作为单位登记 Mutation；普通导航、读取和字段输入不需要登记。仍有 pending Mutation 时，结果必定是 `blocked`。
 
-Manifest case 数超过窗口大小时，Runner 按原顺序创建 `batch-0001`、`batch-0002` 等窗口。每个窗口使用新的 Codex 对话上下文，只能通过 Control MCP 为当前 case ID 建立执行回执；原始 Excel、登录状态、workspace、证据目录、环境需求和 Ledger 仍属于同一个 run。每个窗口完成后保存经过结果合同校验的逐 case 事实，最终只按 manifest 顺序合并这些事实。它不把标题映射成固定动作，也不生成第二份 Execution Plan。
+只有显式提供 `--case-batch-size` 时，Runner 才按原顺序创建 `batch-0001`、`batch-0002` 等窗口。每个窗口使用新的 Codex 对话上下文，作为容量或中断恢复兜底；原始 Excel、登录状态、workspace、证据目录、环境需求和 Ledger 仍属于同一个 run。默认 native 模式不切断跨 case 页面探索上下文，也不要求 Codex 先完成 case bookkeeping 才能操作。它不把标题映射成固定动作，也不生成第二份 Execution Plan。
 
 ## 6. 结果
 
-`execution_receipts` MCP 查询默认只返回当前窗口的紧凑同 case 推荐 ID；完整回执文件仍用于确定性校验和审计。回执 ID 包含窗口和 turn 序号，跨上下文或恢复时重复出现的 `item_*` 不会互相覆盖。
+`execution_receipts` MCP 查询默认返回当前 run 的紧凑回执摘要；显式 case-window 时才收窄到当前窗口。完整回执文件仍用于确定性校验和审计。回执 ID 包含执行命名空间和 turn 序号，跨上下文或恢复时重复出现的 `item_*` 不会互相覆盖。
 
 主要文件：
 
 - `codex-agent.state.json`：运行状态、Codex 线程 ID 和结果路径；
 - `codex-agent.result.json`：`passed`、`product_failed` 或 `blocked` 的结构化交付；
-- `agent-workspace/execution-receipts.json`：Runner 自动捕获的逐 case Playwright 调用回执；只保留工具名、类型、状态和 case 归属，不保留表单参数或响应正文；
+- `agent-workspace/execution-receipts.json`：Runner 被动捕获的 Playwright 调用回执；只保留工具名、类型、状态和可观察到的 case 归属，不保留表单参数或响应正文；
 - `原文件名-Auto-Test-结果.xlsx`：原 Excel 的结果副本，按来源行回写每条 case 的状态、失败归类、摘要、证据索引和环境需求；原文件保持不变；
 - `codex-agent.events.jsonl`：脱敏后的 Codex 事件；
 - `agent-workspace/input/`：原始测试材料和本轮输入；
 - Codex 在 `agent-workspace/` 内创建的临时脚本、计划和证据记录；
 - `.agent-private/mutation-ledger.json`：私有 Mutation Ledger；
-- `.agent-private/case-batches/`：长用例集每个已完成窗口的结构化结果；
-- `agent-workspace/active-case-window.json`：当前窗口 ID、顺序和 case 范围；
+- `.agent-private/case-batches/`：显式 case-window 模式中每个已完成窗口的结构化结果；
+- `agent-workspace/active-case-window.json`：显式 case-window 模式的当前窗口 ID、顺序和 case 范围；
 - `agent-workspace/evidence/`：截图、快照、网络和控制台证据。
 - `agent-workspace/case-results.json`：全部窗口完成后的逐 case 聚合恢复文件；当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验输入身份、完整覆盖、逐 case 回执、证据路径、环境需求和权威 Ledger 终态后使用它。
 
@@ -144,7 +144,7 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会复用原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有逐 case 交付；输入身份、回执、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果。否则只恢复 `activeBatch` 指向的当前 Codex thread，已完成窗口从 `.agent-private/case-batches/` 读取，不重新执行。环境身份、权限策略或窗口大小不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
+恢复会复用原始材料副本、工作区脚本、证据和 Mutation Ledger。框架先确定性校验已有交付；输入身份、证据、环境需求和 Ledger 全部完整且实际没有 pending Mutation 时，会直接生成正式结果。native 模式恢复同一个 Codex thread；只有显式 case-window 运行才恢复 `activeBatch`，已完成窗口不重新执行。环境身份、权限策略或窗口大小不一致会 fail closed；不要删除 Ledger、改换输出目录或放宽预期结果来规避阻断。
 
 ## 7. 当前验收状态
 

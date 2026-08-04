@@ -505,6 +505,7 @@ async function main(): Promise<void> {
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
     console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--case-batch-size 8] [--opaque-test-data]')
+    console.log('      默认使用一个持续的 Codex thread；只有显式提供 --case-batch-size 时才启用 case-window 兜底模式')
     console.log('      默认给予 Codex 原始材料、可写 run 工作区、shell、网络和完整 Playwright；--opaque-test-data 恢复旧受限模式')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')

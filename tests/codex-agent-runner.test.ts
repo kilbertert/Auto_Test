@@ -54,6 +54,19 @@ function streamedResponse(response: string): { events: AsyncGenerator<ThreadEven
   }
 }
 
+function streamedResponseWithoutCaseBookkeeping(response: string): { events: AsyncGenerator<ThreadEvent> } {
+  return {
+    events: (async function* () {
+      yield { type: 'thread.started', thread_id: 'thread-native-no-bookkeeping' } as ThreadEvent
+      yield { type: 'turn.started' } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'unattributed-interaction', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'unattributed-observation', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
+      yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
+    })(),
+  }
+}
+
 function failedStream(message: string, threadId = 'thread-fixture'): { events: AsyncGenerator<ThreadEvent> } {
   return {
     events: (async function* () {
@@ -326,16 +339,15 @@ describe('Codex test agent runner', () => {
     expect(run.result?.outcome).toBe('passed')
     expect(run.result?.cases[0]?.failureSource).toBeUndefined()
     expect(run.result?.cases[0]?.failureKind).toBeUndefined()
-    expect(executionRunStreamed).toHaveBeenCalledTimes(4)
+    expect(executionRunStreamed).toHaveBeenCalledTimes(3)
     expect(JSON.stringify(executionInputs[0])).toContain('primary test engineer')
     expect(JSON.stringify(executionInputs[0])).toContain('runner.xlsx')
-    expect(JSON.stringify(executionInputs[1])).toContain('evidence-debt audit')
-    expect(JSON.stringify(executionInputs[2])).toContain('Produce the final structured result')
-    expect(JSON.stringify(executionInputs[3])).toContain('missing final case result')
+    expect(JSON.stringify(executionInputs[1])).toContain('Produce the final structured result')
+    expect(JSON.stringify(executionInputs[2])).toContain('missing final case result')
     expect(progressMessages).toContain('Codex 测试线程已建立；中断后可以从本次结果目录恢复')
     expect(progressMessages).toContain('结构化测试结果已生成：passed')
     const events = await readFile(resolve(directory, 'run', 'codex-agent.events.jsonl'), 'utf8')
-    expect(events.trim().split('\n')).toHaveLength(32)
+    expect(events.trim().split('\n')).toHaveLength(24)
   })
 
   it('rejects an environment conclusion without a recorded case-scoped prerequisite and corrects it in the same thread', async () => {
@@ -389,8 +401,7 @@ describe('Codex test agent runner', () => {
     })
 
     expect(run.result?.cases[0]).toMatchObject({ failureSource: 'agent_execution', failureKind: 'execution' })
-    expect(JSON.stringify(inputs[1])).toContain('evidence-debt audit')
-    expect(JSON.stringify(inputs[3])).toContain('environment-blocked case inspect-task has no recorded environment requirement reference')
+    expect(JSON.stringify(inputs[2])).toContain('environment-blocked case inspect-task has no recorded environment requirement reference')
   })
 
   it('rejects a generic browser receipt reused to bulk-generate conclusions for multiple cases', async () => {
@@ -445,7 +456,7 @@ describe('Codex test agent runner', () => {
       [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')],
       [receiptId('receipt-interaction-second'), receiptId('receipt-observation-second')],
     ])
-    expect(JSON.stringify(inputs[3])).toContain('execution receipt belonging to another case')
+    expect(JSON.stringify(inputs[2])).toContain('execution receipt belonging to another case')
   })
 
   it('delivers model infrastructure failures as a structured blocked result', async () => {
@@ -589,6 +600,97 @@ describe('Codex test agent runner', () => {
     ])
     expect(run.result?.cases[0]?.executionReceiptIds).toEqual([receiptId('receipt-interaction-first', 'batch-0001'), receiptId('receipt-observation-first', 'batch-0001')])
     expect(run.result?.cases[1]?.executionReceiptIds).toEqual([receiptId('receipt-interaction-second', 'batch-0002'), receiptId('receipt-observation-second', 'batch-0002')])
+  })
+
+  it('keeps a multi-case suite in one native Codex thread by default', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-native-suite-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = twoCaseManifest('https://tasks.example.test')
+    const prompts: string[] = []
+    let startedThreads = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => {
+        startedThreads += 1
+        return {
+          id: 'thread-native-suite',
+          runStreamed: async (input) => {
+            prompts.push(typeof input === 'string'
+              ? input
+              : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
+            return twoCaseExecutionResponse(JSON.stringify(finalResult(workflow, {
+              cases: [
+                {
+                  caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed first case.',
+                  executionReceiptIds: [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')],
+                  evidence: [{ kind: 'observation', description: 'Observed first case.' }],
+                },
+                {
+                  caseId: 'inspect-second-task', title: 'Inspect second task', outcome: 'passed', summary: 'Observed second case.',
+                  executionReceiptIds: [receiptId('receipt-interaction-second'), receiptId('receipt-observation-second')],
+                  evidence: [{ kind: 'observation', description: 'Observed second case.' }],
+                },
+              ],
+            })))
+          },
+        }
+      },
+    })
+
+    expect(startedThreads).toBe(1)
+    expect(prompts[0]).toContain('native persistent Codex context')
+    expect(prompts[0]).toContain('inspect-task')
+    expect(prompts[0]).toContain('inspect-second-task')
+    expect(run.state).toMatchObject({ status: 'completed', executionMode: 'single_thread' })
+    expect(run.result?.cases.map((item) => item.outcome)).toEqual(['passed', 'passed'])
+  })
+
+  it('does not require case bookkeeping calls for native Codex delivery', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-native-passive-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = manifest('https://tasks.example.test')
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      maxFinalizationTurns: 0,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-native-no-bookkeeping',
+        runStreamed: async (_input, options) => options?.outputSchema
+          ? streamedResponseWithoutCaseBookkeeping(JSON.stringify(finalResult(workflow, {
+              cases: [{
+                caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed without journal calls.',
+                evidence: [{ kind: 'observation', description: 'Case-specific live state was observed.' }],
+              }],
+            })))
+          : streamedResponseWithoutCaseBookkeeping('Native execution complete.'),
+      }),
+    })
+
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.cases[0]?.executionReceiptIds).toBeUndefined()
   })
 
   it('resumes only the interrupted case window without replaying completed windows', async () => {

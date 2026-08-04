@@ -89,7 +89,7 @@ function help(): string {
     '  --slow-mo <ms>              浏览器动作减速',
     '  --max-iterations <count>    列表型数据最多执行 N 条',
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
-    '  --case-batch-size <count>    长用例集每个 Codex 上下文的 case 数，默认 8',
+    '  --case-batch-size <count>    显式启用 case-window 兜底；每个 Codex 上下文负责 N 个 case（默认 native 单 thread）',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
     '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',

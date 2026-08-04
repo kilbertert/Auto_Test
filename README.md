@@ -4,11 +4,11 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。
 
-默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片、测试说明和本轮环境值会进入隔离的可写 run 工作区。短用例集由一个持久 Codex 线程自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；超过默认窗口大小的长用例集按原 case 顺序分成多个独立 Codex 上下文，所有窗口共享同一输入、认证、证据、环境需求和 Mutation Ledger。框架只调度 case 身份并聚合已经校验的逐 case 事实，不生成业务结论。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
+默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片、测试说明和本轮环境值会进入隔离的可写 run 工作区。一个持久 Codex 线程自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架以被动观测方式记录浏览器回执、证据和副作用状态，不替 Codex 做业务规划或裁决。只有显式提供 `--case-batch-size` 时，才按原 case 顺序启用多个 Codex 上下文作为长任务容量/恢复兜底。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
-当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、逐 case Playwright 执行回执、当前 case 窗口中断恢复和 Windows 启动器接入。长用例集默认每 8 个 case 使用一个新 Codex 上下文，避免单线程上下文随工具历史持续膨胀；`--case-batch-size` 可调整窗口大小。给 Codex 查询的执行回执默认只返回当前窗口的紧凑同 case 推荐 ID，完整回执仍保存在运行目录供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。`passed` 或 `product_failed` 还必须引用同一 case 的交互和观察回执；不能用另一 case 或一份通用证据批量生成结论。恢复时，只有输入身份、逐 case 回执、证据、环境需求和实际 Ledger 全部一致，才会直接采用已有交付；否则只恢复当前未完成窗口，不重跑已完成窗口。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可用于诊断，但不替代执行回执或单独决定通过。基于 commit `c94ad77` 的最终 thin harness Windows 私有包已在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该结果仅证明本轮实际加载的 manifest，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
+当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、Codex 直接结构化结果、被动 Playwright 执行回执和 Windows 启动器接入。默认保持一个持续 Codex thread；`--case-batch-size` 仅显式启用 case-window 兜底。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。恢复时，只有输入身份、证据、环境需求和实际 Ledger 全部一致，才会直接采用已有交付；否则恢复同一个 Codex thread。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可用于诊断，但不替代执行回执或单独决定通过。基于 commit `c94ad77` 的最终 thin harness Windows 私有包已在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该结果仅证明本轮实际加载的 manifest，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 
-执行回执查询默认只向 Codex 返回当前窗口的紧凑同 case 推荐 ID；完整回执仍保存在运行目录，供确定性校验和审计。新回执 ID 包含 case 窗口和 turn 序号，避免不同 Codex 上下文重复使用 `item_*` 编号时互相覆盖。
+执行回执由 Runner 被动捕获；Codex 可以按需使用 Control MCP 查询当前 run 或显式 case episode，完整回执仍保存在运行目录，供确定性校验和审计。回执 ID 包含执行命名空间和 turn 序号，避免恢复或显式 case-window 中重复使用 `item_*` 编号时互相覆盖。
 
 测试结束后，Windows 菜单会把同一份结构化结果确定性地整理为测试人员摘要：失败位置、原因类别、直接原因、建议操作、完成情况、Mutation Ledger 终态和证据路径。产品缺陷、代理执行失败、输入资料问题、环境阻断和基础设施故障分开显示；该展示层不调用新模型，也不覆盖执行 Codex 的业务结论。
 

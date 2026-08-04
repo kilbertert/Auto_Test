@@ -81,7 +81,7 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。Codex 会直接读取原始 Excel 和图片，并可使用 shell、临时脚本和完整 Playwright 自主探索、执行、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
 
-整份用例超过 8 个 case 时，窗口应显示 `case 窗口 X/Y` 和累计完成数。每个窗口是新的 Codex 对话上下文，但仍属于同一 run，共享认证、证据、环境需求和 Mutation Ledger。可通过 `--case-batch-size N` 调整窗口大小；这只影响上下文容量和调度粒度，不改变用例、权限或业务预期。正式恢复必须使用与原 run 相同的窗口大小。
+默认运行不切分 case，窗口显示持续 Codex thread 的阶段进度和累计完成情况。只有显式提供 `--case-batch-size N` 时，才显示 `case 窗口 X/Y` 并使用新的 Codex 对话上下文；这只影响容量和恢复兜底，不改变用例、权限或业务预期。显式窗口模式恢复必须使用与原 run 相同的窗口大小。
 
 启动后应立即看到带时间的阶段进度；执行期间会显示读取页面、浏览器动作、测试辅助脚本、工作区更新、证据和业务写入清理等摘要。模型正在思考、等待页面或自动重连而暂时没有新动作时，窗口每约 20 秒输出一次“框架仍在运行”心跳。进度不会显示命令正文、密码、验证码、Cookie、表单值、工具参数或模型推理正文。如果窗口给出明确的 `blocked` 或失败结果，应按结果中的原因处理；不要仅因某个页面步骤耗时较长就关闭窗口。
 
@@ -99,7 +99,7 @@ Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFr
 
 共享环境需求在审计后可能只继续阻断其中一部分 case。最终交付会保留 requirement ID 和仍受阻的 case，只解除已被同一 Codex 证据重新归类为产品、输入或代理执行问题的 case。已被更精确 requirement 完全替代的旧记录标记为 `superseded`，保留审计历史但不再阻断运行；它不会被误标为条件已经满足。
 
-执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、执行回执、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 Codex；它不是跳过业务执行，而是在已有窗口留下完整事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，短用例集恢复原 thread，长用例集只恢复 `activeBatch` 对应的 thread 继续核对现场。
+执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 Codex；它不是跳过业务执行，而是在已有 thread 留下完整事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，默认恢复原 Codex thread；显式窗口模式才恢复 `activeBatch` 对应的 thread 继续核对现场。
 
 长用例集恢复时查看 `codex-agent.state.json` 的 `completedBatchIds` 和 `activeBatch`：前者对应的 `.agent-private\case-batches\*.result.json` 不应被重写，后者的 thread 才能继续执行。若恢复后从 `batch-0001` 重新开始，或者用一个窗口的回执填充另一个窗口，应判定调度验收失败。
 
@@ -167,7 +167,7 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 - `codex-agent.result.json`
 - `codex-agent.events.jsonl`
 - `agent-workspace\execution-receipts.json`
-- 运行期间 `execution_receipts` 查询默认只返回当前窗口的紧凑同 case 推荐 ID；上述文件保留完整回执供确定性校验和审计。新回执 ID 应带 case 窗口和 turn 序号，不应在新窗口或恢复后退回裸 `item_*`。
+- 运行期间 `execution_receipts` 查询默认返回当前 run 的紧凑回执摘要；显式窗口模式才收窄到当前窗口。上述文件保留完整回执供确定性校验和审计。新回执 ID 应带执行命名空间和 turn 序号，不应在恢复后退回裸 `item_*`。
 - `agent-workspace\case-results.json`（如存在）
 - `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`

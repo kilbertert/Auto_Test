@@ -287,18 +287,9 @@ function finalResultProblems(
     if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
       problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
     }
-    if (requiresExecutionReceipts(item)) {
-      if (!item.executionReceiptIds?.length) {
-        problems.push(`${item.outcome} case ${item.caseId} has no case-scoped execution receipts`)
-      } else {
-        if (!caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
-          problems.push(`${item.outcome} case ${item.caseId} has no browser interaction receipt`)
-        }
-        if (!caseReceipts.some((receipt) => receipt.kind === 'observation')) {
-          problems.push(`${item.outcome} case ${item.caseId} has no browser observation receipt`)
-        }
-      }
-    }
+    // Receipts are passively captured audit evidence. They are validated when
+    // the agent cites them, but missing optional case bookkeeping must not
+    // prevent the primary Codex thread from exploring or delivering facts.
     if (item.failureSource === 'environment') {
       if (!item.environmentRequirementIds?.length) {
         problems.push(`environment-blocked case ${item.caseId} has no recorded environment requirement reference`)
@@ -351,10 +342,6 @@ function finalResultProblems(
   if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
   if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
   return problems
-}
-
-function requiresExecutionReceipts(item: CodexTestAgentResult['cases'][number]): boolean {
-  return item.outcome === 'passed' || item.outcome === 'product_failed' || item.failureSource === 'environment'
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {
@@ -776,11 +763,17 @@ export async function runCodexTestAgent(
     const batchSize = state.executionMode === 'case_windows'
       ? state.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
       : options.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
+    if (options.resume && state.executionMode !== 'case_windows' && options.caseBatchSize !== undefined) {
+      throw new Error('Resume native Codex runs cannot switch to case-window mode; resume with the original command or start a new run')
+    }
     if (options.resume && state.executionMode === 'case_windows' && options.caseBatchSize !== undefined && options.caseBatchSize !== batchSize) {
       throw new Error('Resume case batch size does not match the existing Codex test state')
     }
     const caseWindows = buildCodexCaseWindows(options.manifest, batchSize)
-    const useCaseWindows = state.executionMode === 'case_windows' || (!options.resume && caseWindows.length > 1)
+    // A persistent Codex thread is the native execution path. Case windows
+    // remain an explicit capacity/recovery fallback instead of silently
+    // replacing the agent's cross-case working context for every long suite.
+    const useCaseWindows = state.executionMode === 'case_windows' || options.caseBatchSize !== undefined
     if (useCaseWindows) {
       await mkdir(resolve(workspace.privateDirectory, 'case-batches'), { recursive: true, mode: 0o700 })
       const completedBatchIds = new Set(state.completedBatchIds ?? [])
@@ -859,14 +852,17 @@ export async function runCodexTestAgent(
               ]
           await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistBatchThreadId, undefined, receiptRecorder)
           state = updateCodexTestState(state, {
-            activeBatch: { ...state.activeBatch!, stage: 'auditing', ...(thread.id ? { threadId: thread.id } : {}) },
+            activeBatch: { ...state.activeBatch!, stage: 'finalizing', ...(thread.id ? { threadId: thread.id } : {}) },
             ...(thread.id ? { threadId: thread.id } : {}),
           })
           await writePrivateJson(statePath, state)
         }
 
+        // Resume the audit stage only for runs created by the earlier
+        // case-window implementation. New runs proceed directly from the
+        // executing Codex turn to deterministic delivery.
         if (state.activeBatch?.stage === 'auditing') {
-          progress.report('stage', `正在审计 case 窗口 ${window.index + 1}/${window.total} 的环境阻断证据`)
+          progress.report('stage', `正在恢复旧版 case 窗口 ${window.index + 1}/${window.total} 的环境阻断证据审计`)
           await runTurn(
             thread,
             [{ type: 'text', text: codexTestAgentEvidenceDebtAuditPrompt(window, deliveryPath) }],
@@ -1108,18 +1104,7 @@ export async function runCodexTestAgent(
     await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
-    progress.report('stage', '浏览器执行阶段结束，正在由同一 Codex 线程审计环境阻断证据')
-    await runTurn(
-      thread,
-      [{ type: 'text', text: codexTestAgentEvidenceDebtAuditPrompt() }],
-      eventsPath,
-      redactionSecrets,
-      progress,
-      persistThreadId,
-      undefined,
-      receiptRecorder,
-    )
-    progress.report('stage', '环境阻断证据审计结束，正在让 Codex 直接生成结构化测试交付')
+    progress.report('stage', '浏览器执行阶段结束，正在让同一 Codex 线程直接生成结构化测试交付')
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
     let result: CodexTestAgentResult | undefined
     let deliveryProblems: string[] = []
