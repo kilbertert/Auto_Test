@@ -81,6 +81,8 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。Codex 会直接读取原始 Excel 和图片，并可使用 shell、临时脚本和完整 Playwright 自主探索、执行、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
 
+整份用例超过 8 个 case 时，窗口应显示 `case 窗口 X/Y` 和累计完成数。每个窗口是新的 Codex 对话上下文，但仍属于同一 run，共享认证、证据、环境需求和 Mutation Ledger。可通过 `--case-batch-size N` 调整窗口大小；这只影响上下文容量和调度粒度，不改变用例、权限或业务预期。正式恢复必须使用与原 run 相同的窗口大小。
+
 启动后应立即看到带时间的阶段进度；执行期间会显示读取页面、浏览器动作、测试辅助脚本、工作区更新、证据和业务写入清理等摘要。模型正在思考、等待页面或自动重连而暂时没有新动作时，窗口每约 20 秒输出一次“框架仍在运行”心跳。进度不会显示命令正文、密码、验证码、Cookie、表单值、工具参数或模型推理正文。如果窗口给出明确的 `blocked` 或失败结果，应按结果中的原因处理；不要仅因某个页面步骤耗时较长就关闭窗口。
 
 终端进度只用于判断框架是否仍在运行，不能作为验收通过证据。
@@ -91,7 +93,13 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFrom-Json
 ```
 
-对其中的 origin 完成一次环境注册或更新后，必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续；不要改用新目录绕过环境边界。
+每条记录都应包含 `caseIds`、`kind`、`condition` 和已保存的 `evidence`。先确认页面可用的只读操作已经执行：可筛选、搜索、改日期范围、翻页、刷新或查看详情时，不应直接把结果报成环境问题。`origin` 类记录完成一次环境注册或更新后，其他类型在补足权限、认证、测试数据或物理条件后，都必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续。恢复中的 Codex 会重新观察并以新证据标记已满足的需求；不要改用新目录绕过环境边界。
+
+共享环境需求在审计后可能只继续阻断其中一部分 case。最终交付会保留 requirement ID 和仍受阻的 case，只解除已被同一 Codex 证据重新归类为产品、输入或代理执行问题的 case。已被更精确 requirement 完全替代的旧记录标记为 `superseded`，保留审计历史但不再阻断运行；它不会被误标为条件已经满足。
+
+执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、执行回执、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 Codex；它不是跳过业务执行，而是在已有窗口留下完整事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，短用例集恢复原 thread，长用例集只恢复 `activeBatch` 对应的 thread 继续核对现场。
+
+长用例集恢复时查看 `codex-agent.state.json` 的 `completedBatchIds` 和 `activeBatch`：前者对应的 `.agent-private\case-batches\*.result.json` 不应被重写，后者的 thread 才能继续执行。若恢复后从 `batch-0001` 重新开始，或者用一个窗口的回执填充另一个窗口，应判定调度验收失败。
 
 ## 5. 判断验收是否真正通过
 
@@ -105,7 +113,10 @@ $Result.outcome
 $Result.cases | Format-Table caseId, outcome, summary
 $Result.cases | ForEach-Object { $_.evidence }
 $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
+Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 ```
+
+结果目录中的 `原文件名-Auto-Test-结果.xlsx` 是交付给测试工程师复核的工作簿副本。它逐来源行写入状态、失败归类、摘要、证据索引和环境需求；原始 `$Cases` 不会被框架修改。结构化 JSON 仍是权威证据索引，Excel 是对同一结果的确定性回写，不会另行判断业务结论。
 
 只有同时满足以下条件，才算该 run 通过：
 
@@ -133,9 +144,9 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
   --headed
 ```
 
-恢复会继续使用原 Codex thread、原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察未完成业务写入的真实状态。Excel、URL、Profile 和风险策略必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察当前窗口未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在对应窗口恢复交付或全量 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后采用结果，不能从日志或页面猜测。Excel、URL、Profile、风险策略和 case 窗口大小必须保持不变；不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
-`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。
+`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。即使本轮还有其他用例 `blocked`，终端摘要仍会保留已确认产品差异，并按输入材料、环境/权限/测试数据、基础设施和 Codex 执行交付分别显示阻断数量与首个直接原因。
 
 ## 7. 验收交付
 
@@ -144,8 +155,12 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 - `codex-agent.state.json`
 - `codex-agent.result.json`
 - `codex-agent.events.jsonl`
+- `agent-workspace\execution-receipts.json`
+- 运行期间 `execution_receipts` 查询默认只返回当前窗口的紧凑同 case 推荐 ID；上述文件保留完整回执供确定性校验和审计。新回执 ID 应带 case 窗口和 turn 序号，不应在新窗口或恢复后退回裸 `item_*`。
+- `agent-workspace\case-results.json`（如存在）
 - `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`
+- `原文件名-Auto-Test-结果.xlsx`
 - Codex 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录
 - `.agent-private\environment-requirements.json`（如存在）
 

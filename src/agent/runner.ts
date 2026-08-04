@@ -1,19 +1,23 @@
 import { Codex, type Input, type Thread, type ThreadEvent } from '@openai/codex-sdk'
 import { chromium } from '@playwright/test'
 import { constants as fsConstants } from 'node:fs'
-import { access, chmod, readFile, writeFile } from 'node:fs/promises'
-import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
+import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { reconcileEnvironmentRequirements } from './environment-requirements.js'
-import { codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
+import { buildCodexCaseWindows, DEFAULT_CODEX_CASE_BATCH_SIZE, manifestForCaseWindow, type CodexCaseWindow } from './case-windows.js'
+import type { CodexTestControlConfig } from './control-types.js'
+import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { recoverCodexDeliveryResult } from './delivery-recovery.js'
+import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
+import { codexTestAgentEvidenceDebtAuditPrompt, codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
 import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestMutationLedgerEntry } from './types.js'
-import { prepareCodexAgentWorkspace } from './workspace.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
+import { prepareCodexAgentWorkspace, type CodexAgentWorkspace } from './workspace.js'
 
 export interface CodexTestAgentOptions {
   outputDirectory: string
@@ -35,6 +39,7 @@ export interface CodexTestAgentOptions {
   onProgress?: CodexTestAgentProgressSink
   progressHeartbeatMs?: number
   testDataAccess?: 'direct' | 'opaque'
+  caseBatchSize?: number
 }
 
 export interface CodexTestAgentRun {
@@ -219,10 +224,16 @@ function startSdkThread(options: {
     : codex.startThread(threadOptions)
 }
 
-async function appendEvent(path: string, event: ThreadEvent, secrets: string[]): Promise<void> {
+async function appendEvent(
+  path: string,
+  event: ThreadEvent,
+  secrets: string[],
+  receiptRecorder?: ExecutionReceiptRecorder,
+): Promise<void> {
   const serialized = redactAgentValue(JSON.stringify(event), [...secrets, ...transientAgentEventValues(event)])
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
+  await receiptRecorder?.observe(event)
 }
 
 async function runTurn(
@@ -233,11 +244,12 @@ async function runTurn(
   progress: CodexTestProgressReporter,
   onThreadStarted?: (threadId: string) => Promise<void>,
   outputSchema?: unknown,
+  receiptRecorder?: ExecutionReceiptRecorder,
 ): Promise<string> {
   const streamed = await thread.runStreamed(input, outputSchema ? { outputSchema } : undefined)
   let finalResponse = ''
   for await (const event of streamed.events) {
-    await appendEvent(eventsPath, event, secrets)
+    await appendEvent(eventsPath, event, secrets, receiptRecorder)
     progress.observe(event)
     if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
     if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
@@ -248,7 +260,12 @@ async function runTurn(
   return finalResponse
 }
 
-function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowIntakeManifest): string[] {
+function finalResultProblems(
+  result: CodexTestAgentResult,
+  manifest: WorkflowIntakeManifest,
+  recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
+  executionReceipts: CodexTestExecutionReceipt[] = [],
+): string[] {
   const problems: string[] = []
   if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
   if (result.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
@@ -263,6 +280,68 @@ function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowInt
     if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
     if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`product-failed case ${item.caseId} is not classified as product-sourced`)
     if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`blocked case ${item.caseId} is incorrectly classified as product-sourced`)
+    const caseReceipts = item.executionReceiptIds?.map((id) => executionReceipts.find((receipt) => receipt.id === id)).filter((receipt): receipt is CodexTestExecutionReceipt => Boolean(receipt)) ?? []
+    if (item.executionReceiptIds?.some((id) => !executionReceipts.some((receipt) => receipt.id === id))) {
+      problems.push(`case ${item.caseId} references unknown execution receipts`)
+    }
+    if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
+      problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
+    }
+    if (requiresExecutionReceipts(item)) {
+      if (!item.executionReceiptIds?.length) {
+        problems.push(`${item.outcome} case ${item.caseId} has no case-scoped execution receipts`)
+      } else {
+        if (!caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
+          problems.push(`${item.outcome} case ${item.caseId} has no browser interaction receipt`)
+        }
+        if (!caseReceipts.some((receipt) => receipt.kind === 'observation')) {
+          problems.push(`${item.outcome} case ${item.caseId} has no browser observation receipt`)
+        }
+      }
+    }
+    if (item.failureSource === 'environment') {
+      if (!item.environmentRequirementIds?.length) {
+        problems.push(`environment-blocked case ${item.caseId} has no recorded environment requirement reference`)
+        continue
+      }
+      for (const requirementId of item.environmentRequirementIds) {
+        const requirement = recordedEnvironmentRequirements.find((candidate) => candidate.id === requirementId)
+        if (!requirement) {
+          problems.push(`environment-blocked case ${item.caseId} references unknown environment requirement ${requirementId}`)
+          continue
+        }
+        if (!requirement.caseIds.includes(item.caseId)) {
+          problems.push(`environment-blocked case ${item.caseId} is not linked to environment requirement ${requirementId}`)
+        }
+        if (requirement.status !== 'pending') {
+          problems.push(`environment-blocked case ${item.caseId} references non-pending environment requirement ${requirementId}`)
+        }
+        if (requirement.evidence.length === 0) {
+          problems.push(`environment requirement ${requirementId} has no saved evidence`)
+        }
+      }
+    } else if (item.environmentRequirementIds?.length) {
+      problems.push(`non-environment case ${item.caseId} contains environment requirement references`)
+    }
+  }
+  const recordedById = new Map(recordedEnvironmentRequirements.map((item) => [item.id, item]))
+  for (const requirement of result.environmentRequirements) {
+    const recorded = recordedById.get(requirement.id)
+    if (!recorded) {
+      problems.push(`final result includes unrecorded environment requirement ${requirement.id}`)
+      continue
+    }
+    if (!sameEnvironmentRequirement(requirement, recorded)) {
+      problems.push(`final result environment requirement ${requirement.id} does not match the recorded requirement`)
+    }
+  }
+  for (const requirement of recordedEnvironmentRequirements.filter((item) => item.status === 'pending')) {
+    for (const caseId of requirement.caseIds) {
+      const caseResult = result.cases.find((item) => item.caseId === caseId)
+      if (!caseResult || caseResult.failureSource !== 'environment' || !caseResult.environmentRequirementIds?.includes(requirement.id)) {
+        problems.push(`pending environment requirement ${requirement.id} is not represented by environment-blocked case ${caseId}`)
+      }
+    }
   }
   const expectedOutcome = result.cases.some((item) => item.outcome === 'blocked')
     ? 'blocked'
@@ -274,24 +353,44 @@ function finalResultProblems(result: CodexTestAgentResult, manifest: WorkflowInt
   return problems
 }
 
+function requiresExecutionReceipts(item: CodexTestAgentResult['cases'][number]): boolean {
+  return item.outcome === 'passed' || item.outcome === 'product_failed' || item.failureSource === 'environment'
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value))
+}
+
+function sameEnvironmentRequirement(
+  left: CodexTestEnvironmentRequirement,
+  right: CodexTestEnvironmentRequirement,
+): boolean {
+  return left.id === right.id &&
+    left.kind === right.kind &&
+    left.origin === right.origin &&
+    left.condition === right.condition &&
+    left.status === right.status &&
+    left.requestedAt === right.requestedAt &&
+    sameStringSet(left.caseIds, right.caseIds) &&
+    sameStringSet(left.evidence, right.evidence)
+}
+
 function enforceEnvironmentRequirements(
   result: CodexTestAgentResult,
   requirements: CodexTestEnvironmentRequirement[],
 ): CodexTestAgentResult {
-  const byOrigin = new Map(result.environmentRequirements.map((item) => [item.origin, item]))
-  for (const item of requirements) byOrigin.set(item.origin, item)
-  const environmentRequirements = [...byOrigin.values()]
+  const environmentRequirements = requirements
   const pending = environmentRequirements.filter((item) => item.status === 'pending')
   if (pending.length === 0) return { ...result, environmentRequirements }
   return {
     ...result,
     outcome: 'blocked',
-    summary: `${result.summary} Required environment access remains unavailable.`,
+    summary: `${result.summary} Required environment prerequisites remain unavailable.`,
     environmentRequirements,
-    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.reason)])],
+    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.condition)])],
     nextActions: [...new Set([
       ...result.nextActions,
-      ...pending.map((item) => `Provide the required access or authentication for ${item.origin}, then resume the same run.`),
+      ...pending.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
     ])],
   }
 }
@@ -320,8 +419,8 @@ function blockedResult(
       title: phase.title,
       outcome: 'blocked',
       summary: message,
-      failureSource: 'environment',
-      failureKind: 'environment',
+      failureSource: 'infrastructure',
+      failureKind: 'execution',
       evidence: [{ kind: 'observation', description: 'Execution dependency failure recorded in codex-agent.events.jsonl.' }],
     })),
     mutations: [],
@@ -383,12 +482,114 @@ async function threadIdFromEvents(path: string): Promise<string | undefined> {
     if (error.code === 'ENOENT') return ''
     throw error
   })
+  let threadId: string | undefined
   for (const line of content.split(/\r?\n/)) {
     if (!line) continue
     const event = JSON.parse(line) as { type?: string; thread_id?: string }
-    if (event.type === 'thread.started' && event.thread_id) return event.thread_id
+    if (event.type === 'thread.started' && event.thread_id) threadId = event.thread_id
   }
-  return undefined
+  return threadId
+}
+
+function environmentRequirementsForCases(
+  requirements: CodexTestEnvironmentRequirement[],
+  caseIds: string[],
+): CodexTestEnvironmentRequirement[] {
+  const active = new Set(caseIds)
+  return requirements
+    .map((requirement) => ({ ...requirement, caseIds: requirement.caseIds.filter((caseId) => active.has(caseId)) }))
+    .filter((requirement) => requirement.caseIds.length > 0)
+}
+
+function aggregateCaseWindowResults(options: {
+  manifest: WorkflowIntakeManifest
+  results: CodexTestAgentResult[]
+  requirements: CodexTestEnvironmentRequirement[]
+  startedAt: string
+}): CodexTestAgentResult {
+  const byCaseId = new Map(options.results.flatMap((result) => result.cases).map((item) => [item.caseId, item]))
+  const cases = options.manifest.phases.map((phase) => {
+    const result = byCaseId.get(phase.id)
+    if (!result) throw new Error(`Case-window aggregation is missing ${phase.id}`)
+    return result
+  })
+  const outcome = cases.some((item) => item.outcome === 'blocked')
+    ? 'blocked'
+    : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+  const counts = {
+    passed: cases.filter((item) => item.outcome === 'passed').length,
+    productFailed: cases.filter((item) => item.outcome === 'product_failed').length,
+    blocked: cases.filter((item) => item.outcome === 'blocked').length,
+  }
+  return {
+    version: '1.0',
+    workflowId: options.manifest.workflowId,
+    sourceSha256: options.manifest.source.sha256,
+    outcome,
+    summary: `Codex case windows completed ${cases.length} cases: ${counts.passed} passed, ${counts.productFailed} product-failed, ${counts.blocked} blocked.`,
+    startedAt: options.startedAt,
+    finishedAt: new Date().toISOString(),
+    cases,
+    mutations: [],
+    environmentRequirements: options.requirements,
+    blockers: [...new Set(cases.filter((item) => item.outcome === 'blocked').map((item) => item.summary))].slice(0, 50),
+    productDefects: [...new Set(cases.filter((item) => item.outcome === 'product_failed').map((item) => item.summary))].slice(0, 50),
+    nextActions: outcome === 'passed'
+      ? []
+      : ['Review the per-case evidence and resolve blocked or product-failed cases before declaring the suite complete.'],
+  }
+}
+
+function deliveryArtifactFromResult(result: CodexTestAgentResult) {
+  const pending = result.mutations.filter((item) => item.status === 'pending')
+  return {
+    version: '1.0' as const,
+    kind: 'case-results' as const,
+    workflowId: result.workflowId,
+    sourceSha256: result.sourceSha256,
+    generatedAt: result.finishedAt,
+    cases: result.cases.map((item) => ({
+      caseId: item.caseId,
+      title: item.title,
+      outcome: item.outcome,
+      summary: item.summary,
+      evidencePaths: item.evidence.map((evidence) => evidence.path).filter((path): path is string => Boolean(path)),
+      ...(item.failureSource ? { failureSource: item.failureSource } : {}),
+      ...(item.failureKind ? { failureKind: item.failureKind } : {}),
+      ...(item.environmentRequirementIds?.length ? { environmentRequirementIds: item.environmentRequirementIds } : {}),
+      ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
+    })),
+    mutationLedger: { state: 'terminal' as const, pendingCount: pending.length, entries: result.mutations },
+  }
+}
+
+async function activateCaseWindow(
+  workspace: CodexAgentWorkspace,
+  window: CodexCaseWindow,
+): Promise<void> {
+  const config = JSON.parse(await readFile(workspace.controlConfigPath, 'utf8')) as CodexTestControlConfig
+  await writePrivateJson(workspace.controlConfigPath, { ...config, activeCaseIds: window.caseIds })
+  await writePrivateJson(resolve(workspace.workspaceDirectory, 'active-case-window.json'), window)
+}
+
+function batchResultPath(workspace: CodexAgentWorkspace, window: CodexCaseWindow): string {
+  return resolve(workspace.privateDirectory, 'case-batches', `${window.id}.result.json`)
+}
+
+function batchDeliveryPath(workspace: CodexAgentWorkspace, window: CodexCaseWindow): string {
+  return resolve(workspace.workspaceDirectory, `case-results.${window.id}.json`)
+}
+
+function imagePathsForCaseWindow(workspace: CodexAgentWorkspace, manifest: WorkflowIntakeManifest): string[] {
+  const relevantIds = new Set([
+    ...manifest.embeddedImages.map((image) => image.id),
+    ...manifest.supplementalImages.map((image) => image.id),
+  ])
+  if (relevantIds.size === 0) return []
+  return workspace.inputImagePaths.filter((path) => {
+    const name = basename(path)
+    return [...relevantIds].some((id) => name.includes(id))
+  })
 }
 
 export async function runCodexTestAgent(
@@ -411,13 +612,12 @@ export async function runCodexTestAgent(
     if (state.status === 'completed' && state.outcome !== 'blocked') {
       throw new Error(`Completed ${state.outcome ?? 'terminal'} Codex test runs cannot be resumed`)
     }
-    resumeThreadId = state.threadId ?? await threadIdFromEvents(eventsPath)
-    if (!resumeThreadId) throw new Error('Existing Codex test run has no recoverable persistent thread id')
+    resumeThreadId = state.threadId
     const { resultPath: _resultPath, outcome: _outcome, error: _error, ...unfinishedState } = state
     state = updateCodexTestState(unfinishedState, {
       status: 'running',
       stage: 'preparing',
-      threadId: resumeThreadId,
+      ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
     })
   } else {
     for (const path of [statePath, existingLedgerPath]) {
@@ -430,6 +630,7 @@ export async function runCodexTestAgent(
   }
   let mutationLedgerPath: string | undefined
   let environmentRequirementsPath: string | undefined
+  let executionReceiptsPath: string | undefined
   let activeThread: AgentThread | undefined
   const progress = new CodexTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
   await writePrivateJson(statePath, state)
@@ -440,9 +641,11 @@ export async function runCodexTestAgent(
       : '正在检查 Chromium 并准备隔离测试工作区')
     progress.startHeartbeat()
     const browserExecutablePath = dependencies.browserExecutablePath ?? chromium.executablePath()
-    await access(browserExecutablePath).catch(() => {
-      throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
-    })
+    if (!options.resume) {
+      await access(browserExecutablePath).catch(() => {
+        throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
+      })
+    }
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory,
       manifest: options.manifest,
@@ -461,7 +664,51 @@ export async function runCodexTestAgent(
     })
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath
+    executionReceiptsPath = workspace.executionReceiptsPath
     await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
+    if (options.resume) {
+      const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      if (!ledger.some((entry) => entry.status === 'pending')) {
+        const recovered = await recoverCodexDeliveryResult({
+          artifactPath: workspace.caseResultsPath,
+          manifest: options.manifest,
+          startedAt: state.startedAt,
+        })
+        if (recovered.result) {
+          const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+            workspace.environmentRequirementsPath,
+            recovered.result.cases,
+          )
+          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+          const recoveryProblems = finalResultProblems(
+            recovered.result,
+            options.manifest,
+            environmentRequirements,
+            executionReceipts,
+          )
+          if (recoveryProblems.length === 0) {
+            const result = enforceMutationLedger(
+              enforceEnvironmentRequirements(recovered.result, environmentRequirements),
+              ledger,
+            )
+            await writePrivateJson(resultPath, result)
+            progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 Codex：${result.outcome}`)
+            state = updateCodexTestState(state, {
+              status: 'completed',
+              stage: 'completed',
+              outcome: result.outcome,
+              resultPath,
+              finishedAt: new Date().toISOString(),
+            })
+            await writePrivateJson(statePath, state)
+            return { state, result }
+          }
+        }
+      }
+      await access(browserExecutablePath).catch(() => {
+        throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
+      })
+    }
     progress.report('stage', '隔离测试工作区已准备，正在启动 Codex 测试线程')
     const activeCodexExecutable = await resolveCodexExecutable(options)
     const threadOptions = {
@@ -476,6 +723,305 @@ export async function runCodexTestAgent(
       mcpEnvironment: workspace.mcpEnvironment,
       fullAgentAccess: (options.testDataAccess ?? 'direct') === 'direct',
     }
+    const batchSize = state.executionMode === 'case_windows'
+      ? state.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
+      : options.caseBatchSize ?? DEFAULT_CODEX_CASE_BATCH_SIZE
+    if (options.resume && state.executionMode === 'case_windows' && options.caseBatchSize !== undefined && options.caseBatchSize !== batchSize) {
+      throw new Error('Resume case batch size does not match the existing Codex test state')
+    }
+    const caseWindows = buildCodexCaseWindows(options.manifest, batchSize)
+    const useCaseWindows = state.executionMode === 'case_windows' || (!options.resume && caseWindows.length > 1)
+    if (useCaseWindows) {
+      await mkdir(resolve(workspace.privateDirectory, 'case-batches'), { recursive: true, mode: 0o700 })
+      const completedBatchIds = new Set(state.completedBatchIds ?? [])
+      const batchResults: CodexTestAgentResult[] = []
+      state = updateCodexTestState(state, {
+        executionMode: 'case_windows',
+        caseBatchSize: batchSize,
+        caseBatchCount: caseWindows.length,
+        completedBatchIds: [...completedBatchIds],
+      })
+      await writePrivateJson(statePath, state)
+
+      for (const window of caseWindows) {
+        if (completedBatchIds.has(window.id)) {
+          batchResults.push(parseCodexTestResult(await readFile(batchResultPath(workspace, window), 'utf8')))
+          continue
+        }
+
+        const scopedManifest = manifestForCaseWindow(options.manifest, window)
+        const deliveryPath = batchDeliveryPath(workspace, window)
+        await activateCaseWindow(workspace, window)
+        const resumingWindow = options.resume && state.activeBatch?.id === window.id
+        const existingBatchThreadId = resumingWindow ? state.activeBatch?.threadId : undefined
+        const initialBatchStage = resumingWindow ? state.activeBatch!.stage : 'executing'
+        const thread = existingBatchThreadId
+          ? (dependencies.resumeThread ?? ((input) => startSdkThread(input)))({ threadId: existingBatchThreadId, ...threadOptions })
+          : (dependencies.startThread ?? ((input) => startSdkThread(input)))(threadOptions)
+        activeThread = thread
+        state = updateCodexTestState(state, {
+          status: 'running',
+          stage: 'executing',
+          executionMode: 'case_windows',
+          activeBatch: {
+            id: window.id,
+            index: window.index,
+            caseIds: window.caseIds,
+            stage: initialBatchStage,
+            ...(existingBatchThreadId ? { threadId: existingBatchThreadId } : {}),
+          },
+          ...(existingBatchThreadId ? { threadId: existingBatchThreadId } : {}),
+        })
+        await writePrivateJson(statePath, state)
+        const receiptRecorder = await ExecutionReceiptRecorder.create(workspace.executionReceiptsPath, window.caseIds, window.id)
+        const persistBatchThreadId = async (threadId: string): Promise<void> => {
+          if (state.activeBatch?.threadId === threadId) return
+          state = updateCodexTestState(state, {
+            threadId,
+            activeBatch: { ...state.activeBatch!, threadId },
+          })
+          await writePrivateJson(statePath, state)
+        }
+        const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
+
+        if (state.activeBatch?.stage === 'executing') {
+          progress.report('stage', `正在执行 case 窗口 ${window.index + 1}/${window.total}（${window.caseIds.length} 条）`)
+          const input: Input = resumingWindow
+            ? [{ type: 'text', text: codexTestAgentResumePrompt(fullAgentAccess, window, deliveryPath) }]
+            : [
+                { type: 'text', text: codexTestAgentPrompt({
+                  manifest: scopedManifest,
+                  environmentContext: options.environmentContext,
+                  secretAliases: workspace.secretAliases,
+                  allowedOrigins: options.profile.origins,
+                  testDataAccess: options.testDataAccess ?? 'direct',
+                  inputDirectory: workspace.inputDirectory,
+                  manifestPath: workspace.manifestPath,
+                  deliveryArtifactPath: deliveryPath,
+                  caseWindow: window,
+                  ...(workspace.sourceFilePath ? { sourceFilePath: workspace.sourceFilePath } : {}),
+                  ...(workspace.briefFilePath ? { briefFilePath: workspace.briefFilePath } : {}),
+                  ...(workspace.runValuesPath ? { runValuesPath: workspace.runValuesPath } : {}),
+                  ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+                }) },
+                ...imagePathsForCaseWindow(workspace, scopedManifest)
+                  .map((path) => ({ type: 'local_image' as const, path })),
+              ]
+          await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistBatchThreadId, undefined, receiptRecorder)
+          state = updateCodexTestState(state, {
+            activeBatch: { ...state.activeBatch!, stage: 'auditing', ...(thread.id ? { threadId: thread.id } : {}) },
+            ...(thread.id ? { threadId: thread.id } : {}),
+          })
+          await writePrivateJson(statePath, state)
+        }
+
+        if (state.activeBatch?.stage === 'auditing') {
+          progress.report('stage', `正在审计 case 窗口 ${window.index + 1}/${window.total} 的环境阻断证据`)
+          await runTurn(
+            thread,
+            [{ type: 'text', text: codexTestAgentEvidenceDebtAuditPrompt(window, deliveryPath) }],
+            eventsPath,
+            redactionSecrets,
+            progress,
+            persistBatchThreadId,
+            undefined,
+            receiptRecorder,
+          )
+          state = updateCodexTestState(state, { activeBatch: { ...state.activeBatch!, stage: 'finalizing' } })
+          await writePrivateJson(statePath, state)
+        }
+
+        const ledgerBeforeFinalization = await readMutationLedger(workspace.mutationLedgerPath)
+        if (ledgerBeforeFinalization.some((entry) => entry.status === 'pending')) {
+          progress.report('stage', `case 窗口 ${window.index + 1}/${window.total} 仍有未核销业务写入，正在由同一线程恢复`)
+          await runTurn(
+            thread,
+            [{ type: 'text', text: codexTestAgentResumePrompt(fullAgentAccess, window, deliveryPath) }],
+            eventsPath,
+            redactionSecrets,
+            progress,
+            persistBatchThreadId,
+            undefined,
+            receiptRecorder,
+          )
+        }
+
+        progress.report('stage', `正在生成 case 窗口 ${window.index + 1}/${window.total} 的逐 case 交付`)
+        const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
+        let batchResult: CodexTestAgentResult | undefined
+        let deliveryProblems: string[] = []
+        for (let turn = 0; turn <= maxFinalizationTurns; turn++) {
+          const prompt = turn === 0
+            ? codexTestAgentFinalPrompt(window)
+            : `${codexTestAgentFinalPrompt(window)}\n\nThe previous result had these deterministic contract problems:\n- ${deliveryProblems.join('\n- ')}\nCorrect only this case window from existing evidence. Do not repeat business writes.`
+          try {
+            const finalResponse = await runTurn(
+              thread,
+              [{ type: 'text', text: prompt }],
+              eventsPath,
+              redactionSecrets,
+              progress,
+              persistBatchThreadId,
+              codexTestResultSchema,
+              receiptRecorder,
+            )
+            const candidate = parseCodexTestResult(finalResponse)
+            const allRequirements = await reconcileEnvironmentRequirementCaseLinks(
+              workspace.environmentRequirementsPath,
+              candidate.cases,
+            )
+            const batchRequirements = environmentRequirementsForCases(allRequirements, window.caseIds)
+            const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+            const normalizedCandidate: CodexTestAgentResult = {
+              ...candidate,
+              startedAt: state.startedAt,
+              finishedAt: new Date().toISOString(),
+              mutations: [],
+              environmentRequirements: batchRequirements,
+            }
+            deliveryProblems = finalResultProblems(normalizedCandidate, scopedManifest, batchRequirements, executionReceipts)
+            if (deliveryProblems.length > 0) continue
+            const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+            batchResult = enforceMutationLedger(enforceEnvironmentRequirements(normalizedCandidate, batchRequirements), ledger)
+            break
+          } catch (error) {
+            const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
+            if (isOperationalBlock(message)) {
+              const artifactExists = await access(deliveryPath).then(() => true, () => false)
+              if (!artifactExists) throw error
+              deliveryProblems = [message]
+              break
+            }
+            deliveryProblems = [message]
+          }
+        }
+
+        if (!batchResult) {
+          const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+          let allRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+          const recovered = await recoverCodexDeliveryResult({
+            artifactPath: deliveryPath,
+            manifest: scopedManifest,
+            startedAt: state.startedAt,
+          })
+          if (recovered.result) {
+            allRequirements = await reconcileEnvironmentRequirementCaseLinks(
+              workspace.environmentRequirementsPath,
+              recovered.result.cases,
+            )
+            const batchRequirements = environmentRequirementsForCases(allRequirements, window.caseIds)
+            const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+            const recoveredResult = { ...recovered.result, environmentRequirements: batchRequirements }
+            const recoveryProblems = finalResultProblems(recoveredResult, scopedManifest, batchRequirements, executionReceipts)
+            batchResult = recoveryProblems.length === 0
+              ? enforceMutationLedger(enforceEnvironmentRequirements(recoveredResult, batchRequirements), ledger)
+              : deliveryBlockedResult(scopedManifest, state, recoveryProblems.join('; '), ledger, batchRequirements)
+          } else {
+            const batchRequirements = environmentRequirementsForCases(allRequirements, window.caseIds)
+            batchResult = deliveryBlockedResult(
+              scopedManifest,
+              state,
+              deliveryProblems.join('; ') || recovered.problems.join('; ') || 'Codex did not provide a structured result for this case window.',
+              ledger,
+              batchRequirements,
+            )
+          }
+        }
+
+        if (batchResult.mutations.some((mutation) => mutation.status === 'pending')) {
+          const remainingManifest: WorkflowIntakeManifest = {
+            ...options.manifest,
+            phases: options.manifest.phases.filter((phase) => (
+              !batchResults.some((result) => result.cases.some((item) => item.caseId === phase.id)) &&
+              !batchResult!.cases.some((item) => item.caseId === phase.id)
+            )),
+          }
+          const remaining = deliveryBlockedResult(
+            remainingManifest,
+            state,
+            `Suite scheduling stopped because ${window.id} has unrecovered business mutations.`,
+            await readMutationLedger(workspace.mutationLedgerPath),
+            [],
+          )
+          const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+          const result = enforceMutationLedger(
+            enforceEnvironmentRequirements(aggregateCaseWindowResults({
+              manifest: options.manifest,
+              results: [...batchResults, batchResult, remaining],
+              requirements,
+              startedAt: state.startedAt,
+            }), requirements),
+            await readMutationLedger(workspace.mutationLedgerPath),
+          )
+          await writePrivateJson(resultPath, result)
+          await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
+          state = updateCodexTestState(state, {
+            status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
+            activeBatch: { ...state.activeBatch!, stage: 'executing' },
+          })
+          await writePrivateJson(statePath, state)
+          return { state, result }
+        }
+
+        await writePrivateJson(batchResultPath(workspace, window), batchResult)
+        batchResults.push(batchResult)
+        completedBatchIds.add(window.id)
+        const { activeBatch: _activeBatch, ...stateWithoutActiveBatch } = state
+        state = updateCodexTestState(stateWithoutActiveBatch, {
+          completedBatchIds: [...completedBatchIds],
+          stage: 'executing',
+        })
+        await writePrivateJson(statePath, state)
+        progress.report('stage', `case 窗口 ${window.index + 1}/${window.total} 已完成，累计 ${batchResults.flatMap((result) => result.cases).length}/${options.manifest.phases.length} 条`)
+      }
+
+      const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+      const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+      const result = enforceMutationLedger(
+        enforceEnvironmentRequirements(aggregateCaseWindowResults({
+          manifest: options.manifest,
+          results: batchResults,
+          requirements,
+          startedAt: state.startedAt,
+        }), requirements),
+        ledger,
+      )
+      const aggregateProblems = finalResultProblems(result, options.manifest, requirements, executionReceipts)
+      if (aggregateProblems.length > 0) {
+        throw new Error(`Case-window aggregation failed deterministic validation: ${aggregateProblems.join('; ')}`)
+      }
+      await writePrivateJson(resultPath, result)
+      await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
+      const { activeBatch: _activeBatch, ...stateWithoutActiveBatch } = state
+      state = updateCodexTestState(stateWithoutActiveBatch, {
+        status: 'completed',
+        stage: 'completed',
+        outcome: result.outcome,
+        resultPath,
+        finishedAt: new Date().toISOString(),
+        completedBatchIds: caseWindows.map((window) => window.id),
+      })
+      await writePrivateJson(statePath, state)
+      progress.report('stage', `全部 ${caseWindows.length} 个 case 窗口已完成：${result.outcome}`)
+      return { state, result }
+    }
+
+    if (options.resume) {
+      resumeThreadId ??= await threadIdFromEvents(eventsPath)
+      if (!resumeThreadId) throw new Error('Existing Codex test run has no recoverable persistent thread id')
+      if (state.threadId !== resumeThreadId) {
+        state = updateCodexTestState(state, { threadId: resumeThreadId })
+        await writePrivateJson(statePath, state)
+      }
+    }
+    state = updateCodexTestState(state, { executionMode: 'single_thread' })
+    await writePrivateJson(statePath, state)
+    const receiptRecorder = await ExecutionReceiptRecorder.create(
+      workspace.executionReceiptsPath,
+      options.manifest.phases.map((phase) => phase.id),
+      'single-thread',
+    )
     const thread = options.resume
       ? (dependencies.resumeThread ?? ((input) => startSdkThread(input)))({ threadId: resumeThreadId!, ...threadOptions })
       : (dependencies.startThread ?? ((input) => startSdkThread(input)))(threadOptions)
@@ -509,10 +1055,21 @@ export async function runCodexTestAgent(
           ...(workspace.inputImagePaths.length > 0 ? workspace.inputImagePaths : options.imagePaths)
             .map((path) => ({ type: 'local_image' as const, path })),
         ]
-    await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId)
+    await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder)
     state = updateCodexTestState(state, { ...(thread.id ? { threadId: thread.id } : {}), stage: 'finalizing' })
     await writePrivateJson(statePath, state)
-    progress.report('stage', '浏览器执行阶段结束，正在让 Codex 直接生成结构化测试交付')
+    progress.report('stage', '浏览器执行阶段结束，正在由同一 Codex 线程审计环境阻断证据')
+    await runTurn(
+      thread,
+      [{ type: 'text', text: codexTestAgentEvidenceDebtAuditPrompt() }],
+      eventsPath,
+      redactionSecrets,
+      progress,
+      persistThreadId,
+      undefined,
+      receiptRecorder,
+    )
+    progress.report('stage', '环境阻断证据审计结束，正在让 Codex 直接生成结构化测试交付')
     const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
     let result: CodexTestAgentResult | undefined
     let deliveryProblems: string[] = []
@@ -530,12 +1087,17 @@ export async function runCodexTestAgent(
           progress,
           persistThreadId,
           codexTestResultSchema,
+          receiptRecorder,
         )
         const candidate = parseCodexTestResult(finalResponse)
-        deliveryProblems = finalResultProblems(candidate, options.manifest)
+        const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+          workspace.environmentRequirementsPath,
+          candidate.cases,
+        )
+        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+        deliveryProblems = finalResultProblems(candidate, options.manifest, environmentRequirements, executionReceipts)
         if (deliveryProblems.length > 0) continue
         const ledger = await readMutationLedger(workspace.mutationLedgerPath)
-        const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
         result = enforceMutationLedger(enforceEnvironmentRequirements({
           ...candidate,
           startedAt: state.startedAt,
@@ -545,20 +1107,54 @@ export async function runCodexTestAgent(
         break
       } catch (error) {
         const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
-        if (isOperationalBlock(message)) throw error
+        if (isOperationalBlock(message)) {
+          const artifactPath = resolve(workspace.workspaceDirectory, 'case-results.json')
+          const artifactExists = await access(artifactPath).then(() => true, () => false)
+          if (!artifactExists) throw error
+          deliveryProblems = [message]
+          break
+        }
         deliveryProblems = [message]
+        continue
       }
     }
     if (!result) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
-      const environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-      result = deliveryBlockedResult(
-        options.manifest,
-        state,
-        deliveryProblems.join('; ') || 'Codex did not provide a structured final result.',
-        ledger,
-        environmentRequirements,
-      )
+      let environmentRequirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+      const artifactPath = resolve(workspace.workspaceDirectory, 'case-results.json')
+      const recovered = await recoverCodexDeliveryResult({
+        artifactPath,
+        manifest: options.manifest,
+        startedAt: state.startedAt,
+      })
+      if (recovered.result) {
+        environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
+          workspace.environmentRequirementsPath,
+          recovered.result.cases,
+        )
+        const executionReceipts = executionReceiptsPath ? await readExecutionReceipts(executionReceiptsPath) : []
+        const recoveryProblems = finalResultProblems(recovered.result, options.manifest, environmentRequirements, executionReceipts)
+        if (recoveryProblems.length === 0) {
+          progress.report('stage', '结构化响应断流，已从同一 Codex 工作区恢复交付记录')
+          result = enforceMutationLedger(enforceEnvironmentRequirements(recovered.result, environmentRequirements), ledger)
+        } else {
+          result = deliveryBlockedResult(
+            options.manifest,
+            state,
+            recoveryProblems.join('; '),
+            ledger,
+            environmentRequirements,
+          )
+        }
+      } else {
+        result = deliveryBlockedResult(
+          options.manifest,
+          state,
+          deliveryProblems.join('; ') || recovered.problems.join('; ') || 'Codex did not provide a structured final result.',
+          ledger,
+          environmentRequirements,
+        )
+      }
     }
     await writePrivateJson(resultPath, result)
     progress.report('stage', `结构化测试结果已生成：${result.outcome}`)
@@ -567,6 +1163,7 @@ export async function runCodexTestAgent(
       stage: 'completed',
       outcome: result.outcome,
       resultPath,
+      finishedAt: new Date().toISOString(),
       ...(thread.id ? { threadId: thread.id } : {}),
     })
     await writePrivateJson(statePath, state)
@@ -582,7 +1179,7 @@ export async function runCodexTestAgent(
       const result = blockedResult(options.manifest, state, message, ledger, environmentRequirements)
       await writePrivateJson(resultPath, result)
       state = updateCodexTestState(state, {
-        status: 'completed', stage: 'completed', outcome: 'blocked', resultPath,
+        status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
         ...(activeThread?.id ? { threadId: activeThread.id } : {}),
       })
       await writePrivateJson(statePath, state)

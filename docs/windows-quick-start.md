@@ -96,6 +96,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 ## 日常执行
 
+`execution_receipts` MCP 查询默认只提供当前窗口的紧凑同 case 推荐 ID；完整回执文件仍用于确定性校验和审计，避免前置窗口的全部回执进入新上下文。回执 ID 包含 case 窗口和 turn 序号，跨上下文或恢复时重复出现的 `item_*` 不会互相覆盖。
+
 选择“开始一次新测试”：
 
 1. 在弹出的窗口中选择测试用例 Excel；
@@ -106,15 +108,15 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架会先解析 Excel，并把单元格中出现但没有手工输入的网站 URL 自动加入本次目标范围。如果已有环境只覆盖其中一部分，菜单会明确列出缺少的网站并进入环境更新向导；直接使用向导默认值会保留原环境的登录状态和权限范围。环境完整后，框架会自动选择并复用登录状态。每次运行的输出目录也会自动创建。
 
-默认执行主体是一个持久 Codex 测试线程。原始 Excel、测试说明、图片和本轮环境值会复制到隔离的可写 run 工作区；Codex 可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。测试工程师不需要编辑 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
+默认执行主体是 Codex 测试代理。短用例集使用一个持久线程；长用例集默认每 8 个 case 使用一个独立上下文，所有窗口共享同一原始 Excel、测试说明、图片、本轮环境值、登录状态、证据和 Mutation Ledger。Codex 可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。窗口调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
-框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。复合字段 Gate、动态计划和逐用例 checkpoint 仍可作为诊断记录，但都不是提交或通过门禁。
+框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
 
-每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。模型额度、MCP、浏览器或网络不可用时会返回 `blocked` 并写明原因，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 自动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，证据索引中也会列出执行回执 ID，原 Excel 不会被改写。每个 Codex 窗口会留下自己的恢复交付，全部窗口完成后 `agent-workspace/case-results.json` 保存全量版本化逐 case 交付：当最终结构化响应无法被接受，或后续 `--resume` 可以直接完成同一份交付时，框架会校验其版本、输入身份、完整覆盖、证据路径、逐 case 执行回执、显式失败来源、环境需求和权威 Ledger 终态后使用它。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
 
-完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果新 origin 缺少登录、权限或业务授权，Codex 会在 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json` 中记录待补充条件。完成环境注册后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；这不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
+完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，Codex 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Codex 会重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
 
-启动窗口会持续显示带时间的执行进度，包括读取测试材料、校验环境、启动或恢复 Codex 线程、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
+启动窗口会持续显示带时间的执行进度，包括当前 case 窗口编号、累计完成 case 数、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
 
 这些进度表示 Codex 仍在工作，不代表测试已经通过。最终结论以 `codex-agent.result.json`、其中引用的实际证据以及 Mutation Ledger 的终态为准；Execution Plan 和字段 Gate 不再是必需产物。
 
@@ -135,6 +137,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --url "https://admin.example.test/" `
   --headed `
   --slow-mo 150 `
+  --case-batch-size 8 `
   --one
 ```
 
@@ -155,7 +158,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --headed
 ```
 
-恢复继续使用同一个 Codex thread 和 Mutation Ledger。它只重建浏览器/MCP 进程，并先根据页面证据核对未完成业务写入。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；对于本次 run 已记录为环境需求、后来完成注册的 origin，框架允许在同一 Profile 下追加并恢复，其他环境替换或权限收窄都会拒绝恢复。
+恢复继续使用同一个 run 和 Mutation Ledger。框架会先校验已有逐 case 交付；如果输入身份、执行回执、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。否则只恢复状态文件中 `activeBatch` 对应的 Codex thread，已经完成的 case 窗口不会重跑。Excel、URL、Profile、风险策略、窗口大小和原有 origin 必须保持不变；对于本次 run 已记录为环境需求、后来完成注册的 origin，框架允许在同一 Profile 下追加并恢复，其他环境替换或权限收窄都会拒绝恢复。
 
 只有排查旧链路兼容性时才使用：
 

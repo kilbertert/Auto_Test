@@ -3,12 +3,13 @@ import { mergeAgentSecrets, parseAgentTestArgs, scopeEnvironmentProfile } from '
 
 describe('Codex agent CLI', () => {
   it('accepts an Excel with URLs supplied by the workbook', () => {
-    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--headed', '--max-iterations', '2', '--slow-mo', '50'])
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--headed', '--max-iterations', '2', '--slow-mo', '50', '--case-batch-size', '12'])
 
     expect(options.urls).toEqual([])
     expect(options.headed).toBe(true)
     expect(options.maxIterations).toBe(2)
     expect(options.slowMo).toBe(50)
+    expect(options.caseBatchSize).toBe(12)
     expect(options.testDataAccess).toBe('direct')
     expect(options.outputDirectory).toMatch(/artifacts[\\/]runs[\\/].*cases-/)
   })
@@ -16,6 +17,7 @@ describe('Codex agent CLI', () => {
   it('rejects conflicting browser modes and invalid numeric limits', () => {
     expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--headed', '--headless'])).toThrow(/不能同时使用/)
     expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--max-iterations', '0'])).toThrow(/正整数/)
+    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--case-batch-size', '0'])).toThrow(/正整数/)
   })
 
   it('accepts explicit recovery of an existing output directory', () => {
