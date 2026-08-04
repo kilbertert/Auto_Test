@@ -8,16 +8,14 @@ import { chromium } from '@playwright/test'
 import crossSpawn from 'cross-spawn'
 import { runAgentTestCli } from './agent-test.js'
 import {
-  environmentProfileMatches,
   normalizeTargetUrls,
   registerEnvironment,
   riskForPolicy,
   safeProfileId,
   type EasyRiskLevel,
-  type EnvironmentProfileMatch,
 } from '../usability/environment-registration.js'
 import { friendlyRunSummary } from '../usability/result-summary.js'
-import { preflightEasyWorkflow } from '../usability/workflow-preflight.js'
+import { planEasyRegistration, preflightEasyWorkflow } from '../usability/workflow-preflight.js'
 import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '../workflow/environment-profile.js'
 
 interface EasyRunOptions {
@@ -210,47 +208,36 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   const preflight = await preflightEasyWorkflow(filePath, suppliedUrls)
   const urls = preflight.targetUrls
   if (preflight.discoveredOrigins.length > 0) {
-    console.log(`从测试用例中发现还需要访问：${preflight.discoveredOrigins.join('、')}`)
+    console.log(
+      `从测试用例中发现还会访问：${preflight.discoveredOrigins.join('、')}（仅提示，不会要求为此注册登录）`,
+    )
   }
-  let profileId = options.profileId
-  const profileMatches = await environmentProfileMatches(urls)
-  if (profileId) {
-    const requested = profileMatches.find((match) => match.profile.id === profileId)
-    if (!requested) throw new Error(`未找到环境：${profileId}`)
-    if (requested.missingOrigins.length > 0) {
-      if (!input.isTTY) throw new Error(profileCoverageError(requested))
-      console.log(`环境“${profileId}”尚未覆盖：${requested.missingOrigins.join('、')}`)
-      console.log('现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。')
-      profileId = await registerInteractive(urls, { existingProfile: requested.profile })
-    }
-  } else {
-    const profiles = profileMatches.filter((match) => match.missingOrigins.length === 0).map((match) => match.profile)
-    if (profiles.length === 1) profileId = profiles[0]!.id
-    else if (profiles.length > 1) {
-      console.log(`找到多个匹配环境：${profiles.map((profile) => profile.id).join('、')}`)
-      profileId = await ask('请输入本次使用的环境名称', profiles[0]!.id)
-    } else if (input.isTTY) {
-      const related = profileMatches
-        .filter((match) => match.coveredOrigins.length > 0)
-        .sort((left, right) =>
-          left.missingOrigins.length - right.missingOrigins.length || left.profile.id.localeCompare(right.profile.id),
-        )
-      let registrationDefaults: { profileId?: string; existingProfile?: EnvironmentProfile } = {}
-      if (related.length > 0) {
-        console.log('已有环境尚未覆盖测试用例需要的全部网站：')
-        for (const match of related) console.log(`  ${match.profile.id}：缺少 ${match.missingOrigins.join('、')}`)
-        const suggestedProfileId = related.length === 1
-          ? related[0]!.profile.id
-          : await ask('请输入要更新的环境名称', related[0]!.profile.id)
-        const existingProfile = related.find((match) => match.profile.id === suggestedProfileId)?.profile
-        registrationDefaults = existingProfile ? { existingProfile } : { profileId: suggestedProfileId }
-        console.log('现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。')
-      } else {
-        console.log('这些网站尚未注册，先用向导完成一次环境注册。')
+  const plan = await planEasyRegistration({
+    suppliedUrls,
+    isTTY: input.isTTY,
+    ...(options.profileId ? { profileId: options.profileId } : {}),
+  })
+  let profileId: string | undefined
+  switch (plan.kind) {
+    case 'error':
+      throw new Error(plan.message)
+    case 'use':
+      profileId = plan.profileId
+      break
+    case 'choose':
+      console.log(`找到多个匹配环境：${plan.profiles.map((profile) => profile.id).join('、')}`)
+      profileId = await ask('请输入本次使用的环境名称', plan.profiles[0]!.id)
+      break
+    case 'register': {
+      console.log(plan.message)
+      let defaults = plan.defaults
+      if (plan.related && plan.related.length > 1) {
+        const suggestedProfileId = await ask('请输入要更新的环境名称', plan.related[0]!.profile.id)
+        const existingProfile = plan.related.find((match) => match.profile.id === suggestedProfileId)?.profile
+        defaults = existingProfile ? { existingProfile } : { profileId: suggestedProfileId }
       }
-      profileId = await registerInteractive(urls, registrationDefaults)
-    } else {
-      throw new Error(profileRegistrationError(profileMatches, urls))
+      profileId = await registerInteractive(plan.registrationUrls, defaults)
+      break
     }
   }
   const outputDirectory = resolve(options.outputDirectory ?? defaultRunDirectory(filePath))
@@ -298,17 +285,6 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
     console.log(`运行诊断：${resolve(outputDirectory, options.legacyRuntime ? 'run-events.jsonl' : 'codex-agent.events.jsonl')}`)
   }
   return exitCode
-}
-
-function profileCoverageError(match: EnvironmentProfileMatch): string {
-  return `环境“${match.profile.id}”缺少网站：${match.missingOrigins.join('、')}`
-}
-
-function profileRegistrationError(matches: EnvironmentProfileMatch[], urls: string[]): string {
-  const related = matches.find((match) => match.coveredOrigins.length > 0)
-  if (related) return `${profileCoverageError(related)}。请先运行 npm run easy，选择“注册或更新测试环境”。`
-  const origins = [...new Set(urls.map((url) => new URL(url).origin))]
-  return `以下网站尚未注册：${origins.join('、')}。请先运行 npm run easy，选择“注册或更新测试环境”。`
 }
 
 async function runInteractive(): Promise<void> {
