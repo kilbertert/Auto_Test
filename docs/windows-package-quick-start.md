@@ -4,7 +4,7 @@
 
 ## 适用前提
 
-- 在 /home/claude/Projects/Auto-Test 的 Linux/WSL 工作副本中执行。
+- 在 Auto-Test 仓库的 Linux/WSL 工作副本中执行。
 - 已切换到准备交付的 Git 提交。
 - 模型 API Base URL、模型 ID 和 API Key 可用。
 - 工作树必须干净。脚本会拒绝从未提交改动构建。
@@ -16,7 +16,7 @@
 先进入仓库并确认版本：
 
 ~~~bash
-cd /home/claude/Projects/Auto-Test
+cd /path/to/Auto-Test
 git fetch --prune origin
 git switch main
 git pull --ff-only origin main
@@ -35,7 +35,7 @@ bash scripts/build-private-windows-package-quick.sh
 默认输出目录：
 
 ~~~text
-/home/claude/Projects/Auto-Test/artifacts/private-release/
+artifacts/private-release/
 ~~~
 
 包名格式为 Auto-Test-Windows-private-<commit>.zip，其中 commit 是构建时 HEAD 的短提交号。
@@ -99,7 +99,7 @@ Excel、同名 .auto-test sidecar 和必要 URL 必须一起交付；它们共�
 
 | 现象 | 处理 |
 |---|---|
-| 工作树存在未提交改动 | 提交或放弃改动后再构建，不要绕过检查。 |
+| 工作树存在未提交改动 | 提交当前改动，或从同一提交创建干净 worktree 后再构建；不要绕过检查。 |
 | 缺少 zip 命令 | 在 Linux/WSL 安装 zip，然后重新运行脚本。 |
 | Windows 启动时要求输入 Provider | 你拿到的是公开源码包，或私有 Provider 元数据没有随包复制；重新从本页流程构建。 |
 | Provider 探针失败 | 先处理 API 地址、模型、Key、网络或额度；这属于启动层问题。 |
