@@ -39,28 +39,26 @@ function twoCaseManifest(origin: string): WorkflowIntakeManifest {
   return workflow
 }
 
-function streamedResponse(response: string): { events: AsyncGenerator<ThreadEvent> } {
+function streamedResponse(
+  response: string,
+  options: { threadId?: string; includeCaseBookkeeping?: boolean } = {},
+): { events: AsyncGenerator<ThreadEvent> } {
+  const threadId = options.threadId ?? 'thread-fixture'
+  const includeCaseBookkeeping = options.includeCaseBookkeeping ?? true
+  const interactionId = includeCaseBookkeeping ? 'receipt-interaction' : 'unattributed-interaction'
+  const observationId = includeCaseBookkeeping ? 'receipt-observation' : 'unattributed-observation'
   return {
     events: (async function* () {
-      yield { type: 'thread.started', thread_id: 'thread-fixture' } as ThreadEvent
+      yield { type: 'thread.started', thread_id: threadId } as ThreadEvent
       yield { type: 'turn.started' } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'case-begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'receipt-interaction', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'receipt-observation', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'case-end', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
-      yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
-    })(),
-  }
-}
-
-function streamedResponseWithoutCaseBookkeeping(response: string): { events: AsyncGenerator<ThreadEvent> } {
-  return {
-    events: (async function* () {
-      yield { type: 'thread.started', thread_id: 'thread-native-no-bookkeeping' } as ThreadEvent
-      yield { type: 'turn.started' } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'unattributed-interaction', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'unattributed-observation', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      if (includeCaseBookkeeping) {
+        yield { type: 'item.completed', item: { id: 'case-begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
+      }
+      yield { type: 'item.completed', item: { id: interactionId, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: observationId, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      if (includeCaseBookkeeping) {
+        yield { type: 'item.completed', item: { id: 'case-end', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
+      }
       yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
       yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
     })(),
@@ -679,13 +677,13 @@ describe('Codex test agent runner', () => {
       startThread: () => ({
         id: 'thread-native-no-bookkeeping',
         runStreamed: async (_input, options) => options?.outputSchema
-          ? streamedResponseWithoutCaseBookkeeping(JSON.stringify(finalResult(workflow, {
+          ? streamedResponse(JSON.stringify(finalResult(workflow, {
               cases: [{
                 caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed without journal calls.',
                 evidence: [{ kind: 'observation', description: 'Case-specific live state was observed.' }],
               }],
-            })))
-          : streamedResponseWithoutCaseBookkeeping('Native execution complete.'),
+            })), { threadId: 'thread-native-no-bookkeeping', includeCaseBookkeeping: false })
+          : streamedResponse('Native execution complete.', { threadId: 'thread-native-no-bookkeeping', includeCaseBookkeeping: false }),
       }),
     })
 
@@ -943,6 +941,139 @@ describe('Codex test agent runner', () => {
     expect(resumed.result?.mutations).toContainEqual(expect.objectContaining({ id: 'pending-action', status: 'compensated' }))
     const evidence = JSON.parse(await readFile(evidencePath, 'utf8')) as Array<{ description: string }>
     expect(evidence.map((item) => item.description)).toContain('Evidence recorded before interruption.')
+  })
+
+  it('resumes a case-batch-size run that crashed before its execution mode was persisted', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-resume-prep-crash-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test')
+    const profile = { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } }
+
+    // A missing codex executable makes the first run fail during preparation,
+    // before executionMode is ever persisted. State is left with executionMode undefined.
+    const crashed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome,
+      codexExecutable: resolve(directory, 'missing-codex'),
+      caseBatchSize: 1,
+    }, { browserExecutablePath: browserPath })
+    expect(crashed.state.status).toBe('failed')
+    expect(crashed.state.executionMode).toBeUndefined()
+
+    // Resuming with the original --case-batch-size must not trip the
+    // "cannot switch to case-window mode" guard.
+    let startedThreads = 0
+    const resumed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      caseBatchSize: 1,
+      resume: true,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => {
+        const batchIndex = startedThreads++
+        const phase = workflow.phases[batchIndex]!
+        let turn = 0
+        return {
+          id: null,
+          runStreamed: async (_input, options) => {
+            turn++
+            if (options?.outputSchema) {
+              const scoped = { ...workflow, phases: [phase] }
+              return singleCaseExecutionResponse(JSON.stringify(finalResult(scoped, {
+                cases: [{
+                  caseId: phase.id,
+                  title: phase.title,
+                  outcome: 'passed',
+                  summary: `Observed ${phase.id}.`,
+                  evidence: [{ kind: 'observation', description: `Observed ${phase.id}.` }],
+                }],
+              })), phase.id, 'resume-prep')
+            }
+            return singleCaseExecutionResponse('Window work complete.', phase.id, 'resume-prep')
+          },
+        }
+      },
+    })
+
+    expect(startedThreads).toBe(1)
+    expect(resumed.state).toMatchObject({ status: 'completed', executionMode: 'case_windows', caseBatchSize: 1 })
+    expect(resumed.result?.outcome).toBe('passed')
+  })
+
+  it('recovers pending business writes on the native single-thread path before final delivery', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-native-mutation-recovery-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test', 'write')
+    const profile = { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } }
+    const ledgerPath = resolve(outputDirectory, '.agent-private', 'mutation-ledger.json')
+
+    let recoveryPrompt = ''
+    let nonSchemaTurn = 0
+    const run = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      maxFinalizationTurns: 0,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-native-mutation',
+        runStreamed: async (input, options) => {
+          if (options?.outputSchema) {
+            return streamedResponse(JSON.stringify(finalResult(workflow, {
+              cases: [{
+                caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed after recovery.',
+                evidence: [{ kind: 'observation', description: 'Live state verified after write recovery.' }],
+              }],
+            })))
+          }
+          nonSchemaTurn += 1
+          if (nonSchemaTurn === 1) {
+            // Execution turn: leave a pending business write.
+            await writeFile(ledgerPath, JSON.stringify([{
+              id: 'pending-write', caseId: 'inspect-task', description: 'Created a test record', risk: 'write', status: 'pending',
+              createdAt: '2026-08-04T00:00:00.000Z', updatedAt: '2026-08-04T00:00:00.000Z', evidence: [],
+            }]))
+            return streamedResponse('Execution complete with a pending write.')
+          }
+          // Second non-schema turn is the recovery turn fired by the harness
+          // because the Mutation Ledger still has a pending entry.
+          recoveryPrompt = typeof input === 'string'
+            ? input
+            : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
+          await writeFile(ledgerPath, JSON.stringify([{
+            id: 'pending-write', caseId: 'inspect-task', description: 'Created a test record', risk: 'write', status: 'compensated',
+            createdAt: '2026-08-04T00:00:00.000Z', updatedAt: '2026-08-04T00:01:00.000Z', evidence: ['Verified restored state'],
+          }]))
+          return streamedResponse('Recovery complete.')
+        },
+      }),
+    })
+
+    expect(recoveryPrompt).toContain('Resume the interrupted Auto-Test execution')
+    expect(run.state).toMatchObject({ status: 'completed', executionMode: 'single_thread' })
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.mutations).toContainEqual(expect.objectContaining({ id: 'pending-write', status: 'compensated' }))
   })
 
   it('lets the Codex CLI finish its own reconnect sequence', async () => {
