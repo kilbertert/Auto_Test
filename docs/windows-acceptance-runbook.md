@@ -1,5 +1,7 @@
 # Windows 从零验收清单
 
+本清单从“已经拿到私有 ZIP”开始。如何从 Linux/WSL 生成 ZIP，统一见[Windows 私有包快速打包](windows-package-quick-start.md)。
+
 这份清单用于在一台 Windows 测试机上，从全新解压目录开始，验证 Auto-Test 能否仅凭测试用例、目标 URL 和一次环境注册自主完成真实测试。
 
 日常操作可以使用中文菜单；正式验收建议使用显式命令和固定输出目录，便于中断恢复和结果复核。

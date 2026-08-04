@@ -14,6 +14,7 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)
 - [Windows 快速操作指南](docs/windows-quick-start.md)
+- [Windows 私有包快速打包](docs/windows-package-quick-start.md)
 - [Windows 从零验收清单](docs/windows-acceptance-runbook.md)
 - [仓库与历史方案审计](docs/repository-audit.md)
 - [MVP 规格与执行链路](docs/mvp-spec.md)
