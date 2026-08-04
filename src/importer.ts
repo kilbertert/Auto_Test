@@ -73,7 +73,9 @@ export async function importXlsxToIr(options: ImportOptions): Promise<ImportResu
   const cases: TestCaseIR[] = []
   const seenIds = new Set<string>()
   let invalidRows = 0
-  const limit = Math.max(1, Math.min(options.limit ?? 20, 20))
+  const limit = options.limit === undefined
+    ? 20
+    : Math.max(1, Math.min(options.limit, 10_000))
 
   for (const row of workbook.rows) {
     if (cases.length >= limit) break

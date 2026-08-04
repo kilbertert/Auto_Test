@@ -29,10 +29,25 @@ function manifest(origin: string, risk: 'read' | 'write' = 'read'): WorkflowInta
   }
 }
 
+function twoCaseManifest(origin: string): WorkflowIntakeManifest {
+  const workflow = manifest(origin)
+  workflow.phases.push({
+    id: 'inspect-second-task', title: 'Inspect second task', sourceRow: 3, risk: 'read',
+    steps: [{ id: 'step-2', sourceText: 'Open second task details', confidence: 1 }],
+    resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
+  })
+  return workflow
+}
+
 function streamedResponse(response: string): { events: AsyncGenerator<ThreadEvent> } {
   return {
     events: (async function* () {
       yield { type: 'thread.started', thread_id: 'thread-fixture' } as ThreadEvent
+      yield { type: 'turn.started' } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'case-begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'receipt-interaction', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'receipt-observation', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'case-end', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
       yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
       yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
     })(),
@@ -52,11 +67,52 @@ function reconnectingStreamText(response: string): { events: AsyncGenerator<Thre
   return {
     events: (async function* () {
       yield { type: 'thread.started', thread_id: 'thread-fixture' } as ThreadEvent
+      yield { type: 'turn.started' } as ThreadEvent
       yield { type: 'error', message: 'Reconnecting... 1/5 (temporary upstream issue)' } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'case-begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'receipt-interaction', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'receipt-observation', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'case-end', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'inspect-task' }, result: {}, status: 'completed' } } as ThreadEvent
       yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
       yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
     })(),
   }
+}
+
+function twoCaseExecutionResponse(response: string): { events: AsyncGenerator<ThreadEvent> } {
+  return {
+    events: (async function* () {
+      yield { type: 'thread.started', thread_id: 'thread-fixture' } as ThreadEvent
+      yield { type: 'turn.started' } as ThreadEvent
+      for (const [caseId, suffix] of [['inspect-task', 'first'], ['inspect-second-task', 'second']] as const) {
+        yield { type: 'item.completed', item: { id: `case-begin-${suffix}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId }, result: {}, status: 'completed' } } as ThreadEvent
+        yield { type: 'item.completed', item: { id: `receipt-interaction-${suffix}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+        yield { type: 'item.completed', item: { id: `receipt-observation-${suffix}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+        yield { type: 'item.completed', item: { id: `case-end-${suffix}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId }, result: {}, status: 'completed' } } as ThreadEvent
+      }
+      yield { type: 'item.completed', item: { id: 'message', type: 'agent_message', text: response } } as ThreadEvent
+      yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
+    })(),
+  }
+}
+
+function singleCaseExecutionResponse(response: string, caseId: string, suffix: string): { events: AsyncGenerator<ThreadEvent> } {
+  return {
+    events: (async function* () {
+      yield { type: 'thread.started', thread_id: `thread-${suffix}` } as ThreadEvent
+      yield { type: 'turn.started' } as ThreadEvent
+      yield { type: 'item.completed', item: { id: `case-begin-${suffix}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId }, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: `receipt-interaction-${suffix}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: `receipt-observation-${suffix}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', arguments: {}, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: `case-end-${suffix}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId }, result: {}, status: 'completed' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: `message-${suffix}`, type: 'agent_message', text: response } } as ThreadEvent
+      yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
+    })(),
+  }
+}
+
+function receiptId(id: string, namespace = 'single-thread', turn = 1): string {
+  return `${namespace}:turn-${String(turn).padStart(4, '0')}:${id}`
 }
 
 function finalResult(workflow: WorkflowIntakeManifest, overrides: Partial<CodexTestAgentResult> = {}): CodexTestAgentResult {
@@ -73,6 +129,7 @@ function finalResult(workflow: WorkflowIntakeManifest, overrides: Partial<CodexT
       title: phase.title,
       outcome: 'passed',
       summary: 'Expected business state was observed.',
+      executionReceiptIds: [receiptId('receipt-interaction'), receiptId('receipt-observation')],
       evidence: [{ kind: 'observation', description: 'Live page and business state were verified.' }],
     })),
     mutations: [],
@@ -269,15 +326,126 @@ describe('Codex test agent runner', () => {
     expect(run.result?.outcome).toBe('passed')
     expect(run.result?.cases[0]?.failureSource).toBeUndefined()
     expect(run.result?.cases[0]?.failureKind).toBeUndefined()
-    expect(executionRunStreamed).toHaveBeenCalledTimes(3)
+    expect(executionRunStreamed).toHaveBeenCalledTimes(4)
     expect(JSON.stringify(executionInputs[0])).toContain('primary test engineer')
     expect(JSON.stringify(executionInputs[0])).toContain('runner.xlsx')
-    expect(JSON.stringify(executionInputs[1])).toContain('Produce the final structured result')
-    expect(JSON.stringify(executionInputs[2])).toContain('missing final case result')
+    expect(JSON.stringify(executionInputs[1])).toContain('evidence-debt audit')
+    expect(JSON.stringify(executionInputs[2])).toContain('Produce the final structured result')
+    expect(JSON.stringify(executionInputs[3])).toContain('missing final case result')
     expect(progressMessages).toContain('Codex 测试线程已建立；中断后可以从本次结果目录恢复')
     expect(progressMessages).toContain('结构化测试结果已生成：passed')
     const events = await readFile(resolve(directory, 'run', 'codex-agent.events.jsonl'), 'utf8')
-    expect(events.trim().split('\n')).toHaveLength(9)
+    expect(events.trim().split('\n')).toHaveLength(32)
+  })
+
+  it('rejects an environment conclusion without a recorded case-scoped prerequisite and corrects it in the same thread', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-environment-audit-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = manifest('https://tasks.example.test')
+    const inputs: Input[] = []
+    let finalization = 0
+    const unsupportedEnvironment = finalResult(workflow, {
+      outcome: 'blocked',
+      cases: [{
+        caseId: 'inspect-task', title: 'Inspect task', outcome: 'blocked', summary: 'The agent did not use the available filter.',
+        failureSource: 'environment', failureKind: 'data',
+        evidence: [{ kind: 'observation', description: 'The unattempted filter was visible.' }],
+      }],
+      blockers: ['The agent did not use the available filter.'],
+    })
+    const corrected = finalResult(workflow, {
+      outcome: 'blocked',
+      cases: [{
+        caseId: 'inspect-task', title: 'Inspect task', outcome: 'blocked', summary: 'The available read-only interaction was not completed.',
+        failureSource: 'agent_execution', failureKind: 'execution',
+        evidence: [{ kind: 'observation', description: 'The available filter was not exercised.' }],
+      }],
+      blockers: ['The available read-only interaction was not completed.'],
+    })
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-environment-audit',
+        runStreamed: async (input, options) => {
+          inputs.push(input)
+          if (!options?.outputSchema) return streamedResponse('Execution or audit complete.')
+          finalization += 1
+          return streamedResponse(JSON.stringify(finalization === 1 ? unsupportedEnvironment : corrected))
+        },
+      }),
+    })
+
+    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'agent_execution', failureKind: 'execution' })
+    expect(JSON.stringify(inputs[1])).toContain('evidence-debt audit')
+    expect(JSON.stringify(inputs[3])).toContain('environment-blocked case inspect-task has no recorded environment requirement reference')
+  })
+
+  it('rejects a generic browser receipt reused to bulk-generate conclusions for multiple cases', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-receipt-batch-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = twoCaseManifest('https://tasks.example.test')
+    const caseResult = (caseId: string, title: string, receiptIds: string[]) => ({
+      caseId, title, outcome: 'passed' as const, summary: 'The observable state was verified.',
+      executionReceiptIds: receiptIds,
+      evidence: [{ kind: 'observation' as const, description: 'Live state was observed.' }],
+    })
+    const batch = finalResult(workflow, {
+      cases: [
+        caseResult('inspect-task', 'Inspect task', [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')]),
+        caseResult('inspect-second-task', 'Inspect second task', [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')]),
+      ],
+    })
+    const corrected = finalResult(workflow, {
+      cases: [
+        caseResult('inspect-task', 'Inspect task', [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')]),
+        caseResult('inspect-second-task', 'Inspect second task', [receiptId('receipt-interaction-second'), receiptId('receipt-observation-second')]),
+      ],
+    })
+    const inputs: Input[] = []
+    let finalization = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable, maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-receipt-batch',
+        runStreamed: async (input, options) => {
+          inputs.push(input)
+          if (!options?.outputSchema) return twoCaseExecutionResponse('Both case episodes completed.')
+          finalization += 1
+          return streamedResponse(JSON.stringify(finalization === 1 ? batch : corrected))
+        },
+      }),
+    })
+
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.cases.map((item) => item.executionReceiptIds)).toEqual([
+      [receiptId('receipt-interaction-first'), receiptId('receipt-observation-first')],
+      [receiptId('receipt-interaction-second'), receiptId('receipt-observation-second')],
+    ])
+    expect(JSON.stringify(inputs[3])).toContain('execution receipt belonging to another case')
   })
 
   it('delivers model infrastructure failures as a structured blocked result', async () => {
@@ -302,8 +470,283 @@ describe('Codex test agent runner', () => {
 
     expect(run.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'blocked', threadId: 'thread-fixture' })
     expect(run.result?.blockers).toContain('429 usage limit reached')
-    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'environment', failureKind: 'environment' })
+    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'infrastructure', failureKind: 'execution' })
     expect(run.result?.cases[0]?.evidence).not.toHaveLength(0)
+  })
+
+  it('recovers a complete same-thread delivery artifact after final JSON transport fails', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-delivery-recovery-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test')
+
+    const run = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({
+        id: 'thread-fixture',
+        runStreamed: async (_input, options) => {
+          if (options?.outputSchema) return failedStream('stream disconnected before completion')
+          const workspace = resolve(outputDirectory, 'agent-workspace')
+          await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+          await writeFile(resolve(workspace, 'evidence', 'observed.md'), 'observed')
+          await writeFile(resolve(workspace, 'case-results.json'), JSON.stringify({
+            version: '1.0',
+            kind: 'case-results',
+            workflowId: workflow.workflowId,
+            sourceSha256: workflow.source.sha256,
+            generatedAt: '2026-08-03T00:01:00.000Z',
+            cases: [{
+              caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.', evidencePaths: ['evidence/observed.md'], executionReceiptIds: [receiptId('receipt-interaction'), receiptId('receipt-observation')],
+            }],
+            mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+          }))
+          return streamedResponse('Execution complete.')
+        },
+      }),
+    })
+
+    expect(run.result).toMatchObject({ outcome: 'passed', summary: expect.stringContaining('Recovered Codex delivery artifact') })
+    expect(run.result?.cases[0]?.evidence[0]?.path).toBe('evidence/observed.md')
+  })
+
+  it('executes a long suite in isolated case windows and aggregates only validated case facts', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-case-windows-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = twoCaseManifest('https://tasks.example.test')
+    const initialPrompts: string[] = []
+    let startedThreads = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      caseBatchSize: 1,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => {
+        const batchIndex = startedThreads++
+        const phase = workflow.phases[batchIndex]!
+        const suffix = batchIndex === 0 ? 'first' : 'second'
+        let turn = 0
+        return {
+          id: null,
+          runStreamed: async (input, options) => {
+            turn++
+            if (turn === 1) initialPrompts.push(typeof input === 'string'
+              ? input
+              : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
+            if (options?.outputSchema) {
+              const scoped = { ...workflow, phases: [phase] }
+              return singleCaseExecutionResponse(JSON.stringify(finalResult(scoped, {
+                cases: [{
+                  caseId: phase.id,
+                  title: phase.title,
+                  outcome: 'passed',
+                  summary: `Observed ${phase.id}.`,
+                  executionReceiptIds: [receiptId(`receipt-interaction-${suffix}`, `batch-${String(batchIndex + 1).padStart(4, '0')}`), receiptId(`receipt-observation-${suffix}`, `batch-${String(batchIndex + 1).padStart(4, '0')}`)],
+                  evidence: [{ kind: 'observation', description: `Observed ${phase.id}.` }],
+                }],
+              })), phase.id, suffix)
+            }
+            return singleCaseExecutionResponse('Window work complete.', phase.id, suffix)
+          },
+        }
+      },
+    })
+
+    expect(startedThreads).toBe(2)
+    expect(initialPrompts[0]).toContain('"id": "inspect-task"')
+    expect(initialPrompts[0]).not.toContain('"id": "inspect-second-task"')
+    expect(initialPrompts[1]).toContain('"id": "inspect-second-task"')
+    expect(initialPrompts[1]).not.toContain('"id": "inspect-task"')
+    expect(run.state).toMatchObject({
+      status: 'completed', executionMode: 'case_windows', caseBatchSize: 1, caseBatchCount: 2,
+      completedBatchIds: ['batch-0001', 'batch-0002'],
+    })
+    expect(run.result?.cases.map((item) => [item.caseId, item.outcome])).toEqual([
+      ['inspect-task', 'passed'],
+      ['inspect-second-task', 'passed'],
+    ])
+    expect(run.result?.cases[0]?.executionReceiptIds).toEqual([receiptId('receipt-interaction-first', 'batch-0001'), receiptId('receipt-observation-first', 'batch-0001')])
+    expect(run.result?.cases[1]?.executionReceiptIds).toEqual([receiptId('receipt-interaction-second', 'batch-0002'), receiptId('receipt-observation-second', 'batch-0002')])
+  })
+
+  it('resumes only the interrupted case window without replaying completed windows', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-case-window-resume-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = twoCaseManifest('https://tasks.example.test')
+    let startedThreads = 0
+
+    const interrupted = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      caseBatchSize: 1,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => {
+        const batchIndex = startedThreads++
+        const phase = workflow.phases[batchIndex]!
+        if (batchIndex === 1) {
+          return { id: null, runStreamed: async () => failedStream('network connection lost', 'thread-second-window') }
+        }
+        let turn = 0
+        return {
+          id: null,
+          runStreamed: async (_input, options) => {
+            turn++
+            if (options?.outputSchema) {
+              const scoped = { ...workflow, phases: [phase] }
+              return singleCaseExecutionResponse(JSON.stringify(finalResult(scoped, {
+                cases: [{
+                  caseId: phase.id, title: phase.title, outcome: 'passed', summary: 'Observed first window.',
+                  executionReceiptIds: [receiptId('receipt-interaction-first-resume', 'batch-0001'), receiptId('receipt-observation-first-resume', 'batch-0001')],
+                  evidence: [{ kind: 'observation', description: 'Observed first window.' }],
+                }],
+              })), phase.id, 'first-resume')
+            }
+            return singleCaseExecutionResponse(`First window turn ${turn}.`, phase.id, 'first-resume')
+          },
+        }
+      },
+    })
+
+    expect(interrupted.result?.outcome).toBe('blocked')
+    expect(interrupted.state).toMatchObject({
+      executionMode: 'case_windows', completedBatchIds: ['batch-0001'],
+      activeBatch: { id: 'batch-0002', stage: 'executing', threadId: 'thread-second-window' },
+    })
+    const savedFirstBatch = JSON.parse(await readFile(resolve(outputDirectory, '.agent-private', 'case-batches', 'batch-0001.result.json'), 'utf8')) as CodexTestAgentResult
+    expect(savedFirstBatch.cases).toHaveLength(1)
+    expect(savedFirstBatch.environmentRequirements).toEqual([])
+
+    const startThread = vi.fn(() => { throw new Error('completed windows must not restart') })
+    const resumeThread = vi.fn((options: { threadId: string }) => {
+      const phase = workflow.phases[1]!
+      return {
+        id: options.threadId,
+        runStreamed: async (_input: Input, turnOptions?: { outputSchema?: unknown }) => {
+          if (turnOptions?.outputSchema) {
+            const scoped = { ...workflow, phases: [phase] }
+            return singleCaseExecutionResponse(JSON.stringify(finalResult(scoped, {
+              cases: [{
+                caseId: phase.id, title: phase.title, outcome: 'passed', summary: 'Observed resumed window.',
+                executionReceiptIds: [receiptId('receipt-interaction-second-resume', 'batch-0002'), receiptId('receipt-observation-second-resume', 'batch-0002')],
+                evidence: [{ kind: 'observation', description: 'Observed resumed window.' }],
+              }],
+            })), phase.id, 'second-resume')
+          }
+          return singleCaseExecutionResponse('Resumed window complete.', phase.id, 'second-resume')
+        },
+      }
+    })
+    const resumed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      caseBatchSize: 1,
+      resume: true,
+    }, { browserExecutablePath: browserPath, startThread, resumeThread })
+
+    expect(resumed.state.error).toBeUndefined()
+    expect(startThread).not.toHaveBeenCalled()
+    expect(resumeThread).toHaveBeenCalledOnce()
+    expect(resumeThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thread-second-window' }))
+    expect(resumed.state).toMatchObject({ status: 'completed', completedBatchIds: ['batch-0001', 'batch-0002'] })
+    expect(resumed.result?.cases.map((item) => item.outcome)).toEqual(['passed', 'passed'])
+  })
+
+  it('finalizes a complete blocked run artifact on resume without restarting Codex or Chromium', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-fast-resume-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const workflow = manifest('https://tasks.example.test')
+    const profile = {
+      id: 'fixture', origins: ['https://tasks.example.test'], auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+
+    await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({ id: 'thread-resume-artifact', runStreamed: async () => failedStream('network connection lost', 'thread-resume-artifact') }),
+    })
+
+    const workspace = resolve(outputDirectory, 'agent-workspace')
+    await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+    await writeFile(resolve(workspace, 'evidence', 'observed.md'), 'observed')
+    await writeFile(resolve(workspace, 'execution-receipts.json'), JSON.stringify([
+      { id: 'receipt-interaction', caseId: 'inspect-task', tool: 'browser_click', kind: 'interaction', status: 'completed', recordedAt: '2026-08-03T00:00:00.000Z' },
+      { id: 'receipt-observation', caseId: 'inspect-task', tool: 'browser_snapshot', kind: 'observation', status: 'completed', recordedAt: '2026-08-03T00:00:01.000Z' },
+    ]))
+    await writeFile(resolve(workspace, 'case-results.json'), JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
+      workflowId: workflow.workflowId,
+      sourceSha256: workflow.source.sha256,
+      generatedAt: '2026-08-03T00:01:00.000Z',
+      cases: [{
+        caseId: 'inspect-task', title: 'Inspect task', outcome: 'passed', summary: 'Observed.',
+        evidencePaths: ['evidence/observed.md'], executionReceiptIds: ['receipt-interaction', 'receipt-observation'],
+      }],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+
+    const resumeThread = vi.fn(() => {
+      throw new Error('resumeThread must not be called for a complete delivery artifact')
+    })
+    const resumed = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+      resume: true,
+    }, {
+      browserExecutablePath: resolve(directory, 'missing-chromium'),
+      resumeThread,
+    })
+
+    expect(resumeThread).not.toHaveBeenCalled()
+    expect(resumed.state).toMatchObject({ status: 'completed', stage: 'completed', outcome: 'passed', threadId: 'thread-resume-artifact' })
+    expect(resumed.result).toMatchObject({ outcome: 'passed', summary: expect.stringContaining('Recovered Codex delivery artifact') })
+    expect(resumed.result?.cases[0]?.executionReceiptIds).toEqual(['receipt-interaction', 'receipt-observation'])
   })
 
   it('resumes the same persistent thread and preserves pending mutation recovery state', async () => {
@@ -370,7 +813,7 @@ describe('Codex test agent runner', () => {
           id: options.threadId,
           runStreamed: async (input, turnOptions) => {
             if (turnOptions?.outputSchema) return streamedResponse(JSON.stringify(finalResult(workflow)))
-            recoveryPrompt = JSON.stringify(input)
+            if (!recoveryPrompt) recoveryPrompt = JSON.stringify(input)
             await writeFile(ledgerPath, JSON.stringify([{
               id: 'pending-action', caseId: 'inspect-task', description: 'Recover exact task update', risk: 'write', status: 'compensated',
               createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', evidence: ['Verified restored state'],

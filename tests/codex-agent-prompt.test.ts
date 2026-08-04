@@ -40,7 +40,34 @@ describe('Codex test agent prompt safety rules', () => {
     expect(prompt).toContain('test_plan_update is optional')
     expect(prompt).toContain('field_composition_check')
     expect(prompt).toContain('optional diagnostic helpers, not execution gates')
+    expect(prompt).toContain("kind 'case-results'")
+    expect(prompt).toContain('evidencePaths (existing workspace-relative paths)')
+    expect(prompt).toContain('case_execution_begin')
+    expect(prompt).toContain('executionReceiptIds')
+    expect(prompt).toContain('Do not use a receipt from another case')
+    expect(prompt).toContain('infrastructure (provider, Codex CLI, browser, MCP, host, or network failure)')
     expect(prompt).not.toContain('659')
     expect(prompt).not.toContain('+65')
+  })
+
+  it('limits a long-suite context to the active case window without inventing business semantics', () => {
+    const workflow = manifest()
+    workflow.phases = [
+      { id: 'case-a', title: 'A', sourceRow: 2, risk: 'read', steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] } },
+    ]
+    const prompt = codexTestAgentPrompt({
+      manifest: workflow,
+      environmentContext: '',
+      secretAliases: [],
+      caseWindow: { id: 'batch-0002', index: 1, total: 4, caseIds: ['case-a'] },
+      manifestPath: '/run/test-manifest.json',
+      deliveryArtifactPath: '/run/case-results.batch-0002.json',
+    })
+
+    expect(prompt).toContain('Execution window: batch-0002 (2/4)')
+    expect(prompt).toContain('Execute and report only these 1 case IDs')
+    expect(prompt).toContain('/run/test-manifest.json')
+    expect(prompt).toContain('/run/case-results.batch-0002.json')
+    expect(prompt).toContain('Do not execute them, classify them, or create placeholder outcomes')
   })
 })

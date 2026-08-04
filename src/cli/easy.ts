@@ -27,6 +27,7 @@ interface EasyRunOptions {
   briefPath?: string
   profileId?: string
   maxIterations?: number
+  caseBatchSize?: number
   outputDirectory?: string
   model?: string
   headed?: boolean
@@ -283,6 +284,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       headed: options.headed === true,
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+      ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
       testDataAccess: options.testDataAccess ?? 'direct',
@@ -472,6 +474,9 @@ async function main(): Promise<void> {
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
     if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
+    const caseBatchSizeValue = valueAfter(args, '--case-batch-size')
+    const caseBatchSize = caseBatchSizeValue === undefined ? undefined : Number(caseBatchSizeValue)
+    if (caseBatchSize !== undefined && (!Number.isInteger(caseBatchSize) || caseBatchSize < 1)) throw new Error('--case-batch-size 必须是正整数')
     const code = await runEasyWorkflow({
       filePath,
       urls,
@@ -483,6 +488,7 @@ async function main(): Promise<void> {
       ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
+      ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
       resume: args.includes('--resume'),
       testDataAccess: args.includes('--opaque-test-data') ? 'opaque' : 'direct',
@@ -498,7 +504,7 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--opaque-test-data]')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--case-batch-size 8] [--opaque-test-data]')
     console.log('      默认给予 Codex 原始材料、可写 run 工作区、shell、网络和完整 Playwright；--opaque-test-data 恢复旧受限模式')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
