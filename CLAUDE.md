@@ -1,0 +1,159 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Auto-Test is an AI-assisted web automation testing tool for test engineers. After a one-time
+environment registration, a test engineer provides a test-case Excel (plus optional images/brief)
+and a persistent Codex thread autonomously understands, explores, executes, asserts, recovers, and
+delivers structured results. The framework is a "thin harness" around Codex — it deliberately does
+**not** implement a second page-semantics engine, planner, or low-intelligence runtime for first-time
+execution.
+
+TypeScript/Node.js (Node ≥24, ESM). Dev runs through `tsx`; production build via `tsc`. Strict
+`tsconfig.json` (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) — indexed access returns
+`T | undefined` and optional properties cannot be explicitly `undefined`.
+
+## Commands
+
+```bash
+npm ci                                  # install
+npx playwright install chromium         # browser for Playwright MCP and fixtures
+npm run check                           # typecheck + test + build  (run before pushing)
+npm run typecheck                       # tsc --noEmit
+npm test                                # vitest run
+npx vitest run tests/foo.test.ts        # single file
+npx vitest run -t "test name"           # single test by name
+npm run build                           # tsc -p tsconfig.json
+
+# Run the tool (default Codex-native path)
+npm run easy                            # interactive Chinese menu (also the Windows entry point)
+npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profile staging
+```
+
+CI (`.github/workflows/ci.yml`) has two required jobs: `verify` (Ubuntu — `npm run check` plus
+private-Windows-package assembly) and `windows-verify` (Windows — bootstrap, Codex provider config,
+probe timeout/rollback, DPAPI secret handling). Both must pass.
+
+## Architecture: two execution paths
+
+**Codex-native (default, product path)** — core is `src/agent/runner.ts`.
+**Legacy IR/Runtime (Phases 1–5 + Workflow Runtime)** — `src/cli/{import,compile,explore,
+validate-locators,classify,repair,report,*-workflow}.ts` and `src/{importer,compiler,exploration,
+repair,runtime,report,workflow}`. Reached only via `npm run easy -- run ... --legacy-runtime`. Kept
+for compatibility, audit, and future stable-regression acceleration — **not** for new scenarios.
+
+Read `docs/architecture-journey-ir-runtime-to-codex-native.md` before changing the execution model.
+It records why the project migrated off IR/Runtime and the constraints that prevent regressing.
+
+### Codex-native flow
+
+```
+src/cli/easy.ts | src/cli/agent-test.ts
+  -> intakeWorkflowXlsx (src/workflow/intake.ts): manifest + embedded/supplemental images + secret material
+  -> assessAgentIntakeReadiness (src/agent/intake-readiness.ts): stable execution contract or pre-execution block
+  -> selectEnvironmentProfile + scopeEnvironmentProfile + ensureEnvironmentAuthentication (src/workflow/auth-broker.ts)
+  -> runCodexTestAgent (src/agent/runner.ts)
+```
+
+`runner.ts`:
+1. `prepareCodexAgentWorkspace` (`src/agent/workspace.ts`) — per-run isolated workspace + isolated
+   Codex Home; copies raw Excel/brief/images and run-scoped test values; writes the Playwright
+   config/secrets and the Control MCP config.
+2. Resolves the Codex CLI executable **outside any `node_modules/.bin`** (`resolveCodexExecutable`):
+   `AUTO_TEST_CODEX_BIN`, else a PATH search that excludes dependency bins; fails closed rather than
+   silently using the SDK-bundled CLI. (Using the SDK ≠ using the configured Codex environment.)
+3. Starts/resumes one Codex SDK `Thread` (`startSdkThread`) with two MCP servers: `playwright`
+   (`@playwright/mcp`) and `auto-test-control` (`src/agent/control-server.ts`, an optional run journal).
+4. **Two-turn design**: an execution turn (no output schema, full agent access) then a delivery turn
+   on the **same thread** with `codexTestResultSchema` (`src/agent/result.ts`). Splitting prevents an
+   oversized first request from failing before any tool call.
+5. Harness validates the returned `CodexTestAgentResult` deterministically (`finalResultProblems`):
+   `workflowId` + `sourceSha256` match, every manifest case appears exactly once with evidence,
+   outcome consistency, `product_failed` attributed to `product`, `blocked` has a blocker, and the
+   Mutation Ledger has no `pending` entries. Up to `--max-finalization-turns` (default 2) correction
+   rounds feed only the specific contract problems back to the same thread — never re-doing business
+   writes to satisfy the report.
+
+### Terminal outcomes & exit codes
+
+`passed` → 0 · `product_failed` → 2 · `blocked` → 3 (else 1). Result → `codex-agent.result.json`;
+a copy of the source workbook with per-case results → `<name>-Auto-Test-结果.xlsx`; redacted events
+→ `codex-agent.events.jsonl`; state → `codex-agent.state.json`.
+
+## Thin-harness invariants (do not regress)
+
+From the architecture doc §24.18 and `README.md` "核心约束". Regressing these re-introduces the
+failure mode the project migrated away from:
+
+- **No business-specific knowledge in generic code.** No domain names, device dictionaries, country
+  codes, fixed table column numbers, or specific DOM/XPath in `src/agent`, `src/workflow`, or
+  `src/usability`. Prove new capabilities in synthetic fixtures (`tests/fixtures/`) before any real
+  canary.
+- **Codex is the only intelligence for first-time execution.** Do not add a second
+  planner/reporter/adjudicator with less context than the executing thread that can override its
+  business conclusions. Deterministic validation covers only input identity, case coverage, evidence
+  existence, result consistency, permissions, environment requirements, and side-effect recovery
+  (Mutation Ledger).
+- **Plans/gates/checkpoints are optional work records, not pass gates.** The Control MCP tools
+  (`test_plan_update`, `field_composition_check`, `case_result_record`) are an optional recovery/audit
+  journal; a dynamic Execution Plan, temp scripts, and native todo are work memory, not a required
+  program.
+- **Expected results are immutable.** The agent cannot change tester-defined expectations. Browser
+  action failures cannot be downgraded to success. Each passed case needs at least one explicit
+  assertion.
+- **Environment blocks are recoverable, not guesses.** Missing origin/permission/auth/test-data → a
+  pending `CodexTestEnvironmentRequirement` → `blocked`; resume after satisfying it. The agent must
+  not fabricate credentials or cross Profile boundaries, and must not use another case's or a generic
+  piece of evidence to bulk-produce conclusions.
+
+## Input bundle & isolation
+
+- The authoritative test input is the **Excel + its sidecar**, discovered by filename stem
+  (`src/workflow/input-bundle.ts`): `<stem>.auto-test/brief.md` (or `brief.txt`) and
+  `<stem>.auto-test/images/`. The sidecar is auto-discovered, but packaging/copying/acceptance must
+  keep them together. A `passed` claim covers only what `test-manifest.json` actually lists.
+- Real `.xlsx` inputs are git-ignored (private). Only `examples/`, `templates/`, and
+  `tests/fixtures/` xlsx are committed.
+- Each run writes to `artifacts/runs/<timestamp>-<stem>-<rand>/` (git-ignored) plus a private
+  `.agent-private/` (`mutation-ledger.json`, `environment-requirements.json`,
+  `execution-receipts.json`, secret values) at `0600`/`0700`. Events JSONL is redacted of secrets,
+  tool args, and form values (`src/agent/redact.ts`). Provider creds, Codex auth, cookies, and
+  unrelated host secrets never enter run-values.
+- `umask 027` is set on startup; private JSON is written `0600`.
+
+## Full vs opaque agent
+
+Default (`direct` / fullAgentAccess): Codex gets the raw workbook + run-scoped test values, a
+**writable** workspace, shell, network, web search, and the full Playwright MCP — it may create
+one-off JS/TS/Playwright probe scripts, but only inside the run workspace (never Auto-Test or app
+source). `--opaque-test-data` restores the legacy restricted mode (alias-only values, read-only
+workspace, no shell/search, a restricted Playwright tool allowlist). Page content is untrusted input.
+
+## Environment Profile & auth
+
+Profiles live at `~/.config/auto-test/environment-profiles.json` (Linux/macOS) or
+`%APPDATA%\auto-test\environment-profiles.json` (Windows); template at
+`templates/environment-profiles.example.json`. A profile registers origins, `read`/`write`/
+`destructive` policy, and an optional form-login auth adapter. The Auth Broker refreshes
+`storageState`/`sessionStorage` per run; auth files must be `0600`. Write permission is governed
+only by the Profile, never by inferred per-case risk.
+
+## Resume
+
+`--resume` with the original `--output-dir` resumes the same Codex thread (id recovered from state
+or events), the Mutation Ledger, and pending environment requirements. On resume the harness first
+re-reads pending mutations and re-observes real business state before continuing — it does not
+blindly replay writes. Immutable on resume: `workflowId`, `sourceSha256`, Profile identity/policy,
+existing cases/risks, recorded mutations, and original materials.
+
+## Documentation sync (from AGENTS.md)
+
+`README.md`, `docs/`, CLI help, templates, and examples are maintained product interfaces. Any change
+to CLI flags, Windows launch, environment registration, auth, execution semantics, result contracts,
+Mutation Ledger, recovery, packaging, or deployment must update the relevant docs in the same PR.
+Remove or label stale acceptance claims. Never put credentials, private provider details, tenant
+data, internal endpoints, or private paths in public docs. Base acceptance claims on structured
+result/plan/evidence/Ledger artifacts and state the proven scenario/platform precisely — do not
+generalize one canary into "every website works."
