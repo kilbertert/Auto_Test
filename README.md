@@ -4,7 +4,7 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。
 
-默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片、测试说明和本轮环境值会进入隔离的可写 run 工作区。一个逻辑 Codex Run 自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型 Profile 的上下文与输出容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理 Codex thread。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，框架不替 Codex 做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
+默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。一个逻辑 Codex Run 自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型 Profile 的上下文与输出容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理 Codex thread。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，框架不替 Codex 做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
 
 当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、被动 Playwright 执行回执、自适应 epoch、逐 case 私有结果库、thread checkpoint/轮换和 Windows 启动器接入。每个 epoch 只要求 Codex 交付当前有界 case 集，最终完整结果由框架按不可变 Manifest 顺序确定性聚合，避免大用例集同时撞上上下文和单次 JSON 输出上限。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。旧版状态不再兼容恢复，必须新建 Run。基于 commit `c94ad77` 的历史 thin harness Windows 私有包曾在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该历史结果尚未验证本次自适应 epoch 重构，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 

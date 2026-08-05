@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
+import { redactAgentTextArtifact, redactAgentTextArtifacts } from './artifact-redaction.js'
 import { buildCodexExecutionEpochs, capacityForModelProfile, manifestForExecutionEpoch, type CodexExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
@@ -15,7 +16,7 @@ import { recoverCodexDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { codexTestAgentCheckpointPrompt, codexTestAgentFinalPrompt, codexTestAgentPrompt, codexTestAgentResumePrompt } from './prompt.js'
 import { CodexTestProgressReporter, type CodexTestAgentProgressSink } from './progress.js'
-import { redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
+import { redactAgentArtifactText, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from './result.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from './state.js'
 import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
@@ -238,7 +239,7 @@ async function appendEvent(
   secrets: string[],
   receiptRecorder?: ExecutionReceiptRecorder,
 ): Promise<void> {
-  const serialized = redactAgentValue(JSON.stringify(event), [...secrets, ...transientAgentEventValues(event)])
+  const serialized = redactAgentArtifactText(JSON.stringify(event), [...secrets, ...transientAgentEventValues(event)])
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
   await receiptRecorder?.observe(event)
@@ -254,27 +255,32 @@ async function runTurn(
   outputSchema?: unknown,
   receiptRecorder?: ExecutionReceiptRecorder,
   onUsage?: (usage: CodexTurnUsage) => Promise<void> | void,
+  afterTurn?: () => Promise<void>,
 ): Promise<string> {
-  const streamed = await thread.runStreamed(input, outputSchema ? { outputSchema } : undefined)
-  let finalResponse = ''
-  for await (const event of streamed.events) {
-    await appendEvent(eventsPath, event, secrets, receiptRecorder)
-    progress.observe(event)
-    if (event.type === 'turn.completed') {
-      const usage = (event as ThreadEvent & { usage?: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number } }).usage
-      if (usage) await onUsage?.({
-        inputTokens: usage.input_tokens ?? 0,
-        cachedInputTokens: usage.cached_input_tokens ?? 0,
-        outputTokens: usage.output_tokens ?? 0,
-      })
+  try {
+    const streamed = await thread.runStreamed(input, outputSchema ? { outputSchema } : undefined)
+    let finalResponse = ''
+    for await (const event of streamed.events) {
+      await appendEvent(eventsPath, event, secrets, receiptRecorder)
+      progress.observe(event)
+      if (event.type === 'turn.completed') {
+        const usage = (event as ThreadEvent & { usage?: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number } }).usage
+        if (usage) await onUsage?.({
+          inputTokens: usage.input_tokens ?? 0,
+          cachedInputTokens: usage.cached_input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+        })
+      }
+      if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
+      if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
+      if (event.type === 'turn.failed') throw new Error(event.error.message)
+      if (event.type === 'error' && !/^Reconnecting\.\.\. \d+\/\d+/i.test(event.message)) throw new Error(event.message)
     }
-    if (event.type === 'thread.started') await onThreadStarted?.(event.thread_id)
-    if (event.type === 'item.completed' && event.item.type === 'agent_message') finalResponse = event.item.text
-    if (event.type === 'turn.failed') throw new Error(event.error.message)
-    if (event.type === 'error' && !/^Reconnecting\.\.\. \d+\/\d+/i.test(event.message)) throw new Error(event.message)
+    if (!finalResponse) throw new Error('Codex test agent returned no final response')
+    return finalResponse
+  } finally {
+    await afterTurn?.()
   }
-  if (!finalResponse) throw new Error('Codex test agent returned no final response')
-  return finalResponse
 }
 
 function finalResultProblems(
@@ -359,6 +365,10 @@ function finalResultProblems(
   if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
   if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
   return problems
+}
+
+function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
+  return JSON.parse(redactAgentValue(JSON.stringify(value), secrets)) as T
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {
@@ -722,6 +732,15 @@ export async function runCodexTestAgent(
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath
     executionReceiptsPath = workspace.executionReceiptsPath
+    const checkpointDirectory = resolve(workspace.privateDirectory, 'checkpoints')
+    const scrubGeneratedArtifacts = async (): Promise<void> => {
+      await redactAgentTextArtifact(eventsPath, redactionSecrets)
+      await redactAgentTextArtifacts(workspace.workspaceDirectory, redactionSecrets, {
+        excludedDirectories: [workspace.inputDirectory],
+      })
+      await redactAgentTextArtifacts(checkpointDirectory, redactionSecrets)
+    }
+    await scrubGeneratedArtifacts()
     await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
     if (options.resume) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
@@ -744,10 +763,10 @@ export async function runCodexTestAgent(
             executionReceipts,
           )
           if (recoveryProblems.length === 0) {
-            const result = enforceMutationLedger(
+            const result = redactAgentJsonArtifact(enforceMutationLedger(
               enforceEnvironmentRequirements(recovered.result, environmentRequirements),
               ledger,
-            )
+            ), redactionSecrets)
             await writePrivateJson(resultPath, result)
             progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 Codex：${result.outcome}`)
             state = updateCodexTestState(state, {
@@ -821,12 +840,14 @@ export async function runCodexTestAgent(
     let threadId = state.threadId ?? resumeThreadId
     const startThread = dependencies.startThread ?? ((input) => startSdkThread(input))
     const resumeThread = dependencies.resumeThread ?? ((input) => startSdkThread(input))
-    const checkpointDirectory = resolve(workspace.privateDirectory, 'checkpoints')
-
     for (const epoch of epochs) {
       if (epoch.caseIds.every((caseId) => completedCaseIds.has(caseId))) continue
       const scopedManifest = manifestForExecutionEpoch(options.manifest, epoch)
       const deliveryPath = epochDeliveryPath(workspace, epoch)
+      const scrubEpochArtifacts = async (): Promise<void> => {
+        await scrubGeneratedArtifacts()
+        await redactAgentTextArtifact(deliveryPath, redactionSecrets)
+      }
       await activateExecutionEpoch(workspace, epoch)
       const resumingEpoch = options.resume && state.activeEpoch?.id === epoch.id
       const initialEpochStage = resumingEpoch ? state.activeEpoch!.stage : 'executing'
@@ -893,7 +914,7 @@ export async function runCodexTestAgent(
               }) },
               ...imagePathsForExecutionEpoch(workspace, scopedManifest).map((path) => ({ type: 'local_image' as const, path })),
             ]
-        await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage)
+        await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
         state = updateCodexTestState(state, {
           stage: 'finalizing',
           activeEpoch: { ...state.activeEpoch!, stage: 'finalizing', ...(thread.id ? { threadId: thread.id } : {}) },
@@ -917,6 +938,7 @@ export async function runCodexTestAgent(
           undefined,
           receiptRecorder,
           recordUsage,
+          scrubEpochArtifacts,
         )
       }
 
@@ -939,6 +961,7 @@ export async function runCodexTestAgent(
             codexTestResultSchema,
             receiptRecorder,
             recordUsage,
+            scrubEpochArtifacts,
           )
           const candidate = parseCodexTestResult(finalResponse)
           const requirements = await reconcileEnvironmentRequirementCaseLinks(workspace.environmentRequirementsPath, candidate.cases)
@@ -1003,7 +1026,7 @@ export async function runCodexTestAgent(
             [],
           ).cases)
         }
-        const result = enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger)
+        const result = redactAgentJsonArtifact(enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger), redactionSecrets)
         await writePrivateJson(resultPath, result)
         await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
         state = updateCodexTestState(state, { status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString() })
@@ -1011,6 +1034,7 @@ export async function runCodexTestAgent(
         return { state, result }
       }
 
+      epochResult = redactAgentJsonArtifact(epochResult, redactionSecrets)
       await writePrivateJson(epochResultPath(workspace, epoch), epochResult)
       await writeCaseResultRecords(resultDirectory, options.manifest, epoch.id, epochResult.cases)
       for (const item of epochResult.cases) completedCaseIds.add(item.caseId)
@@ -1040,7 +1064,7 @@ export async function runCodexTestAgent(
         })
         await writePrivateJson(statePath, state)
         progress.report('stage', `正在保存 ${epoch.id} 的 Codex 工作记忆 checkpoint`)
-        await runTurn(thread, [{ type: 'text', text: codexTestAgentCheckpointPrompt(epoch, checkpointPath) }], eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage)
+        await runTurn(thread, [{ type: 'text', text: codexTestAgentCheckpointPrompt(epoch, checkpointPath) }], eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
         const { activeEpoch: _checkpointedEpoch, ...checkpointedState } = state
         state = updateCodexTestState(checkpointedState, { stage: 'executing', checkpointPath })
         await writePrivateJson(statePath, state)
@@ -1060,6 +1084,7 @@ export async function runCodexTestAgent(
     } catch (error) {
       result = deliveryBlockedResult(options.manifest, state, error instanceof Error ? error.message : String(error), ledger, requirements)
     }
+    result = redactAgentJsonArtifact(result, redactionSecrets)
     await writePrivateJson(resultPath, result)
     await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
     state = updateCodexTestState(state, {
@@ -1082,7 +1107,7 @@ export async function runCodexTestAgent(
       const environmentRequirements = environmentRequirementsPath
         ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
         : []
-      const result = blockedResult(options.manifest, state, message, ledger, environmentRequirements)
+      const result = redactAgentJsonArtifact(blockedResult(options.manifest, state, message, ledger, environmentRequirements), redactionSecrets)
       await writePrivateJson(resultPath, result)
       state = updateCodexTestState(state, {
         status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),

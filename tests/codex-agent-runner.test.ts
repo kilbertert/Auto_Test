@@ -38,10 +38,11 @@ function eventStream(text: string, threadId: string): { events: AsyncGenerator<T
   }
 }
 
-function failedEventStream(message: string, threadId: string): { events: AsyncGenerator<ThreadEvent> } {
+function failedEventStream(message: string, threadId: string, artifactText?: string): { events: AsyncGenerator<ThreadEvent> } {
   return {
     events: (async function* () {
       yield { type: 'thread.started', thread_id: threadId } as ThreadEvent
+      if (artifactText) yield { type: 'item.completed', item: { id: `artifact-${threadId}`, type: 'agent_message', text: artifactText } } as ThreadEvent
       yield { type: 'error', message } as ThreadEvent
     })(),
   }
@@ -283,6 +284,72 @@ describe('adaptive Codex epochs', () => {
 
     expect(finalizationTurns).toBe(1)
     expect(resumed.result?.outcome).toBe('passed')
+  })
+
+  it('scrubs evidence transcripts even when the Codex turn fails', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-redaction-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const evidencePath = resolve(outputDirectory, 'agent-workspace', 'evidence', 'session', 'session.md')
+    const helperPath = resolve(outputDirectory, 'agent-workspace', 'generated-helper.log')
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
+      environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-redaction',
+        runStreamed: async () => {
+          await mkdir(resolve(evidencePath, '..'), { recursive: true })
+          await writeFile(evidencePath, 'username=fixture-user\npassword=fixture-password\nAuthorization: Bearer abcdefghijklmnop\n')
+          await writeFile(helperPath, 'fixture-password')
+          return failedEventStream('network connection lost', 'thread-redaction', 'Cookie: session=abcdefghijklmno')
+        },
+      }),
+    })
+
+    expect(run.result?.outcome).toBe('blocked')
+    const evidence = await readFile(evidencePath, 'utf8')
+    expect(evidence).not.toContain('fixture-user')
+    expect(evidence).not.toContain('fixture-password')
+    expect(evidence).not.toContain('abcdefghijklmnop')
+    expect(await readFile(helperPath, 'utf8')).toBe('<redacted-secret>')
+    const events = await readFile(resolve(outputDirectory, 'codex-agent.events.jsonl'), 'utf8')
+    expect(events).not.toContain('session=abcdefghijklmno')
+  })
+
+  it('redacts exact secrets from structured delivery artifacts', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-structured-redaction-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const result = JSON.parse(resultFor(workflow, ['case-one'])) as { summary: string; cases: Array<{ summary: string }> }
+    result.summary = 'fixture-user'
+    result.cases[0]!.summary = 'fixture-password'
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
+      environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+    }, { browserExecutablePath: files.browserPath, startThread: () => ({ id: 'thread-structured-redaction', runStreamed: async () => eventStream(JSON.stringify(result), 'thread-structured-redaction') }) })
+
+    expect(run.result?.outcome).toBe('passed')
+    for (const path of [
+      resolve(directory, 'run', 'codex-agent.result.json'),
+      resolve(directory, 'run', 'agent-workspace', 'case-results.json'),
+      resolve(directory, 'run', '.agent-private', 'execution-epochs', 'epoch-0001.result.json'),
+    ]) {
+      expect(await readFile(path, 'utf8')).not.toContain('fixture-user')
+      expect(await readFile(path, 'utf8')).not.toContain('fixture-password')
+    }
   })
 
   it('fails closed instead of interpreting legacy execution state', async () => {
