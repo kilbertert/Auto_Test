@@ -68,6 +68,24 @@ describe('loadModelProfileRegistry', () => {
     expect(loaded.profiles).toHaveLength(1)
   })
 
+  it('loads adaptive epoch capacity hints', async () => {
+    const path = await writeRegistry([{
+      ...primary,
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 16_000,
+      caseOutputTokens: 900,
+      targetContextRatio: 0.55,
+      targetOutputRatio: 0.6,
+    }])
+    expect((await loadModelProfileRegistry(path)).profiles[0]).toMatchObject({
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 16_000,
+      caseOutputTokens: 900,
+      targetContextRatio: 0.55,
+      targetOutputRatio: 0.6,
+    })
+  })
+
   it.each([
     ['bad version', { ...registry([primary]), version: '2.0' }, /version/],
     ['duplicate id', registry([primary, { ...primary, providerId: 'other' }]), /duplicate/],
@@ -75,6 +93,8 @@ describe('loadModelProfileRegistry', () => {
     ['bad wireApi', registry([{ ...primary, wireApi: 'streaming' as never }]), /wireApi/],
     ['bad baseUrl', registry([{ ...primary, baseUrl: 'not-a-url' }]), /baseUrl/],
     ['bad envKey', registry([{ ...primary, envKey: '123bad' }]), /envKey/],
+    ['bad context capacity', registry([{ ...primary, contextWindowTokens: 0 }]), /contextWindowTokens/],
+    ['bad output ratio', registry([{ ...primary, targetOutputRatio: 1 }]), /targetOutputRatio/],
     ['unknown defaultProfileId', registry([primary], 'missing'), /defaultProfileId/],
   ])('rejects %s', async (_label, payload, pattern) => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-model-profile-invalid-'))

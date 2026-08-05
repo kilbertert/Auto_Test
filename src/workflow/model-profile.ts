@@ -21,6 +21,12 @@ export interface ModelProfile {
   reasoningEffort?: CodexReasoningEffort
   /** Optional service_tier override. */
   serviceTier?: string
+  /** Optional capacity hints used by the adaptive Codex epoch scheduler. */
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+  caseOutputTokens?: number
+  targetContextRatio?: number
+  targetOutputRatio?: number
 }
 
 export interface ModelProfileRegistry {
@@ -86,6 +92,24 @@ function validateProfile(raw: unknown): ModelProfile {
   }
   if (record.serviceTier !== undefined) {
     profile.serviceTier = requireString(record.serviceTier, `model profile ${profile.id} serviceTier`)
+  }
+  for (const [key, minimum] of [
+    ['contextWindowTokens', 1],
+    ['maxOutputTokens', 1],
+    ['caseOutputTokens', 1],
+  ] as const) {
+    const value = record[key]
+    if (value !== undefined) {
+      if (!Number.isInteger(value) || (value as number) < minimum) throw new Error(`model profile ${profile.id} ${key} must be a positive integer`)
+      profile[key] = value as never
+    }
+  }
+  for (const key of ['targetContextRatio', 'targetOutputRatio'] as const) {
+    const value = record[key]
+    if (value !== undefined) {
+      if (typeof value !== 'number' || value <= 0 || value >= 1) throw new Error(`model profile ${profile.id} ${key} must be between 0 and 1`)
+      profile[key] = value
+    }
   }
   return profile
 }

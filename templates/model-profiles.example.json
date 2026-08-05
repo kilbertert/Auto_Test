@@ -8,7 +8,12 @@
       "providerId": "primary_api",
       "baseUrl": "https://model-api.example.test/v1",
       "wireApi": "responses",
-      "envKey": "AUTO_TEST_MODEL_API_KEY"
+      "envKey": "AUTO_TEST_MODEL_API_KEY",
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 16000,
+      "caseOutputTokens": 900,
+      "targetContextRatio": 0.55,
+      "targetOutputRatio": 0.55
     },
     {
       "id": "glm",

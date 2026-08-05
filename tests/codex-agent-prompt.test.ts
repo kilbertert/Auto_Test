@@ -50,7 +50,7 @@ describe('Codex test agent prompt safety rules', () => {
     expect(prompt).not.toContain('+65')
   })
 
-  it('limits a long-suite context to the active case window without inventing business semantics', () => {
+  it('limits a long-suite context to the active execution epoch without inventing business semantics', () => {
     const workflow = manifest()
     workflow.phases = [
       { id: 'case-a', title: 'A', sourceRow: 2, risk: 'read', steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] } },
@@ -59,15 +59,15 @@ describe('Codex test agent prompt safety rules', () => {
       manifest: workflow,
       environmentContext: '',
       secretAliases: [],
-      caseWindow: { id: 'batch-0002', index: 1, total: 4, caseIds: ['case-a'] },
+      executionEpoch: { id: 'epoch-0002', index: 1, total: 4, caseIds: ['case-a'], estimatedInputTokens: 500, estimatedOutputTokens: 900 },
       manifestPath: '/run/test-manifest.json',
-      deliveryArtifactPath: '/run/case-results.batch-0002.json',
+      deliveryArtifactPath: '/run/case-results.epoch-0002.json',
     })
 
-    expect(prompt).toContain('Execution window: batch-0002 (2/4)')
+    expect(prompt).toContain('Execution epoch: epoch-0002 (2/4)')
     expect(prompt).toContain('Execute and report only these 1 case IDs')
     expect(prompt).toContain('/run/test-manifest.json')
-    expect(prompt).toContain('/run/case-results.batch-0002.json')
+    expect(prompt).toContain('/run/case-results.epoch-0002.json')
     expect(prompt).toContain('Do not execute them, classify them, or create placeholder outcomes')
   })
 })

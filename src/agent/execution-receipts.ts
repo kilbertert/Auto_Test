@@ -4,7 +4,7 @@ import { writePrivateJson } from './state.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
 export interface CodexTestExecutionReceiptSummary {
-  scope: 'active_run' | 'active_case_window'
+  scope: 'active_run' | 'active_execution_epoch'
   cases: Array<{
     caseId: string
     recommendedReceiptIds: string[]
@@ -72,7 +72,7 @@ export async function readExecutionReceipts(path: string): Promise<CodexTestExec
 export function summarizeExecutionReceipts(
   receipts: CodexTestExecutionReceipt[],
   activeCaseIds: Iterable<string>,
-  scope: CodexTestExecutionReceiptSummary['scope'] = 'active_case_window',
+  scope: CodexTestExecutionReceiptSummary['scope'] = 'active_execution_epoch',
 ): CodexTestExecutionReceiptSummary {
   const caseIds = [...new Set(activeCaseIds)]
   const active = new Set(caseIds)
