@@ -144,3 +144,6 @@ export async function recoverCodexDeliveryResult(options: {
     },
   }
 }
+
+/** Host-neutral recovery export; the historical name is retained for run compatibility. */
+export const recoverAgentDeliveryResult = recoverCodexDeliveryResult

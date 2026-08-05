@@ -222,3 +222,31 @@ export function enforceMutationLedger(
     ],
   }
 }
+
+/** Host-neutral result contract exports. */
+export const agentTestResultSchema = codexTestResultSchema
+
+/**
+ * Some non-schema transports wrap an otherwise valid JSON delivery in a
+ * Markdown fence or a short leading/trailing sentence. Normalize only those
+ * transport wrappers; business fields still go through the same strict AJV
+ * contract and deterministic Runner checks.
+ */
+export function parseAgentTestResult(value: string): CodexTestAgentResult {
+  try {
+    return parseCodexTestResult(value)
+  } catch (originalError) {
+    const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(value)?.[1]
+    const candidate = fenced ?? (() => {
+      const start = value.indexOf('{')
+      const end = value.lastIndexOf('}')
+      return start >= 0 && end > start ? value.slice(start, end + 1) : undefined
+    })()
+    if (!candidate) throw originalError
+    try {
+      return parseCodexTestResult(candidate)
+    } catch {
+      throw originalError
+    }
+  }
+}

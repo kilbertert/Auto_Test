@@ -1,12 +1,15 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto'
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runCodexTestAgent } from '../agent/runner.js'
+import { runAgentTest } from '../agent/runner.js'
 import { limitManifestToCases } from '../agent/execution-epochs.js'
 import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { writeResultWorkbook } from '../agent/result-workbook.js'
+import { isBuiltInAgentHostId } from '../agent/host-registry.js'
+import type { AgentHostId } from '../agent/host.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult, CodexTestFailureKind, CodexTestFailureSource } from '../agent/types.js'
 import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
@@ -41,10 +44,14 @@ export interface AgentTestCliOptions {
   caseLimit?: number
   codexExecutable?: string
   codexHome?: string
+  ompHome?: string
   resume?: boolean
   testDataAccess: 'direct' | 'opaque'
   modelProfileId?: string
   modelProfileRegistryPath: string
+  agentHostId?: AgentHostId
+  agentExecutable?: string
+  ompExecutable?: string
 }
 
 interface AgentEnvironmentSelection {
@@ -52,7 +59,48 @@ interface AgentEnvironmentSelection {
   origins: string[]
   policy: EnvironmentProfile['policy']
   authenticatedOrigins: string[]
+  /** Digest of the exact run-scoped test/auth values without persisting them. */
+  testDataSha256: string
   testDataAccess?: 'direct' | 'opaque'
+}
+
+interface InputBundleIdentity {
+  briefSha256: string
+  imageSha256s: string[]
+  bundleSha256: string
+}
+
+function inputBundleIdentity(bundle: Awaited<ReturnType<typeof discoverWorkflowInputBundle>>): InputBundleIdentity {
+  const imageSha256s = [...bundle.imageSha256s].sort()
+  const canonical = JSON.stringify({ briefSha256: bundle.briefSha256, imageSha256s })
+  return {
+    briefSha256: bundle.briefSha256,
+    imageSha256s,
+    bundleSha256: createHash('sha256').update(canonical).digest('hex'),
+  }
+}
+
+function sameInputBundleIdentity(left: InputBundleIdentity, right: InputBundleIdentity): boolean {
+  return left.bundleSha256 === right.bundleSha256 &&
+    left.briefSha256 === right.briefSha256 &&
+    JSON.stringify([...left.imageSha256s].sort()) === JSON.stringify([...right.imageSha256s].sort())
+}
+
+function testDataIdentitySha256(secrets: Record<string, string | string[]>): string {
+  const entries = Object.entries(secrets)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => [name, Array.isArray(value) ? [...value] : value])
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex')
+}
+
+function testDataSecrets(
+  secrets: Record<string, string | string[]>,
+  profile: EnvironmentProfile,
+): Record<string, string | string[]> {
+  const authenticationRefs = new Set(profile.auth.flatMap((adapter) => adapter.login
+    ? [adapter.login.usernameSecretRef, adapter.login.passwordSecretRef]
+    : []))
+  return Object.fromEntries(Object.entries(secrets).filter(([name]) => !authenticationRefs.has(name)))
 }
 
 function timestamp(): string {
@@ -87,14 +135,18 @@ function help(): string {
     `  --profile-registry <path>   环境注册表，默认 ${defaultEnvironmentProfileRegistryPath()}`,
     '',
     '执行:',
+    '  --agent-host <codex|omp>   选择测试代理宿主，默认 codex；两者遵守同一测试结果合同',
+    '  --agent-bin <path>         当前宿主的可执行文件；也可用 --codex-bin/--omp-bin',
     '  --output-dir <path>         本次运行目录',
-    '  --model <id>                Codex 模型',
+    '  --model <id>                当前 AgentHost 使用的模型（由 Codex/OMP 各自配置解释）',
     '  --headed | --headless       显示或隐藏浏览器，默认 headless',
     '  --slow-mo <ms>              浏览器动作减速',
     '  --max-iterations <count>    列表型数据最多执行 N 条',
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
     '  --case-limit <count>        只执行输入材料中的前 N 条 case；--one 是它的快捷方式',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
+    '  --omp-bin <path>            显式 OMP 可执行文件；通常无需设置',
+    '  --omp-home <path>           OMP provider/auth 配置目录；仅复制允许的配置文件到本次 run',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
     '  --model-profile <id>        选择已注册的模型供应商 Profile；省略时使用注册表默认项或源 Codex 配置',
     `  --model-profile-registry <path>  模型 Profile 注册表，默认 ${defaultModelProfileRegistryPath()}`,
@@ -149,6 +201,23 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   if (args.includes('--one') && args.includes('--case-limit')) throw new Error('--one 与 --case-limit 不能同时使用')
   const caseLimit = args.includes('--one') ? 1 : positiveInteger(args, '--case-limit')
   const slowMo = nonNegativeInteger(args, '--slow-mo')
+  const cliHost = valueAfter(args, '--agent-host')
+  // A resume must inherit the frozen host from the run state unless the user
+  // explicitly supplies a host or host-specific executable. Ambient defaults
+  // must not silently switch an OMP run back to Codex (or vice versa).
+  const explicitHost = cliHost ?? (args.includes('--resume') ? undefined : process.env.AUTO_TEST_AGENT_HOST)
+  const agentBin = valueAfter(args, '--agent-bin')
+  const codexBin = valueAfter(args, '--codex-bin')
+  const ompBin = valueAfter(args, '--omp-bin')
+  const ompHome = valueAfter(args, '--omp-home')
+  if (agentBin && (codexBin || ompBin)) throw new Error('--agent-bin 不能与 --codex-bin 或 --omp-bin 同时使用')
+  if (codexBin && ompHome) throw new Error('--codex-bin 不能与 --omp-home 同时使用')
+  let binHost: 'codex' | 'omp' | undefined
+  if (ompBin || ompHome) binHost = 'omp'
+  else if (codexBin) binHost = 'codex'
+  if (explicitHost && binHost && explicitHost !== binHost) throw new Error('--agent-host 与宿主专用可执行文件参数不一致')
+  const requestedHost = explicitHost ?? binHost ?? 'codex'
+  if (!isBuiltInAgentHostId(requestedHost)) throw new Error(`--agent-host 只支持 codex 或 omp，收到：${requestedHost}`)
   const resolvedFilePath = resolve(filePath)
   return {
     filePath: resolvedFilePath,
@@ -167,6 +236,11 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
     ...(caseLimit !== undefined ? { caseLimit } : {}),
     ...(valueAfter(args, '--codex-bin') ? { codexExecutable: resolve(valueAfter(args, '--codex-bin')!) } : {}),
+    ...((explicitHost || binHost || !args.includes('--resume')) ? { agentHostId: requestedHost } : {}),
+    ...(agentBin ? { agentExecutable: resolve(agentBin) } : {}),
+    ...(codexBin ? { agentExecutable: resolve(codexBin) } : {}),
+    ...(ompBin ? { ompExecutable: resolve(ompBin) } : {}),
+    ...(ompHome ? { ompHome: resolve(ompHome) } : {}),
     ...(valueAfter(args, '--codex-home') ? { codexHome: resolve(valueAfter(args, '--codex-home')!) } : {}),
     ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
     modelProfileRegistryPath: resolve(valueAfter(args, '--model-profile-registry') ?? defaultModelProfileRegistryPath()),
@@ -232,6 +306,7 @@ function isAppendOnlyEnvironmentSelection(
 ): boolean {
   return previous.profileId === current.profileId &&
     JSON.stringify(previous.policy) === JSON.stringify(current.policy) &&
+    (previous.testDataSha256 === undefined || previous.testDataSha256 === current.testDataSha256) &&
     (previous.testDataAccess === undefined || previous.testDataAccess === current.testDataAccess) &&
     isAppendOnlyOrigins(previous.origins, current.origins) &&
     isAppendOnlyOrigins(previous.authenticatedOrigins, current.authenticatedOrigins)
@@ -349,11 +424,16 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   }
   const priorStatePath = resolve(options.outputDirectory, 'codex-agent.state.json')
   const priorLedgerPath = resolve(options.outputDirectory, '.agent-private', 'mutation-ledger.json')
+  let effectiveAgentHostId = options.agentHostId
   if (options.resume) {
     for (const path of [priorStatePath, priorLedgerPath]) {
       if (!await access(path).then(() => true, () => false)) {
         throw new Error(`恢复运行缺少已有测试状态：${path}`)
       }
+    }
+    if (!effectiveAgentHostId) {
+      const priorState = JSON.parse(await readFile(priorStatePath, 'utf8')) as { agentHost?: AgentHostId }
+      effectiveAgentHostId = priorState.agentHost === 'omp' ? 'omp' : 'codex'
     }
   } else {
     for (const path of [priorStatePath, priorLedgerPath]) {
@@ -362,6 +442,10 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       }
     }
   }
+  effectiveAgentHostId ??= 'codex'
+  if (effectiveAgentHostId === 'omp' && options.modelProfileId) {
+    throw new Error('OMP 使用自身的模型 Provider 配置，不能同时指定 Codex --model-profile')
+  }
   await mkdir(options.outputDirectory, { recursive: true, mode: 0o700 })
   printProgress(options.resume ? '正在读取原运行状态和测试输入' : '正在读取测试用例、URL 和图片')
   const inputBundle = await discoverWorkflowInputBundle({
@@ -369,6 +453,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.briefPath ? { briefPath: options.briefPath } : {}),
     imagePaths: options.images,
   })
+  const currentInputBundleIdentity = inputBundleIdentity(inputBundle)
   const intake = await intakeWorkflowXlsx({
     filePath: options.filePath,
     additionalUrls: options.urls,
@@ -390,14 +475,27 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     throw new Error('恢复运行不能改变原始 case 范围；请复用原输出目录中的冻结 Manifest')
   }
   printProgress(`测试材料解析完成：${manifest.phases.length} 个测试阶段，${intake.assets.length} 个图片资源`)
-  if (!options.resume) {
+  const inputBundlePath = resolve(options.outputDirectory, 'input-bundle.json')
+  if (options.resume) {
+    const previousInputBundle = JSON.parse(await readFile(inputBundlePath, 'utf8')) as Partial<InputBundleIdentity>
+    const previousImageSha256s = previousInputBundle.imageSha256s
+    if (
+      typeof previousInputBundle.briefSha256 !== 'string' ||
+      !Array.isArray(previousImageSha256s) ||
+      previousImageSha256s.some((value) => typeof value !== 'string') ||
+      typeof previousInputBundle.bundleSha256 !== 'string' ||
+      !sameInputBundleIdentity(currentInputBundleIdentity, {
+        briefSha256: previousInputBundle.briefSha256,
+        imageSha256s: previousImageSha256s as string[],
+        bundleSha256: previousInputBundle.bundleSha256,
+      })
+    ) {
+      throw new Error('恢复运行的 Excel/.auto-test 输入包与原运行不一致；请修正输入后创建新的 run')
+    }
+  } else {
     await writePrivateJson(manifestPath, manifest)
     await writePrivateJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
-    await writePrivateJson(resolve(options.outputDirectory, 'input-bundle.json'), {
-      briefSha256: inputBundle.briefSha256,
-      imageSha256s: inputBundle.imageSha256s,
-      sidecarDirectory: inputBundle.sidecarDirectory,
-    })
+    await writePrivateJson(inputBundlePath, { ...currentInputBundleIdentity, sidecarDirectory: inputBundle.sidecarDirectory })
   }
   const imagePaths = options.resume ? [] : await persistAssets(options.outputDirectory, intake.assets)
   if (intake.report.summary.errors > 0) {
@@ -452,21 +550,25 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       workflowSecretEnvironment(secrets),
       { headless: !options.headed, ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}) },
     )
-    printProgress(`环境“${profile.id}”已就绪，正在启动 Codex-native 测试代理`)
+    printProgress(`环境“${profile.id}”已就绪，正在启动 ${effectiveAgentHostId} AgentHost`)
     const environmentSelection: AgentEnvironmentSelection = {
       profileId: profile.id,
       origins: profile.origins,
       policy: profile.policy,
       authenticatedOrigins: profile.auth.map((adapter) => adapter.origin),
+      testDataSha256: testDataIdentitySha256(testDataSecrets(secrets, profile)),
       testDataAccess: options.testDataAccess,
     }
     if (options.resume) {
       if (!priorSelection || !isAppendOnlyEnvironmentSelection(priorSelection, environmentSelection)) {
         throw new Error('恢复运行所选环境与原运行不一致；仅允许在同一 Profile 和策略下追加已登记 origin')
       }
-    } else {
-      await writePrivateJson(environmentSelectionPath, environmentSelection)
     }
+    // Persist the effective selection on both initial and resumed runs. A
+    // resumed run may append a previously registered origin; leaving the old
+    // snapshot in place would make later contract comparison lie about the
+    // environment actually used for the final delivery.
+    await writePrivateJson(environmentSelectionPath, environmentSelection)
   } catch (error) {
     if (options.resume) throw error
     return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, error, 'environment', 'environment')
@@ -474,32 +576,34 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
 
   const modelSelectionPath = resolve(options.outputDirectory, 'model-selection.json')
   let modelProfile
-  try {
-    const registry = await loadModelProfileRegistry(options.modelProfileRegistryPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return undefined
-      throw error
-    })
-    let requestedId = options.modelProfileId
-    if (!requestedId && options.resume) {
-      const recorded = await readFile(modelSelectionPath, 'utf8').then((value) => (JSON.parse(value) as { id?: string }).id).catch(() => undefined)
-      if (recorded) requestedId = recorded
-    }
-    const selection = selectModelProfile(registry, requestedId)
-    if (selection) {
-      const apiKey = process.env[selection.profile.envKey]
-      if (apiKey === undefined) {
-        printProgress(`警告：模型 Profile“${selection.profile.id}”的环境变量 ${selection.profile.envKey} 未设置；若该供应商需要密钥，运行将在首次模型调用时被阻断。`)
+  if (effectiveAgentHostId === 'codex') {
+    try {
+      const registry = await loadModelProfileRegistry(options.modelProfileRegistryPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined
+        throw error
+      })
+      let requestedId = options.modelProfileId
+      if (!requestedId && options.resume) {
+        const recorded = await readFile(modelSelectionPath, 'utf8').then((value) => (JSON.parse(value) as { id?: string }).id).catch(() => undefined)
+        if (recorded) requestedId = recorded
       }
-      modelProfile = selection.profile
-      printProgress(`使用模型 Profile“${selection.profile.id}”（${selection.profile.model}）`)
-      if (!options.resume) await writePrivateJson(modelSelectionPath, { id: selection.profile.id, model: selection.profile.model })
+      const selection = selectModelProfile(registry, requestedId)
+      if (selection) {
+        const apiKey = process.env[selection.profile.envKey]
+        if (apiKey === undefined) {
+          printProgress(`警告：模型 Profile“${selection.profile.id}”的环境变量 ${selection.profile.envKey} 未设置；若该供应商需要密钥，运行将在首次模型调用时被阻断。`)
+        }
+        modelProfile = selection.profile
+        printProgress(`使用模型 Profile“${selection.profile.id}”（${selection.profile.model}）`)
+        if (!options.resume) await writePrivateJson(modelSelectionPath, { id: selection.profile.id, model: selection.profile.model })
+      }
+    } catch (error) {
+      if (options.resume) throw error
+      return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, error, 'environment', 'environment')
     }
-  } catch (error) {
-    if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, error, 'environment', 'environment')
   }
 
-  const run = await runCodexTestAgent({
+  const run = await runAgentTest({
     outputDirectory: options.outputDirectory,
     manifest,
     profile,
@@ -518,9 +622,14 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.resume ? { resume: true } : {}),
     testDataAccess: options.testDataAccess,
     ...(modelProfile ? { modelProfile } : {}),
+    ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
+    ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
+    ...(options.ompExecutable ? { ompExecutable: options.ompExecutable } : {}),
+    ...(options.ompHome ? { ompHome: options.ompHome } : {}),
     onProgress: (progress) => printProgress(progress.message),
   })
   console.log(`测试状态：${run.state.status}`)
+  console.log(`测试宿主：${run.state.agentHost ?? effectiveAgentHostId}`)
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
   console.log(`状态文件：${resolve(options.outputDirectory, 'codex-agent.state.json')}`)
   if (run.result) console.log(`结果文件：${resolve(options.outputDirectory, 'codex-agent.result.json')}`)

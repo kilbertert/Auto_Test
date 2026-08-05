@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "easy": "tsx src/cli/easy.ts",
     "agent:test": "tsx src/cli/agent-test.ts",
+    "agent:compare": "tsx src/cli/compare-agent-runs.ts",
     "import": "tsx src/cli/import-xlsx.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
     "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",

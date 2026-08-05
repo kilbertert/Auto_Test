@@ -50,9 +50,12 @@ unset model_api_key
 node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ baseUrl: process.argv[2], model: process.argv[3] }))' \
   "$temporary_directory/Auto-Test.private-provider.json" "$model_base_url" "$model_id"
 unset model_base_url model_id
+node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ packageVersion: require(process.argv[2]).version, commit: process.argv[3] }))' \
+  "$temporary_directory/Auto-Test.build.json" "$repository_root/package.json" "$(git rev-parse --short HEAD)"
 zip -q -j "$output_path" \
   "$temporary_directory/Auto-Test.private-key" \
-  "$temporary_directory/Auto-Test.private-provider.json"
+  "$temporary_directory/Auto-Test.private-provider.json" \
+  "$temporary_directory/Auto-Test.build.json"
 chmod 600 "$output_path"
 
 echo "私有 Windows 包已生成：$output_path"

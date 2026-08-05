@@ -24,9 +24,10 @@ Set-Location "D:\Auto-Test"
 .\Auto-Test.cmd doctor
 ```
 
-继续验收前，应确认 Node.js、Codex CLI、模型 Provider/API 和 Chromium 均显示成功。初始化失败时先解决环境问题，不要直接开始业务测试。
+继续验收前，应确认 Node.js、所选 AgentHost（默认 Codex；OMP 运行时确认 `omp --version`）、对应 Provider/认证和 Chromium 均显示成功。OMP 使用 `--omp-home` 或 `AUTO_TEST_OMP_HOME` 提供 provider/auth 配置时，实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
+选择 OMP 时，Windows 启动器会跳过 Codex CLI/Provider 探针；这只证明 OMP 启动层独立于 Codex，仍需完成真实页面业务验收。
 
-模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。超过上限后启动器会终止卡住的 Codex 进程、恢复上一版 Provider 配置并明确报错；这不是业务测试结果。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
+模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。超过上限后启动器会终止卡住的默认 Codex 初始化进程、恢复上一版 Provider 配置并明确报错；这不是业务测试结果。OMP 的 Provider 探针由 OMP 自身负责，Auto-Test 只检查其启动层。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
 
 如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
 
@@ -79,9 +80,9 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 将示例 URL 替换为测试材料需要访问的实际 URL。`--one` 先执行一条列表数据做安全 canary；确认清理和断言可靠后，再按测试范围执行更多数据。
 
-运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。Codex 会直接读取原始 Excel 和图片，并可使用 shell、临时脚本和完整 Playwright 自主探索、执行、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
+运行期间不要手工操作同一批测试实体，不要关闭启动窗口或自动打开的浏览器。选定的 AgentHost 会直接读取原始 Excel 和图片，并可使用 shell、临时脚本和完整 Playwright 自主探索、执行、验证结果并恢复业务状态；不需要人工编写 Execution Plan。
 
-默认运行由 Runner 按模型 Profile 容量自动规划 execution epoch，并显示 `epoch X/Y` 和累计完成情况。每个 epoch 只包含有界 case 集；完成后写入逐 case store，必要时写 checkpoint 并启动下一代 Codex thread。这只影响上下文容量和恢复方式，不改变用例、权限或业务预期。工程师不需要计算或传入切分大小。
+默认运行由 Runner 按模型容量自动规划 execution epoch，并显示 `epoch X/Y` 和累计完成情况。每个 epoch 只包含有界 case 集；完成后写入逐 case store，必要时写 checkpoint 并启动下一代 AgentHost thread。这只影响上下文容量和恢复方式，不改变用例、权限或业务预期。工程师不需要计算或传入切分大小。
 
 启动后应立即看到带时间的阶段进度；执行期间会显示读取页面、浏览器动作、测试辅助脚本、工作区更新、证据和业务写入清理等摘要。模型正在思考、等待页面或自动重连而暂时没有新动作时，窗口每约 20 秒输出一次“框架仍在运行”心跳。进度不会显示命令正文、密码、验证码、Cookie、表单值、工具参数或模型推理正文。如果窗口给出明确的 `blocked` 或失败结果，应按结果中的原因处理；不要仅因某个页面步骤耗时较长就关闭窗口。
 
@@ -95,11 +96,11 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 Get-Content "$Run\.agent-private\environment-requirements.json" -Raw | ConvertFrom-Json
 ```
 
-每条记录都应包含 `caseIds`、`kind`、`condition` 和已保存的 `evidence`。先确认页面可用的只读操作已经执行：可筛选、搜索、改日期范围、翻页、刷新或查看详情时，不应直接把结果报成环境问题。`origin` 类记录完成一次环境注册或更新后，其他类型在补足权限、认证、测试数据或物理条件后，都必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续。恢复中的 Codex 会重新观察并以新证据标记已满足的需求；不要改用新目录绕过环境边界。
+每条记录都应包含 `caseIds`、`kind`、`condition` 和已保存的 `evidence`。先确认页面可用的只读操作已经执行：可筛选、搜索、改日期范围、翻页、刷新或查看详情时，不应直接把结果报成环境问题。`origin` 类记录完成一次环境注册或更新后，其他类型在补足权限、认证、测试数据或物理条件后，都必须复用相同的 Excel、Profile 和 `$Run`，增加 `--resume` 继续。恢复中的 AgentHost 会重新观察并以新证据标记已满足的需求；不要改用新目录绕过环境边界。
 
-共享环境需求在审计后可能只继续阻断其中一部分 case。最终交付会保留 requirement ID 和仍受阻的 case，只解除已被同一 Codex 证据重新归类为产品、输入或代理执行问题的 case。已被更精确 requirement 完全替代的旧记录标记为 `superseded`，保留审计历史但不再阻断运行；它不会被误标为条件已经满足。
+共享环境需求在审计后可能只继续阻断其中一部分 case。最终交付会保留 requirement ID 和仍受阻的 case，只解除已被同一 AgentHost 证据重新归类为产品、输入或代理执行问题的 case。已被更精确 requirement 完全替代的旧记录标记为 `superseded`，保留审计历史但不再阻断运行；它不会被误标为条件已经满足。
 
-执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 Codex；它不是跳过业务执行，而是在已有逐 case 事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，框架恢复 active epoch 的 thread；若容量轮换尚未启动下一 epoch，则使用 checkpoint 启动新的物理 thread。
+执行 `--resume` 时，窗口可能直接提示已有逐 case 交付通过确定性校验。这表示框架已核对输入身份、case 完整性、证据、环境需求和实际 Ledger，因而无需重新启动浏览器或 AgentHost；它不是跳过业务执行，而是在已有逐 case 事实后避免重复操作。如果任一项不完整或仍有 pending Mutation，框架恢复 active epoch 的宿主 thread；若容量轮换尚未启动下一 epoch，则使用 checkpoint 启动新的物理 thread。
 
 长用例集恢复时查看 `codex-agent.state.json` 的 `completedCaseIds`、`threadGeneration`、`activeEpoch` 和 `checkpointPath`。`.agent-private\case-results\` 是逐 case 恢复事实源，`.agent-private\execution-epochs\` 保存每个 epoch 的有界交付；已完成 case 不应被重写或重跑。若恢复后重复执行已完成 case，或者把一个 epoch 的回执填充到另一个 epoch，应判定调度验收失败。
 
@@ -127,7 +128,7 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 - Mutation Ledger 没有 `pending` 条目；
 - 测试材料要求的最终业务状态已验证，例如零活动订单、测试数据已删除、设备或连接器已恢复。
 
-`execution-plan.json`、`field-compositions.json`、Control MCP evidence checkpoint 或 Codex 生成的临时脚本可以存在，也可以不存在；它们不能替代最终业务证据，也不是通过条件。
+`execution-plan.json`、`field-compositions.json`、Control MCP evidence checkpoint 或 AgentHost 生成的临时脚本可以存在，也可以不存在；它们不能替代最终业务证据，也不是通过条件。
 
 一次页面点击成功、浏览器没有报错或部分步骤执行完成，都不能替代这些终态条件。
 
@@ -146,18 +147,18 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
   --headed
 ```
 
-恢复会继续使用原始材料副本、Codex 工作区文件、证据和 Mutation Ledger，并先重新观察 active epoch 未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在对应 epoch artifact 或全量 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后采用结果，不能从日志或页面猜测。Excel、URL、Profile 和风险策略必须保持不变；旧版 v1 状态不支持恢复。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原始材料副本、Agent 工作区文件、证据和 Mutation Ledger，并先重新观察 active epoch 未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在对应 epoch artifact 或全量 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后采用结果，不能从日志或页面猜测。Excel、URL、Profile 和风险策略必须保持不变；旧版 v1 状态不支持恢复。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
-`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。即使本轮还有其他用例 `blocked`，终端摘要仍会保留已确认产品差异，并按输入材料、环境/权限/测试数据、基础设施和 Codex 执行交付分别显示阻断数量与首个直接原因。
+`product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。即使本轮还有其他用例 `blocked`，终端摘要仍会保留已确认产品差异，并按输入材料、环境/权限/测试数据、基础设施和 AgentHost 执行交付分别显示阻断数量与首个直接原因。
 
 对于其他原因：
 
-- 代理执行失败：优先恢复同一 Codex thread，不要重复已验证的业务写入；
+- 代理执行失败：优先恢复同一 AgentHost thread，不要重复已验证的业务写入；
 - 输入资料问题：修正 Excel 与同名 sidecar 输入包后开始新 run，不要修改原 run 的 source hash；
 - 环境阻断：补充同一 Profile 的登录、权限、测试数据或物理条件后使用 `--resume`；
-- 基础设施故障：恢复 Provider、Codex CLI、Chromium、MCP 或本地网络后使用原 `$Run` 恢复。
+- 基础设施故障：恢复所选 AgentHost、Provider、Chromium、MCP 或本地网络后使用原 `$Run` 恢复；不要在恢复时静默切换宿主。
 
-任何非通过结果如果显示 Mutation Ledger 仍有 `pending`，都必须先恢复原 run 并核对真实业务状态，不得直接新建运行重做写入。
+任何非通过结果如果显示 Mutation Ledger 仍有 `pending`，都必须先恢复原 run 并核对真实业务状态，不得直接新建运行重做写入。OMP 恢复时若不需要更换 Provider，省略 `--omp-home` 以复用原 run 的隔离配置；不要让当前用户目录意外改变原测试宿主的模型或认证。
 
 ## 7. 验收交付
 
@@ -172,11 +173,11 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 - `agent-workspace\input\input-index.json`
 - `agent-workspace\evidence\`
 - `原文件名-Auto-Test-结果.xlsx`
-- Codex 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录
+- AgentHost 在 `agent-workspace\` 中生成并由最终结果引用的辅助脚本或记录
 - `.agent-private\environment-requirements.json`（如存在）
 
 `.agent-private` 用于本机恢复和审计，不应外发。页面证据也可能包含业务数据，离开测试团队前必须先检查和脱敏。
 
-文本制品会在每个 Codex turn 后自动清洗本轮 secret、Authorization、Cookie、Bearer 和 API key；原始输入目录不会被改写，`.agent-private` 仍然是本机私有恢复材料。截图、PDF 等二进制证据不做自动 OCR 或像素擦除，外发前必须人工检查。验收门禁应至少确认 `agent-workspace` 文本制品没有精确 secret 命中，再结合人工检查二进制证据。
+文本制品会在每个 AgentHost turn 后自动清洗本轮 secret、Authorization、Cookie、Bearer 和 API key；原始输入目录不会被改写，`.agent-private` 仍然是本机私有恢复材料。截图、PDF 等二进制证据不做自动 OCR 或像素擦除，外发前必须人工检查。验收门禁应至少确认 `agent-workspace` 文本制品没有精确 secret 命中，再结合人工检查二进制证据。
 
 更详细的安装、私有 Provider、安全边界和命令说明见 [Windows 快速操作指南](windows-quick-start.md)。

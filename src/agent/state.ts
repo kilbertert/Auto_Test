@@ -1,7 +1,7 @@
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { CodexTestAgentState } from './types.js'
+import type { AgentTestState } from './types.js'
 
 export async function writePrivateJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -12,7 +12,7 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
   if (process.platform !== 'win32') await chmod(path, 0o600)
 }
 
-export function initialCodexTestState(workflowId: string, sourceSha256: string): CodexTestAgentState {
+export function initialAgentTestState(workflowId: string, sourceSha256: string): AgentTestState {
   const now = new Date().toISOString()
   return {
     version: '2.0',
@@ -27,9 +27,13 @@ export function initialCodexTestState(workflowId: string, sourceSha256: string):
   }
 }
 
-export function updateCodexTestState(
-  state: CodexTestAgentState,
-  patch: Partial<CodexTestAgentState>,
-): CodexTestAgentState {
+export function updateAgentTestState(
+  state: AgentTestState,
+  patch: Partial<AgentTestState>,
+): AgentTestState {
   return { ...state, ...patch, updatedAt: new Date().toISOString() }
 }
+
+/** Historical Codex names remain source-compatible aliases. */
+export const initialCodexTestState = initialAgentTestState
+export const updateCodexTestState = updateAgentTestState

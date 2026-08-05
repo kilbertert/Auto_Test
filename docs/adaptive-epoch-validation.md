@@ -35,7 +35,7 @@ npm run check
 | 最大 scoped Manifest | 14,173 bytes |
 | 估算最大 epoch 输出 | 8,100 tokens |
 
-历史全量结构化交付约为 130-203 KB。旧单线程路径要求同一模型上下文读取完整 Manifest，并在一个 finalization turn 中返回全部 case；新路径只要求 Codex 返回当前有界 epoch，逐 case 事实落盘后由 Runner 按 Manifest 顺序聚合，因此不再依赖模型一次输出完整 285-case JSON。
+历史全量结构化交付约为 130-203 KB。旧单线程路径要求同一模型上下文读取完整 Manifest，并在一个 finalization turn 中返回全部 case；新路径只要求选定 AgentHost 返回当前有界 epoch，逐 case 事实落盘后由 Runner 按 Manifest 顺序聚合，因此不再依赖模型一次输出完整 285-case JSON。
 
 ## 已验证恢复边界
 
@@ -62,7 +62,7 @@ artifacts/acceptance/adaptive-epoch-lta-one-sol-redacted-20260805
 - 7 条 case 证据、2 条 case 回执、31 条完整执行回执；
 - 逐 case store、epoch 交付 artifact 和结果工作簿均存在；
 - Mutation Ledger `pending=0`，Environment Requirement 数量为 0；
-- 运行期间发生一次模型流式连接中断，Codex 自动重连后继续完成，未误报业务失败；
+- 运行期间发生一次模型流式连接中断，Codex AgentHost 自动重连后继续完成，未误报业务失败；
 - `agent-workspace` 及其排除原始输入后的外部文本制品精确 secret 命中为 0。
 
 这证明当前修复工作树可以在真实 LTA 登录场景中完成只读业务 canary，并在 Provider 中断后继续交付。但它不是 285 条正式 LTA 的业务准确率验收，也没有真实故障案例；用户名在截图中仍可见，运行目录只能留在受控测试环境，截图/PDF 外发前必须人工脱敏。

@@ -119,7 +119,7 @@ function defaultNextAction(result: CodexTestAgentResult): string {
   if (sources.includes('infrastructure')) return '恢复执行依赖后，使用原结果目录继续上次测试。'
   if (sources.includes('environment')) return '补充所需登录、权限、测试数据或物理条件后，使用原结果目录继续。'
   if (sources.includes('input')) return '修正 Excel/sidecar 输入包后开始一次新测试。'
-  if (sources.includes('agent_execution')) return '使用原结果目录继续同一 Codex 线程，不要重复已验证的业务写入。'
+  if (sources.includes('agent_execution')) return '使用原结果目录继续同一 AgentHost 线程，不要重复已验证的业务写入。'
   if (sources.includes('product')) return '修复产品问题或确认预期结果后，使用相同输入重新验收。'
   return '查看详细结果和运行诊断后处理。'
 }
@@ -133,12 +133,15 @@ async function diagnosticLine(statePath: string, fileName = 'run-events.jsonl'):
   return access(path).then(() => `运行诊断：${path}`, () => undefined)
 }
 
-function codexRunDetails(result: CodexTestAgentResult): string[] {
+function agentRunDetails(result: CodexTestAgentResult, state?: CodexTestAgentState): string[] {
   const counts = result.cases.reduce<Record<'passed' | 'product_failed' | 'blocked', number>>((all, item) => {
     all[item.outcome] += 1
     return all
   }, { passed: 0, product_failed: 0, blocked: 0 })
-  const lines = [`用例完成情况：通过 ${counts.passed}，产品不符预期 ${counts.product_failed}，暂时阻断 ${counts.blocked}。`]
+  const lines = [
+    `执行宿主：${state?.agentHost ?? 'codex（兼容旧状态）'}`,
+    `用例完成情况：通过 ${counts.passed}，产品不符预期 ${counts.product_failed}，暂时阻断 ${counts.blocked}。`,
+  ]
   const nonPassed = result.cases.filter((item) => item.outcome !== 'passed')
   const groups = new Map<string, typeof nonPassed>()
   for (const item of nonPassed) {
@@ -155,7 +158,7 @@ function codexRunDetails(result: CodexTestAgentResult): string[] {
           input: '测试材料需要补充',
           environment: '测试环境、权限或测试数据不可用',
           infrastructure: '执行基础设施不可用',
-          agent_execution: 'Codex 执行或交付未完成',
+          agent_execution: 'AgentHost 执行或交付未完成',
         } satisfies Record<CodexTestFailureSource, string>)[source as CodexTestFailureSource]
     lines.push(`${label}：${cases.length} 条。${cleanLine(cases[0]?.summary ?? '')}`)
   }
@@ -183,7 +186,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '发现产品或业务结果不符合预期',
       outcome: 'product_failed',
       lines: [
-        ...codexRunDetails(result),
+        ...agentRunDetails(result, state),
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
         ...labeledLines('直接原因', result.productDefects.length > 0 ? result.productDefects : [result.summary]),
@@ -200,7 +203,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       title: '测试暂时无法继续',
       outcome: 'blocked',
       lines: [
-        ...codexRunDetails(result),
+        ...agentRunDetails(result, state),
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
         ...labeledLines('直接原因', result.blockers.length > 0 ? result.blockers : [result.summary]),
@@ -220,7 +223,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
     return {
       title: '测试仍在运行',
       outcome: 'running',
-      lines: [`当前阶段：${state.stage}${state.threadId ? `，Codex 线程：${state.threadId}` : ''}。`],
+      lines: [`当前阶段：${state.stage}${state.agentHost ? `，宿主：${state.agentHost}` : ''}${state.threadId ? `，线程：${state.threadId}` : ''}。`],
     }
   }
   const ledgerPath = resolve(dirname(statePath), '.agent-private', 'mutation-ledger.json')
@@ -231,7 +234,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
     lines: [
       '失败位置：Auto-Test 执行基础设施',
       '原因类别：基础设施故障',
-      `直接原因：${cleanLine(state.error ?? 'Codex 测试代理没有生成有效结果。')}`,
+      `直接原因：${cleanLine(state.error ?? 'AgentHost 没有生成有效结果。')}`,
       '建议操作：修复运行依赖后优先使用原结果目录恢复，不要盲目开始新测试。',
       ledger ? mutationStatusLine(ledger) : '业务残留：无法从当前结果确认，请先查看运行诊断。',
       ...(diagnostics ? [diagnostics] : []),

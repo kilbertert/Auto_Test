@@ -102,6 +102,8 @@ describe('Codex agent workspace', () => {
         PATH: '/usr/bin',
         [homeKey]: homeValue,
         FIXTURE_MODEL_KEY: 'provider-key',
+        AUTO_TEST_AGENT_FORWARD_ENV: 'FIXTURE_FORWARD',
+        FIXTURE_FORWARD: 'agent-only-secret',
         UNRELATED_SERVER_SECRET: 'must-not-forward',
       },
     })
@@ -147,10 +149,11 @@ describe('Codex agent workspace', () => {
       secretRef: 'fixture.accessCode', alias: 'AUTO_TEST_VALUE_001', value: 'sensitive-value',
     }))
     expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('primary test engineer')
-    expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key' })
+    expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key', FIXTURE_FORWARD: 'agent-only-secret' })
     expect(workspace.codexEnvironment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
     expect(workspace.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
     expect(workspace.mcpEnvironment.FIXTURE_MODEL_KEY).toBe('')
+    expect(workspace.mcpEnvironment).not.toHaveProperty('FIXTURE_FORWARD')
     expect(serializedWorkspace).not.toContain('sensitive-value')
     expect(await readFile(workspace.runValuesPath!, 'utf8')).not.toContain('provider-key')
     expect(workspace.runValuesPath).toBe(resolve(workspace.privateDirectory, 'run-values.json'))
@@ -325,5 +328,93 @@ describe('Codex agent workspace', () => {
     expect(config).not.toContain('FIXTURE_MODEL_KEY')
     expect(workspace.codexEnvironment).toMatchObject({ GLM_API_KEY: 'glm-secret' })
     expect(workspace.codexEnvironment).not.toHaveProperty('FIXTURE_MODEL_KEY')
+  })
+
+  it('isolates OMP provider state and never inherits a user MCP definition', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-omp-'))
+    directories.push(directory)
+    const ompHome = resolve(directory, 'omp-agent')
+    await mkdir(ompHome)
+    await writeFile(resolve(ompHome, 'models.yml'), 'providers:\n  fixture:\n    baseUrl: https://model.example.test\n', { mode: 0o600 })
+    await writeFile(resolve(ompHome, 'agent.db'), 'sqlite-auth-fixture', { mode: 0o600 })
+    await writeFile(resolve(ompHome, 'auth.json'), '{"fixture":"legacy-private"}', { mode: 0o600 })
+    await writeFile(resolve(ompHome, 'mcp.json'), '{"mcpServers":{"unrelated":{}}}', { mode: 0o600 })
+    const profile: EnvironmentProfile = {
+      id: 'workspace-omp-fixture',
+      origins: ['https://app.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+
+    const workspace = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: resolve(directory, 'unused-codex-home'),
+      sourceAgentHome: ompHome,
+      agentHostId: 'omp',
+      environment: {
+        HOME: resolve(directory, 'user-home'),
+        PATH: '/usr/bin',
+        AUTO_TEST_AGENT_FORWARD_ENV: 'OMP_API_KEY',
+        OMP_API_KEY: 'agent-provider-secret',
+      },
+    })
+
+    expect(await readFile(resolve(workspace.agentHome, 'models.yml'), 'utf8')).toContain('fixture')
+    expect(await readFile(resolve(workspace.agentHome, 'agent.db'), 'utf8')).toBe('sqlite-auth-fixture')
+    expect(await readFile(resolve(workspace.agentHome, 'auth.json'), 'utf8')).toContain('legacy-private')
+    await expect(access(resolve(workspace.agentHome, 'mcp.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(workspace.environment).toMatchObject({ PI_CODING_AGENT_DIR: workspace.agentHome, OMP_API_KEY: 'agent-provider-secret' })
+    expect(workspace.environment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-home'))
+    expect(workspace.mcpEnvironment).not.toHaveProperty('OMP_API_KEY')
+    expect(workspace.mcpEnvironment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-mcp-home'))
+    expect(workspace.mcpEnvironment.HOME).not.toBe(resolve(directory, 'user-home'))
+    const mcpConfig = JSON.parse(await readFile(workspace.ompMcpConfigPath, 'utf8')) as { mcpServers: Record<string, unknown> }
+    expect(Object.keys(mcpConfig.mcpServers).sort()).toEqual(['auto-test-control', 'playwright'])
+    const ompConfig = await readFile(workspace.ompConfigPath, 'utf8')
+    expect(ompConfig).toContain('enabled: false')
+    expect(ompConfig).toContain('backend: off')
+
+    await writeFile(resolve(ompHome, 'agent.db'), 'rotated-sqlite-auth-fixture', { mode: 0o600 })
+    const resumed = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: resolve(directory, 'unused-codex-home'),
+      sourceAgentHome: ompHome,
+      agentHostId: 'omp',
+      environment: {
+        HOME: resolve(directory, 'user-home'),
+        PATH: '/usr/bin',
+      },
+      resume: true,
+    })
+    expect(await readFile(resolve(resumed.agentHome, 'agent.db'), 'utf8')).toBe('rotated-sqlite-auth-fixture')
+
+    const ambientHome = resolve(directory, 'ambient-home')
+    await mkdir(resolve(ambientHome, '.omp', 'agent'), { recursive: true })
+    await writeFile(resolve(ambientHome, '.omp', 'agent', 'agent.db'), 'ambient-must-not-replace-run-auth', { mode: 0o600 })
+    const preserved = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      agentHostId: 'omp',
+      environment: {
+        HOME: ambientHome,
+        PATH: '/usr/bin',
+      },
+      resume: true,
+    })
+    expect(await readFile(resolve(preserved.agentHome, 'agent.db'), 'utf8')).toBe('rotated-sqlite-auth-fixture')
   })
 })

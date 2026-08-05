@@ -18,6 +18,8 @@ import { friendlyRunSummary } from '../usability/result-summary.js'
 import { planEasyRegistration, preflightEasyWorkflow } from '../usability/workflow-preflight.js'
 import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '../workflow/environment-profile.js'
 import { defaultModelProfileRegistryPath, loadModelProfileRegistry, selectModelProfile, type ModelProfile } from '../workflow/model-profile.js'
+import { isBuiltInAgentHostId } from '../agent/host-registry.js'
+import type { AgentHostId } from '../agent/host.js'
 
 interface EasyRunOptions {
   filePath: string
@@ -35,6 +37,10 @@ interface EasyRunOptions {
   resume?: boolean
   testDataAccess?: 'direct' | 'opaque'
   modelProfileId?: string
+  agentHostId?: AgentHostId
+  agentExecutable?: string
+  ompExecutable?: string
+  ompHome?: string
 }
 
 const rl = createInterface({ input, output })
@@ -203,10 +209,15 @@ async function printSummary(statePath: string): Promise<void> {
 
 export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> {
   if (options.legacyRuntime && options.caseLimit !== undefined) {
-    throw new Error('--one/--case-limit 只适用于 Codex-native 入口；旧 IR/Runtime 不提供等价的 Manifest 限制')
+    throw new Error('--one/--case-limit 只适用于 AgentHost 入口；旧 IR/Runtime 不提供等价的 Manifest 限制')
   }
   const filePath = resolve(stripDraggedPath(options.filePath))
   if (extname(filePath).toLowerCase() !== '.xlsx') throw new Error('请选择 .xlsx 测试用例文件')
+  const configuredHost = process.env.AUTO_TEST_AGENT_HOST
+  if (configuredHost && !isBuiltInAgentHostId(configuredHost)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex 或 omp，收到：${configuredHost}`)
+  let effectiveAgentHostId = options.agentHostId
+  if (!effectiveAgentHostId && configuredHost && !options.resume) effectiveAgentHostId = configuredHost as AgentHostId
+  if (!effectiveAgentHostId && (options.ompExecutable || options.ompHome)) effectiveAgentHostId = 'omp'
   await access(filePath)
   const suppliedUrls = normalizeTargetUrls(options.urls)
   console.log('\n正在分析测试用例中的网站范围……')
@@ -280,6 +291,10 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
       ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
+      ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
+      ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
+      ...(options.ompExecutable ? { ompExecutable: options.ompExecutable } : {}),
+      ...(options.ompHome ? { ompHome: options.ompHome } : {}),
       modelProfileRegistryPath: defaultModelProfileRegistryPath(),
       testDataAccess: options.testDataAccess ?? 'direct',
     })
@@ -311,6 +326,22 @@ async function chooseModelProfile(): Promise<string | undefined> {
   return ask('请输入本次使用的模型 Profile 名称', defaultId)
 }
 
+function configuredAgentHost(): 'codex' | 'omp' {
+  const value = process.env.AUTO_TEST_AGENT_HOST ?? 'codex'
+  return isBuiltInAgentHostId(value) ? value : 'codex'
+}
+
+async function chooseAgentHost(): Promise<'codex' | 'omp'> {
+  console.log('\n测试代理宿主：')
+  console.log('  1. Codex CLI（默认）')
+  console.log('  2. OMP / oh-my-pi RPC')
+  const fallback = configuredAgentHost() === 'omp' ? '2' : '1'
+  const value = await ask('请选择', fallback)
+  if (value === '1') return 'codex'
+  if (value === '2') return 'omp'
+  throw new Error('请选择 1 或 2')
+}
+
 async function runInteractive(): Promise<void> {
   const selected = await windowsExcelPicker()
   const filePath = selected ?? stripDraggedPath(await ask('将测试用例 Excel 拖到窗口中，然后按回车'))
@@ -318,7 +349,11 @@ async function runInteractive(): Promise<void> {
   const urls = urlValues(await ask('粘贴网站 URL；多个地址用空格分开'))
   const single = await confirm('是否先只执行一条数据进行安全验证', true)
   const headed = await confirm('是否显示浏览器中的自动化操作', process.platform === 'win32')
-  const modelProfileId = await chooseModelProfile()
+  const configuredHost = process.env.AUTO_TEST_AGENT_HOST
+  const agentHostId = configuredHost && isBuiltInAgentHostId(configuredHost)
+    ? (console.log(`\n使用已配置的测试代理宿主：${configuredHost}`), configuredHost)
+    : await chooseAgentHost()
+  const modelProfileId = agentHostId === 'codex' ? await chooseModelProfile() : undefined
   await runEasyWorkflow({
     filePath,
     urls,
@@ -326,6 +361,7 @@ async function runInteractive(): Promise<void> {
     headed,
     ...(headed ? { slowMo: 150 } : {}),
     ...(modelProfileId ? { modelProfileId } : {}),
+    agentHostId,
   })
 }
 
@@ -354,7 +390,20 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
   })
 }
 
-async function doctor(): Promise<boolean> {
+async function doctor(agentHostId: 'codex' | 'omp' = configuredAgentHost()): Promise<boolean> {
+  if (agentHostId === 'omp') {
+    const ompExecutable = process.env.AUTO_TEST_OMP_BIN || 'omp'
+    const checks = [
+      { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 },
+      { label: 'OMP / oh-my-pi CLI 已安装', ok: await commandAvailable(ompExecutable, ['--version']) },
+      { label: 'Chromium 浏览器已安装', ok: await access(chromium.executablePath()).then(() => true, () => false) },
+    ]
+    console.log('\n环境检查（AgentHost: omp）：')
+    for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
+    console.log('OMP 的模型 Provider、认证和模型选择由 OMP 自身配置负责；Auto-Test 只校验宿主可启动并向其交付同一测试合同。')
+    console.log(`环境配置目录：${defaultEnvironmentProfileRegistryPath()}`)
+    return checks.every((check) => check.ok)
+  }
   const codexExecutable = process.env.AUTO_TEST_CODEX_BIN || 'codex'
   const codexInstalled = await commandAvailable(codexExecutable, ['--version'])
   const codexHome = process.env.CODEX_HOME || resolve(homedir(), '.codex')
@@ -382,7 +431,7 @@ async function doctor(): Promise<boolean> {
     ok: await access(chromium.executablePath()).then(() => true, () => false),
   }
   const checks = [nodeCheck, codexInstallCheck, providerCheck, apiKeyCheck, chromiumCheck]
-  console.log('\n环境检查：')
+  console.log('\n环境检查（AgentHost: codex）：')
   for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
   if (!providerCheck.ok || !apiKeyCheck.ok) {
     console.log('  Windows 修复方式：关闭窗口后重新双击内部私有包中的 Auto-Test.cmd，安装器会自动恢复模型配置。')
@@ -443,6 +492,10 @@ async function main(): Promise<void> {
     const codexDirectory = dirname(process.env.AUTO_TEST_CODEX_BIN)
     process.env.PATH = `${codexDirectory}${delimiter}${process.env.PATH ?? ''}`
   }
+  if (process.env.AUTO_TEST_OMP_BIN) {
+    const ompDirectory = dirname(process.env.AUTO_TEST_OMP_BIN)
+    process.env.PATH = `${ompDirectory}${delimiter}${process.env.PATH ?? ''}`
+  }
   if (!process.env.CODEX_HOME) {
     if (process.env.AUTO_TEST_CODEX_HOME) {
       process.env.CODEX_HOME = process.env.AUTO_TEST_CODEX_HOME
@@ -463,7 +516,9 @@ async function main(): Promise<void> {
     return
   }
   if (command === 'doctor') {
-    if (!await doctor()) process.exitCode = 1
+    const requestedHost = valueAfter(args, '--agent-host') ?? configuredAgentHost()
+    if (!isBuiltInAgentHostId(requestedHost)) throw new Error('--agent-host 只支持 codex 或 omp')
+    if (!await doctor(requestedHost)) process.exitCode = 1
     return
   }
   if (command === 'register') {
@@ -488,7 +543,7 @@ async function main(): Promise<void> {
     if (!filePath) throw new Error('run 必须提供 --file；URL 可以通过 --url 提供，也可以写在 Excel 中')
     if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
     if (args.includes('--resume') && !valueAfter(args, '--output-dir')) throw new Error('--resume 必须同时提供原运行的 --output-dir')
-    if (args.includes('--resume') && args.includes('--legacy-runtime')) throw new Error('--resume 仅适用于 Codex-native 测试代理')
+    if (args.includes('--resume') && args.includes('--legacy-runtime')) throw new Error('--resume 仅适用于 AgentHost 测试代理')
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
     if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
@@ -498,6 +553,13 @@ async function main(): Promise<void> {
     if (args.includes('--one')) caseLimit = 1
     else if (caseLimitValue !== undefined) caseLimit = Number(caseLimitValue)
     if (caseLimit !== undefined && (!Number.isInteger(caseLimit) || caseLimit < 1)) throw new Error('--case-limit 必须是正整数')
+    const agentHostId = valueAfter(args, '--agent-host')
+    if (agentHostId && !isBuiltInAgentHostId(agentHostId)) throw new Error('--agent-host 只支持 codex 或 omp')
+    const ompBin = valueAfter(args, '--omp-bin')
+    const ompHome = valueAfter(args, '--omp-home')
+    if ((ompBin || ompHome) && agentHostId && agentHostId !== 'omp') throw new Error('--omp-bin/--omp-home 必须与 --agent-host omp 一起使用')
+    let effectiveAgentHostId = agentHostId
+    if (!effectiveAgentHostId && (ompBin || ompHome)) effectiveAgentHostId = 'omp'
     const code = await runEasyWorkflow({
       filePath,
       urls,
@@ -508,6 +570,10 @@ async function main(): Promise<void> {
       ...(valueAfter(args, '--output-dir') ? { outputDirectory: valueAfter(args, '--output-dir')! } : {}),
       ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
       ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
+      ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
+      ...(valueAfter(args, '--agent-bin') ? { agentExecutable: resolve(valueAfter(args, '--agent-bin')!) } : {}),
+      ...(ompBin ? { ompExecutable: resolve(ompBin) } : {}),
+      ...(ompHome ? { ompHome: resolve(ompHome) } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
@@ -525,15 +591,15 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--case-limit N|--one] [--opaque-test-data]')
-    console.log('      Codex 会按模型容量自动规划执行 epoch，并在需要时轮换线程；无需手工切分用例')
-    console.log('      默认给予 Codex 原始材料、可写 run 工作区、shell、网络和完整 Playwright；--opaque-test-data 恢复旧受限模式')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--agent-host codex|omp] [--omp-bin path] [--omp-home path] [--headed|--headless] [--case-limit N|--one]')
+    console.log('      AgentHost 会按模型容量自动规划执行 epoch，并在需要时轮换或恢复会话；无需手工切分用例')
+    console.log('      Codex 和 OMP 获得相同原始材料、可写 run 工作区、shell、网络、完整 Playwright 与结果合同')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
-    console.log('      多模型供应商：--model-profile <id> 切换已注册的模型 Profile；省略时使用注册表默认项或源 Codex 配置')
-    console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
+    console.log('      Codex 多模型供应商：--model-profile <id> 切换已注册的模型 Profile；OMP 使用自身 Provider 配置')
+    console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')
-    console.log('      npm run easy -- doctor')
+    console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return
   }
   throw new Error(`未知命令：${command}`)

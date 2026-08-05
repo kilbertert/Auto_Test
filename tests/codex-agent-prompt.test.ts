@@ -17,8 +17,8 @@ function manifest(): WorkflowIntakeManifest {
   }
 }
 
-describe('Codex test agent prompt safety rules', () => {
-  it('makes Codex the primary test engineer with raw inputs and full execution tools', () => {
+describe('AgentHost test prompt safety rules', () => {
+  it('makes the selected host the primary test engineer with raw inputs and full execution tools', () => {
     const prompt = codexTestAgentPrompt({
       manifest: manifest(),
       environmentContext: '',
@@ -45,7 +45,7 @@ describe('Codex test agent prompt safety rules', () => {
     expect(prompt).toContain('case_execution_begin')
     expect(prompt).toContain('executionReceiptIds')
     expect(prompt).toContain('Do not use a receipt from another case')
-    expect(prompt).toContain('infrastructure (provider, Codex CLI, browser, MCP, host, or network failure)')
+    expect(prompt).toContain('infrastructure (provider, agent host CLI, browser, MCP, host, or network failure)')
     expect(prompt).not.toContain('659')
     expect(prompt).not.toContain('+65')
   })

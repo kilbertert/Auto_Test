@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   const caseIds = new Set(config.activeCaseIds ?? config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
-      'These tools are an optional run journal; they do not replace Codex planning, shell work, Playwright exploration, or final structured delivery.',
+      'These tools are an optional run journal; they do not replace AgentHost planning, shell work, Playwright exploration, or final structured delivery.',
       'Use test_plan_update, evidence_record, field_composition_check, and case_result_record only when they make the run easier to recover or audit.',
       'Use mutation_begin and mutation_resolve as a coarse crash-recovery journal for externally persisted business operations.',
       'One mutation entry may cover one coherent business operation; ordinary navigation, reads, and form composition do not need entries.',
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
 
   server.registerTool('test_plan_update', {
     title: 'Update dynamic execution plan',
-    description: 'Optionally persist a concise plan snapshot. Codex native todo lists, workspace notes, and scripts are equally valid.',
+    description: 'Optionally persist a concise plan snapshot. Native AgentHost todo lists, workspace notes, and scripts are equally valid.',
     inputSchema: {
       summary: z.string().min(1),
       steps: z.array(z.object({

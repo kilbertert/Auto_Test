@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import type { ThreadEvent } from '@openai/codex-sdk'
 import { writePrivateJson } from './state.js'
+import { normalizeAgentEvent } from './host.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
 export interface CodexTestExecutionReceiptSummary {
@@ -20,34 +20,46 @@ function browserReceiptKind(tool: string): CodexTestExecutionReceiptKind {
     : 'interaction'
 }
 
-function controlCaseId(event: ThreadEvent): string | undefined {
-  if (event.type !== 'item.completed' || event.item.type !== 'mcp_tool_call') return undefined
-  if (event.item.server !== 'auto-test-control' || event.item.status !== 'completed') return undefined
-  if (event.item.tool !== 'case_execution_begin') return undefined
-  const value = (event.item.arguments as { caseId?: unknown }).caseId
-  return typeof value === 'string' ? value : undefined
+function normalizedServer(server: string | undefined, tool: string | undefined): string | undefined {
+  if (server) return server
+  if (tool?.includes('auto-test-control') || /(?:^|[_:])(?:case_execution|mutation_|evidence_|test_contract|environment_)/.test(tool ?? '')) return 'auto-test-control'
+  if (tool?.startsWith('browser_') || tool?.includes('playwright')) return 'playwright'
+  return undefined
 }
 
-function isCaseExecutionEnd(event: ThreadEvent): boolean {
-  return event.type === 'item.completed' &&
-    event.item.type === 'mcp_tool_call' &&
-    event.item.server === 'auto-test-control' &&
-    event.item.status === 'completed' &&
-    event.item.tool === 'case_execution_end'
+function controlCaseId(value: unknown): string | undefined {
+  const event = normalizeAgentEvent(value)
+  if (event.type !== 'tool_completed' || normalizedServer(event.server, event.tool) !== 'auto-test-control' || event.status !== 'completed') return undefined
+  if (event.tool !== 'case_execution_begin' && !event.tool?.endsWith('_case_execution_begin')) return undefined
+  const args = event.arguments && typeof event.arguments === 'object' ? event.arguments as { caseId?: unknown } : undefined
+  const caseId = args?.caseId
+  const result = typeof caseId === 'string' ? caseId : undefined
+  return result
+}
+
+function isCaseExecutionEnd(value: unknown): boolean {
+  const event = normalizeAgentEvent(value)
+  return event.type === 'tool_completed' &&
+    normalizedServer(event.server, event.tool) === 'auto-test-control' &&
+    event.status === 'completed' &&
+    (event.tool === 'case_execution_end' || Boolean(event.tool?.endsWith('_case_execution_end')))
 }
 
 function browserReceipt(
-  event: ThreadEvent,
+  value: unknown,
   caseId: string | undefined,
   receiptId: string,
 ): CodexTestExecutionReceipt | undefined {
-  if (event.type !== 'item.completed' || event.item.type !== 'mcp_tool_call') return undefined
-  if (event.item.server !== 'playwright' || event.item.status !== 'completed' || !event.item.tool.startsWith('browser_')) return undefined
+  const event = normalizeAgentEvent(value)
+  const server = normalizedServer(event.server, event.tool)
+  if (event.type !== 'tool_completed' || server !== 'playwright' || event.status !== 'completed') return undefined
+  const tool = event.tool ?? ''
+  if (!tool.startsWith('browser_') && !tool.includes('browser_')) return undefined
   return {
     id: receiptId,
     ...(caseId ? { caseId } : {}),
-    tool: event.item.tool,
-    kind: browserReceiptKind(event.item.tool),
+    tool,
+    kind: browserReceiptKind(tool),
     status: 'completed',
     recordedAt: new Date().toISOString(),
   }
@@ -129,8 +141,9 @@ export class ExecutionReceiptRecorder {
     return new ExecutionReceiptRecorder(path, caseIds, namespace, await readExecutionReceipts(path))
   }
 
-  async observe(event: ThreadEvent): Promise<void> {
-    if (event.type === 'turn.started') {
+  async observe(value: unknown): Promise<void> {
+    const event = normalizeAgentEvent(value)
+    if (event.type === 'turn_started') {
       this.turnOrdinal += 1
       this.activeCaseId = undefined
       return
@@ -148,7 +161,7 @@ export class ExecutionReceiptRecorder {
     const receipt = browserReceipt(
       event,
       this.activeCaseId,
-      `${this.namespace}:turn-${String(this.turnOrdinal).padStart(4, '0')}:${event.type === 'item.completed' ? event.item.id : 'unknown'}`,
+      `${this.namespace}:turn-${String(this.turnOrdinal).padStart(4, '0')}:${event.id ?? 'unknown'}`,
     )
     if (!receipt || this.receipts.has(receipt.id)) return
     this.receipts.set(receipt.id, receipt)

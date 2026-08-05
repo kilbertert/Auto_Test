@@ -32,6 +32,37 @@ describe('Codex agent CLI', () => {
     expect(options.outputDirectory).toMatch(/artifacts[\\/]recovery$/)
   })
 
+  it('leaves the host unspecified on resume so the frozen run state selects it', () => {
+    const previous = process.env.AUTO_TEST_AGENT_HOST
+    delete process.env.AUTO_TEST_AGENT_HOST
+    try {
+      expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--output-dir', 'artifacts/recovery', '--resume']).agentHostId).toBeUndefined()
+      expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--output-dir', 'artifacts/recovery', '--resume', '--agent-host', 'omp']).agentHostId).toBe('omp')
+    } finally {
+      if (previous === undefined) delete process.env.AUTO_TEST_AGENT_HOST
+      else process.env.AUTO_TEST_AGENT_HOST = previous
+    }
+  })
+
+  it('does not let an ambient host default switch a resumed run', () => {
+    const previous = process.env.AUTO_TEST_AGENT_HOST
+    process.env.AUTO_TEST_AGENT_HOST = 'codex'
+    try {
+      expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--output-dir', 'artifacts/recovery', '--resume']).agentHostId).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.AUTO_TEST_AGENT_HOST
+      else process.env.AUTO_TEST_AGENT_HOST = previous
+    }
+  })
+
+  it('selects OMP for OMP-specific configuration and rejects mixed host arguments', () => {
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--omp-home', '/private/omp-agent'])
+    expect(options.agentHostId).toBe('omp')
+    expect(options.ompHome).toMatch(/[\\/]private[\\/]omp-agent$/)
+    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
+    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
+  })
+
   it('supports an explicit opaque test-data mode', () => {
     expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--opaque-test-data']).testDataAccess).toBe('opaque')
   })

@@ -112,6 +112,8 @@ export interface CodexTestAgentState {
   stage: 'preparing' | 'executing' | 'finalizing' | 'completed' | 'failed'
   workflowId: string
   sourceSha256: string
+  /** AgentHost id used for this logical run; absent only in legacy v2 states. */
+  agentHost?: string
   startedAt: string
   updatedAt: string
   finishedAt?: string
@@ -163,3 +165,19 @@ export interface CodexTestCaseDecision {
   fieldGateIds?: string[]
   recordedAt: string
 }
+
+/** Host-neutral names for new integrations; Codex-prefixed names remain API-compatible aliases. */
+export type AgentTestOutcome = CodexTestOutcome
+export type AgentTestRisk = CodexTestRisk
+export type AgentTestResult = CodexTestAgentResult
+export type AgentTestState = CodexTestAgentState
+export type AgentTestCaseResult = CodexTestCaseResult
+export type AgentTestEvidence = CodexTestEvidence
+export type AgentTestFailureSource = CodexTestFailureSource
+export type AgentTestFailureKind = CodexTestFailureKind
+export type AgentTestEnvironmentRequirement = CodexTestEnvironmentRequirement
+export type AgentTestExecutionReceipt = CodexTestExecutionReceipt
+export type AgentTestMutationLedgerEntry = CodexTestMutationLedgerEntry
+export type AgentTestMutationResult = CodexTestMutationResult
+export type AgentTestFieldCompositionGate = CodexTestFieldCompositionGate
+export type AgentTestCaseDecision = CodexTestCaseDecision
