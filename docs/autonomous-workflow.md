@@ -1,90 +1,74 @@
 # Codex-native Autonomous Workflow
 
-## Product Contract
+本文描述当前默认运行架构。Auto-Test 是薄运行外壳，Codex 是真实测试执行主体。一次业务请求对应一个逻辑 Run；物理 Codex thread 只是容量和恢复资源，可以在 Run 内轮换。
 
-Auto-Test is a thin execution harness around one persistent Codex-native context by default. The caller may explicitly select bounded case windows when a suite exceeds the available context or needs window-level recovery; otherwise the agent keeps one cross-case working context while the run preserves one input identity, authenticated environment, evidence store, environment-requirement journal, and Mutation Ledger. It runs without interactive steering until one terminal outcome is produced:
+## 产品契约
 
-- `passed`: the requested operations and observable expected results were verified;
-- `product_failed`: the intended test action completed, but an immutable product or business expectation did not hold;
-- `blocked`: execution could not finish because required environment, authentication, data, authority, identity, recovery state, or infrastructure was unavailable.
+Run 的终态只有：
 
-For a blocked result, the executing Codex must also state one failure source. `input` is incomplete or contradictory supplied material; `environment` is target permissions, authentication, test data, or physical preconditions; `infrastructure` is the provider, Codex CLI, browser, MCP, host, or network; `agent_execution` is an incomplete execution, recovery, or delivery by the agent. An `environment` case must reference a case-scoped recorded requirement with saved evidence, after the agent has attempted applicable non-mutating page interaction. The harness checks this contract and preserves it. It does not infer a source from the business summary.
+- `passed`：请求的操作、可观察预期和最终状态均有具体证据；
+- `product_failed`：正确执行后观察到产品或业务结果与预期不符；
+- `blocked`：输入、环境、权限、恢复状态或基础设施阻止完成；
+- `failed`：未被归类为可恢复阻断的框架异常。
 
-The framework does not implement a second planner, locator interpreter, form-composition engine, or business-specific Runtime for first-time scenarios.
+每个非通过 case 必须有且只有一个 `failureSource`：`product`、`agent_execution`、`input`、`environment` 或 `infrastructure`。环境阻断必须引用同一 case 的已记录环境需求和证据；Runner 不从摘要文字猜测分类。
 
-Every non-passed case has one failure source: `product`, `agent_execution`, `input`, `environment`, or `infrastructure`. Target-site authentication, permissions, test data, target-service availability, and physical prerequisites belong to `environment`; model providers, Codex CLI, browser processes, MCP, local filesystem, and local connectivity belong to `infrastructure`. The tester-facing summary is a deterministic projection of the same final result, environment requirements, and Mutation Ledger. It does not invoke another model or override the executing Codex thread.
+## 自适应 Epoch Runtime
 
-## Default Full-Agent Mode
+```text
+一个逻辑 Run
+  -> immutable intake manifest
+  -> model capacity policy
+  -> epoch-0001 / Codex thread A
+  -> per-case result commit + workspace checkpoint
+  -> epoch-0002 / Codex thread B（需要时）
+  -> per-case store
+  -> deterministic aggregate
+```
 
-Each run creates an isolated `agent-workspace/` containing:
+容量策略读取 Model Profile 的可选元数据：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio` 和 `targetOutputRatio`。Runner 估算每条来源行的输入成本和结果输出成本，按预算生成 epoch；不会按固定 case 数隐式切分，也不要求工程师传入 `--case-batch-size`。
 
-- the original Excel workbook;
-- the optional test brief;
-- embedded and supplemental images;
-- a run-scoped values file containing only Excel and Environment Profile values needed by this test;
-- Codex-created notes, temporary scripts, and evidence artifacts.
+每个 epoch 的 Codex 交互顺序是：
 
-The active Codex run receives:
+1. 读取当前有界 Manifest、原始材料和相关图片；
+2. 自主探索、执行、断言和恢复业务状态；
+3. 如有 pending Mutation Ledger，继续使用同一 thread 重新观察并恢复；
+4. 只为当前 epoch 生成有界结构化结果和 recovery artifact；
+5. Runner 校验不可变身份、case 覆盖、证据、失败来源和被引用的回执；
+6. Runner 将每条 case 以幂等记录写入 `.agent-private/case-results/`；
+7. 若还有后续 epoch，Codex 写入 checkpoint，Runner 轮换 thread。
 
-- a writable run workspace;
-- shell commands and temporary code execution;
-- network access and live Web Search;
-- Codex subagents for parallel read-only analysis while the primary thread coordinates stateful browser writes;
-- complete Playwright MCP capabilities, including accessibility, network, vision, page evaluation, and Playwright code execution;
-- the authenticated browser state and registered environment context;
-- optional Auto-Test Control MCP tools for plan snapshots, evidence checkpoints, field diagnostics, environment requirements, and Mutation Ledger operations.
+Codex 不必调用 `case_execution_begin/end`、`case_result_record` 或环境审计 turn 才能操作浏览器。回执是被动审计通道；只有结果中引用的回执需要校验归属和状态。`case_result_record` 不能覆盖逐 case store 的恢复事实。
 
-Codex owns test understanding, working plans, exploration, execution, assertions, recovery, and the structured result for its active window. A native Codex todo list, Markdown note, JavaScript helper, or direct Playwright code is valid. `test_plan_update`, `field_composition_check`, and `case_result_record` are optional diagnostics, not execution gates. The scheduler sees case identity and completion state only; it cannot infer selectors, actions, assertions, or failure sources.
+## 薄外壳职责
 
-`--opaque-test-data` retains the previous restricted compatibility mode. In that mode the raw workbook and run-values file are not staged, the workspace is read-only, shell and Web Search are disabled, and browser requests remain limited to registered origins.
+Runner 只负责必须跨进程、跨模型和跨浏览器保留的事实：
 
-## Thin Harness Responsibilities
+1. 为 Excel 每个来源行建立不可变 workflow/case 身份；
+2. 选择 Environment Profile，准备认证和权限边界；
+3. 创建隔离 Codex Home、Playwright MCP 和 Run workspace；
+4. 根据容量规划 epoch，启动或恢复物理 thread；
+5. 输出脱敏事件、进度和心跳；
+6. 保存 Mutation Ledger、环境需求、回执和逐 case store；
+7. 对每个 epoch 做严格结构校验，并按 Manifest 顺序聚合完整交付；
+8. pending Mutation 存在时强制 `blocked`。
 
-The framework remains responsible only for capabilities that must survive model or browser interruption:
+Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业务 Runtime，也不会替 Codex 生成业务结论。
 
-1. index every source row in the Excel to establish immutable workflow and case identity; row-local diagnostics remain evidence for Codex, not an execution gate;
-2. select and refresh the Environment Profile and browser authentication;
-3. create the isolated Codex Home and run workspace;
-4. start/resume one persistent Codex thread by default; use a bounded case window only when the caller explicitly selects the capacity/recovery fallback;
-5. expose safe progress and preserve redacted event history;
-6. retain the Mutation Ledger and environment requirements;
-7. request one JSON result from the persistent Codex thread (or each explicitly selected case window), validate its schema, scoped case coverage, evidence, any cited receipts and failure classification, then merge only those validated case facts in immutable manifest order;
-8. force `blocked` when an authoritative Mutation Ledger entry remains pending.
+## 恢复契约
 
-The harness does not require an `execution-plan.json`, field gate, or Control MCP evidence entry for a run to pass.
+`codex-agent.state.json` 使用 `version: "2.0"`，保存 `completedCaseIds`、`threadGeneration`、`activeEpoch`、`checkpointPath` 和最近一次 `turn.completed.usage`。旧版 `single_thread/case_windows`、`activeBatch`、`completedBatchIds` 和 `case-batches` 状态不再兼容；恢复旧状态会 fail closed，要求新建 Run。
 
-Before final delivery, Codex writes a versioned recovery artifact for the run or explicit active case window. It records the workflow ID, source hash, scoped case conclusions, workspace-relative evidence paths, explicit non-pass classification, and terminal Ledger state. Explicit window results are stored below `.agent-private/case-batches/`; the final `agent-workspace/case-results.json` contains the full aggregate. This is not a second planner or reporter: the harness validates exact scoped coverage and merges existing case facts without inventing business actions or conclusions.
+恢复流程：
 
-The same delivery contract records Playwright execution receipts passively. `case_execution_begin`, `case_execution_end`, and `execution_receipts` are optional bookkeeping tools for precise case attribution; they do not gate browser work. A `passed` or `product_failed` case must cite concrete case-specific evidence, and any receipt IDs it cites must belong to that case. Receipt IDs are namespaced by execution mode and turn because Codex item IDs can restart in fresh contexts and subsequent turns. The `execution_receipts` MCP query defaults to a compact run summary and narrows to an active window only in explicit case-window mode. Receipts prove that browser operations occurred; they do not decide whether the business assertion is correct.
+1. 校验原始 workflow ID、source SHA、Environment Profile 和 Mutation Ledger；
+2. 读取逐 case store，将已完成 case 从待执行集合移除；
+3. active epoch 有 thread ID 时恢复该 thread，否则从最近 checkpoint 启动下一代 thread；
+4. 仍有 pending Mutation 时，Codex 先重新观察真实业务状态，禁止盲目重放写入；
+5. 读取所有逐 case 记录，按 Manifest 不可变顺序聚合最终结果。
 
-The risk value attached to a Manifest case is advisory context. A mutation is authorized only when the same Codex thread declares its actual `write` or `destructive` risk and the Environment Profile permits that risk. This prevents a weak text inference from becoming a second business planner or permission system.
+如果最终 JSON 响应在传输中断，但 epoch recovery artifact 已存在，Runner 只在确定性校验通过后采用它。Runner 不从日志、标题或页面残片补造 case 结果。
 
-## Mutation Recovery
+## 结果边界
 
-Mutation Ledger entries are coarse crash-recovery records for externally persisted business operations. One entry can represent a coherent operation such as creating and later deleting a test entity, starting and stopping a device, or submitting and reviewing one order. Navigation, reads, selectors, and form composition do not require separate entries.
-
-After interruption, Codex must re-observe the actual business state before continuing or compensating a pending operation. It must not repeat a write merely because the browser was recreated. The harness independently blocks the final result while any ledger entry remains `pending`.
-
-On `--resume`, the harness first checks whether the run already left a complete `case-results.json` with valid evidence, environment-requirement links, and a terminal authoritative Ledger. If that delivery is complete, the harness finalizes it without restarting Codex or Chromium. Otherwise native mode resumes the same Codex thread; explicit case-window mode reloads completed batch results and resumes only `activeBatch`. Any pending mutation must be re-observed by the same Codex thread before further writes.
-
-## Environment Profiles
-
-The default registry path is `~/.config/auto-test/environment-profiles.json` on Linux/macOS and `%APPDATA%\auto-test\environment-profiles.json` on Windows. A profile stores reusable authentication state and the highest pre-authorized test risk for that environment.
-
-When one pending environment requirement was originally shared by several cases, the deterministic delivery boundary removes only case links that the same Codex result explicitly reclassified as non-environment failures or linked to a newer, more precise requirement. If no case still depends on the old requirement, it becomes `superseded`: the record remains auditable but no longer blocks the run. Observing the same condition again reactivates the stable requirement as pending.
-
-Full-agent mode treats profile origins as known starting context rather than a browser network allowlist. Codex may follow application redirects and discover supporting origins. Missing authentication or authority should be reported as a resumable environment requirement, not guessed or converted into a product defect.
-
-## Result Boundary
-
-After browser execution, each Codex window returns its scoped result directly under the repository strict JSON Schema. The harness performs deterministic checks only:
-
-- immutable workflow and source hashes match;
-- every input case appears exactly once;
-- each case has execution evidence;
-- top-level and case outcomes agree;
-- passed results have no blockers or product defects;
-- product failures are classified as product-sourced;
-- pending authoritative mutations force `blocked`.
-
-This preserves Codex judgment about the live business workflow while preventing an incomplete report or unrecovered write from being labeled as passed.
+最终 `codex-agent.result.json` 是结构化权威结果，`agent-workspace/case-results.json` 是给恢复和交付使用的版本化 artifact，Excel 结果文件是同一事实的确定性投影。没有真实故障案例时，fixture、模型调用、合成数据和自适应调度测试只能证明框架行为，不能写成业务准确率或生产诊断准确率验收。

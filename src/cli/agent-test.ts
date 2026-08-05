@@ -3,6 +3,7 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodexTestAgent } from '../agent/runner.js'
+import { limitManifestToCases } from '../agent/execution-epochs.js'
 import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { writeResultWorkbook } from '../agent/result-workbook.js'
@@ -37,7 +38,7 @@ export interface AgentTestCliOptions {
   slowMo?: number
   maxIterations?: number
   maxFinalizationTurns?: number
-  caseBatchSize?: number
+  caseLimit?: number
   codexExecutable?: string
   codexHome?: string
   resume?: boolean
@@ -92,13 +93,13 @@ function help(): string {
     '  --slow-mo <ms>              浏览器动作减速',
     '  --max-iterations <count>    列表型数据最多执行 N 条',
     '  --max-finalization-turns N  结果契约修复轮数，默认 2',
-    '  --case-batch-size <count>    显式启用 case-window 兜底；每个 Codex 上下文负责 N 个 case（默认 native 单 thread）',
+    '  --case-limit <count>        只执行输入材料中的前 N 条 case；--one 是它的快捷方式',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
     '  --model-profile <id>        选择已注册的模型供应商 Profile；省略时使用注册表默认项或源 Codex 配置',
     `  --model-profile-registry <path>  模型 Profile 注册表，默认 ${defaultModelProfileRegistryPath()}`,
     '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
-    '  --resume                    恢复同一输出目录中的中断 run、Codex thread 与 Mutation Ledger',
+    '  --resume                    恢复同一输出目录中的逻辑 Run、active epoch 与 Mutation Ledger',
   ].join('\n')
 }
 
@@ -145,7 +146,8 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
   const maxIterations = positiveInteger(args, '--max-iterations')
   const maxFinalizationTurns = positiveInteger(args, '--max-finalization-turns')
-  const caseBatchSize = positiveInteger(args, '--case-batch-size')
+  if (args.includes('--one') && args.includes('--case-limit')) throw new Error('--one 与 --case-limit 不能同时使用')
+  const caseLimit = args.includes('--one') ? 1 : positiveInteger(args, '--case-limit')
   const slowMo = nonNegativeInteger(args, '--slow-mo')
   const resolvedFilePath = resolve(filePath)
   return {
@@ -163,7 +165,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(slowMo !== undefined ? { slowMo } : {}),
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(maxFinalizationTurns !== undefined ? { maxFinalizationTurns } : {}),
-    ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
+    ...(caseLimit !== undefined ? { caseLimit } : {}),
     ...(valueAfter(args, '--codex-bin') ? { codexExecutable: resolve(valueAfter(args, '--codex-bin')!) } : {}),
     ...(valueAfter(args, '--codex-home') ? { codexHome: resolve(valueAfter(args, '--codex-home')!) } : {}),
     ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
@@ -372,9 +374,24 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     additionalUrls: options.urls,
     supplementalImagePaths: inputBundle.imagePaths,
   })
-  printProgress(`测试材料解析完成：${intake.manifest.phases.length} 个测试阶段，${intake.assets.length} 个图片资源`)
+  const manifestPath = resolve(options.outputDirectory, 'intake.workflow.json')
+  let manifest: WorkflowIntakeManifest
+  if (options.resume) manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WorkflowIntakeManifest
+  else if (options.caseLimit === undefined) manifest = intake.manifest
+  else manifest = limitManifestToCases(intake.manifest, options.caseLimit)
+  if (manifest.workflowId !== intake.manifest.workflowId || manifest.source.sha256 !== intake.manifest.source.sha256) {
+    throw new Error('恢复运行的冻结 Manifest 与当前 Excel 身份不一致')
+  }
+  const currentPrefix = intake.manifest.phases.slice(0, manifest.phases.length)
+  if (currentPrefix.length !== manifest.phases.length || currentPrefix.some((phase, index) => phase.id !== manifest.phases[index]?.id)) {
+    throw new Error('恢复运行的冻结 Manifest case 范围与当前 Excel 不一致')
+  }
+  if (options.resume && options.caseLimit !== undefined && manifest.phases.length !== Math.min(options.caseLimit, intake.manifest.phases.length)) {
+    throw new Error('恢复运行不能改变原始 case 范围；请复用原输出目录中的冻结 Manifest')
+  }
+  printProgress(`测试材料解析完成：${manifest.phases.length} 个测试阶段，${intake.assets.length} 个图片资源`)
   if (!options.resume) {
-    await writePrivateJson(resolve(options.outputDirectory, 'intake.workflow.json'), intake.manifest)
+    await writePrivateJson(manifestPath, manifest)
     await writePrivateJson(resolve(options.outputDirectory, 'intake.diagnostics.json'), intake.report)
     await writePrivateJson(resolve(options.outputDirectory, 'input-bundle.json'), {
       briefSha256: inputBundle.briefSha256,
@@ -388,17 +405,17 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     return writePreExecutionBlock(
       options.outputDirectory,
       options.filePath,
-      intake.manifest,
+      manifest,
       `测试用例解析发现 ${intake.report.summary.errors} 个阻塞问题`,
       'input',
       'data',
     )
   }
-  const readiness = assessAgentIntakeReadiness(intake.manifest)
+  const readiness = assessAgentIntakeReadiness(manifest)
   if (!readiness.executable) {
     const message = `测试输入无法建立稳定执行合同：${readiness.problems.join('；')}`
     if (options.resume) throw new Error(message)
-    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, message)
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, message)
   }
 
   let profile
@@ -418,14 +435,14 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       .flatMap((requirement) => requirement.kind === 'origin' && requirement.origin ? [requirement.origin] : [])
     const requestedProfileId = options.profileId ?? priorSelection?.profileId
     profile = scopeEnvironmentProfile(
-      selectEnvironmentProfile(registry, intake.manifest.targetUrls, requestedProfileId),
-      intake.manifest,
+      selectEnvironmentProfile(registry, manifest.targetUrls, requestedProfileId),
+      manifest,
       additionalOrigins,
     )
     secrets = mergeAgentSecrets(
       await loadEnvironmentProfileSecrets(profile),
       intake.secretMaterial,
-      requiredSecretRefs(intake.manifest, profile),
+      requiredSecretRefs(manifest, profile),
     )
     const profileContext = await loadEnvironmentProfileContext(profile)
     const brief = redactSensitiveContent(inputBundle.brief)
@@ -452,7 +469,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   } catch (error) {
     if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, error, 'environment', 'environment')
   }
 
   const modelSelectionPath = resolve(options.outputDirectory, 'model-selection.json')
@@ -479,12 +496,12 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
   } catch (error) {
     if (options.resume) throw error
-    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, manifest, error, 'environment', 'environment')
   }
 
   const run = await runCodexTestAgent({
     outputDirectory: options.outputDirectory,
-    manifest: intake.manifest,
+    manifest,
     profile,
     secrets,
     environmentContext,
@@ -498,7 +515,6 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.codexExecutable ? { codexExecutable: options.codexExecutable } : {}),
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     ...(options.maxFinalizationTurns !== undefined ? { maxFinalizationTurns: options.maxFinalizationTurns } : {}),
-    ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
     ...(options.resume ? { resume: true } : {}),
     testDataAccess: options.testDataAccess,
     ...(modelProfile ? { modelProfile } : {}),
@@ -513,7 +529,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       const workbookPath = await writeResultWorkbookDelivery({
         outputDirectory: options.outputDirectory,
         sourceFilePath: options.filePath,
-        manifest: intake.manifest,
+        manifest,
         result: run.result,
       })
       console.log(`测试用例结果文件：${workbookPath}`)

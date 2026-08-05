@@ -57,7 +57,7 @@ describe('execution receipts', () => {
     ], ['current-case', 'empty-case'])
 
     expect(summary).toEqual({
-      scope: 'active_case_window',
+      scope: 'active_execution_epoch',
       cases: [
         { caseId: 'current-case', recommendedReceiptIds: ['current-click', 'current-latest'], interactionCount: 1, observationCount: 2 },
         { caseId: 'empty-case', recommendedReceiptIds: [], interactionCount: 0, observationCount: 0 },

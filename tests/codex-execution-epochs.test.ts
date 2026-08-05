@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest'
+import { buildCodexExecutionEpochs, limitManifestToCases, manifestForExecutionEpoch } from '../src/agent/execution-epochs.js'
+import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
+
+function manifest(): WorkflowIntakeManifest {
+  return {
+    version: '1.0', kind: 'workflow-intake', workflowId: 'epoch-fixture',
+    source: { format: 'xlsx', fileName: 'fixture.xlsx', sheetName: 'Cases', sha256: 'a'.repeat(64) },
+    targetUrls: ['https://example.test/'], requiredCapabilities: [],
+    phases: [1, 2, 3].map((index) => ({
+      id: `case-${index}`, title: `Case ${index}`, sourceRow: index + 1, risk: 'read' as const,
+      steps: [{ id: `step-${index}`, sourceText: 'x'.repeat(index * 120), confidence: 1 }],
+      resources: [], secretBindings: [], imageIds: [`image-${index}`], review: { status: 'draft' as const, ambiguities: [] },
+    })),
+    embeddedImages: [1, 2, 3].map((index) => ({
+      id: `image-${index}`, sheetName: 'Cases', sourceCell: `A${index + 1}`, sourceRow: index + 1,
+      fileName: `image-${index}.png`, mediaType: 'image/png', bytes: 10, sha256: String(index).repeat(64), reviewStatus: 'required' as const,
+    })),
+    supplementalImages: [], review: { status: 'draft', reasons: [] },
+  }
+}
+
+describe('Codex execution epoch planning', () => {
+  it('keeps stable epoch identities when completed cases are removed during resume', () => {
+    const capacity = { contextWindowTokens: 1_000, maxOutputTokens: 100, caseOutputTokens: 100, targetContextRatio: 0.5, targetOutputRatio: 0.5 }
+    expect(buildCodexExecutionEpochs(manifest(), capacity).map((epoch) => epoch.id)).toEqual(['epoch-0001', 'epoch-0002', 'epoch-0003'])
+    expect(buildCodexExecutionEpochs(manifest(), capacity, ['case-1']).map((epoch) => [epoch.id, epoch.caseIds])).toEqual([
+      ['epoch-0002', ['case-2']],
+      ['epoch-0003', ['case-3']],
+    ])
+  })
+
+  it('limits a canary manifest and retains only its referenced images', () => {
+    const limited = limitManifestToCases(manifest(), 1)
+    expect(limited.phases.map((phase) => phase.id)).toEqual(['case-1'])
+    expect(limited.embeddedImages.map((image) => image.id)).toEqual(['image-1'])
+    expect(limited.source.sha256).toBe('a'.repeat(64))
+  })
+
+  it('rejects epochs that contain case IDs outside the immutable manifest', () => {
+    expect(() => manifestForExecutionEpoch(manifest(), {
+      id: 'epoch-unknown', index: 0, total: 1, caseIds: ['missing-case'], estimatedInputTokens: 500, estimatedOutputTokens: 900,
+    })).toThrow(/outside the immutable manifest/)
+  })
+})

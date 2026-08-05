@@ -26,7 +26,7 @@ interface EasyRunOptions {
   briefPath?: string
   profileId?: string
   maxIterations?: number
-  caseBatchSize?: number
+  caseLimit?: number
   outputDirectory?: string
   model?: string
   headed?: boolean
@@ -202,6 +202,9 @@ async function printSummary(statePath: string): Promise<void> {
 }
 
 export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> {
+  if (options.legacyRuntime && options.caseLimit !== undefined) {
+    throw new Error('--one/--case-limit 只适用于 Codex-native 入口；旧 IR/Runtime 不提供等价的 Manifest 限制')
+  }
   const filePath = resolve(stripDraggedPath(options.filePath))
   if (extname(filePath).toLowerCase() !== '.xlsx') throw new Error('请选择 .xlsx 测试用例文件')
   await access(filePath)
@@ -273,7 +276,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       headed: options.headed === true,
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
-      ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
+      ...(options.caseLimit !== undefined ? { caseLimit: options.caseLimit } : {}),
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
       ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
@@ -319,7 +322,7 @@ async function runInteractive(): Promise<void> {
   await runEasyWorkflow({
     filePath,
     urls,
-    ...(single ? { maxIterations: 1 } : {}),
+    ...(single ? { caseLimit: 1 } : {}),
     headed,
     ...(headed ? { slowMo: 150 } : {}),
     ...(modelProfileId ? { modelProfileId } : {}),
@@ -489,22 +492,24 @@ async function main(): Promise<void> {
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
     if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
-    const caseBatchSizeValue = valueAfter(args, '--case-batch-size')
-    const caseBatchSize = caseBatchSizeValue === undefined ? undefined : Number(caseBatchSizeValue)
-    if (caseBatchSize !== undefined && (!Number.isInteger(caseBatchSize) || caseBatchSize < 1)) throw new Error('--case-batch-size 必须是正整数')
+    if (args.includes('--one') && args.includes('--case-limit')) throw new Error('--one 与 --case-limit 不能同时使用')
+    const caseLimitValue = valueAfter(args, '--case-limit')
+    let caseLimit: number | undefined
+    if (args.includes('--one')) caseLimit = 1
+    else if (caseLimitValue !== undefined) caseLimit = Number(caseLimitValue)
+    if (caseLimit !== undefined && (!Number.isInteger(caseLimit) || caseLimit < 1)) throw new Error('--case-limit 必须是正整数')
     const code = await runEasyWorkflow({
       filePath,
       urls,
       images: valuesAfter(args, '--image'),
       ...(valueAfter(args, '--brief') ? { briefPath: valueAfter(args, '--brief')! } : {}),
       ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
-      ...(args.includes('--one') ? { maxIterations: 1 } : {}),
+      ...(caseLimit !== undefined ? { caseLimit } : {}),
       ...(valueAfter(args, '--output-dir') ? { outputDirectory: valueAfter(args, '--output-dir')! } : {}),
       ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
       ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
-      ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
       resume: args.includes('--resume'),
       testDataAccess: args.includes('--opaque-test-data') ? 'opaque' : 'direct',
@@ -520,8 +525,8 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--case-batch-size 8] [--opaque-test-data]')
-    console.log('      默认使用一个持续的 Codex thread；只有显式提供 --case-batch-size 时才启用 case-window 兜底模式')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--headed|--headless] [--slow-mo 150] [--case-limit N|--one] [--opaque-test-data]')
+    console.log('      Codex 会按模型容量自动规划执行 epoch，并在需要时轮换线程；无需手工切分用例')
     console.log('      默认给予 Codex 原始材料、可写 run 工作区、shell、网络和完整 Playwright；--opaque-test-data 恢复旧受限模式')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      多模型供应商：--model-profile <id> 切换已注册的模型 Profile；省略时使用注册表默认项或源 Codex 配置')

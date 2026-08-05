@@ -85,8 +85,8 @@ describe('friendly autonomous result summary', () => {
         mutations: [], environmentRequirements: [], blockers: [], productDefects: ['Filtering by Lighting returned three rows instead of two.'], nextActions: [],
       }
       const agentState: CodexTestAgentState = {
-        version: '1.0', status: 'completed', stage: 'completed', workflowId: 'catalog', sourceSha256: 'b'.repeat(64),
-        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', outcome: 'product_failed', resultPath,
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'catalog', sourceSha256: 'b'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], outcome: 'product_failed', resultPath,
       }
       await writeFile(resultPath, JSON.stringify(result))
       await writeFile(statePath, JSON.stringify(agentState))
@@ -133,8 +133,8 @@ describe('friendly autonomous result summary', () => {
         nextActions: ['为已注册环境补充审批权限后继续上次测试。'],
       }
       const agentState: CodexTestAgentState = {
-        version: '1.0', status: 'completed', stage: 'completed', workflowId: 'approval', sourceSha256: 'c'.repeat(64),
-        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', outcome: 'blocked', resultPath,
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'approval', sourceSha256: 'c'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], outcome: 'blocked', resultPath,
       }
       await writeFile(resultPath, JSON.stringify(result))
       await writeFile(statePath, JSON.stringify(agentState))
@@ -166,8 +166,8 @@ describe('friendly autonomous result summary', () => {
       }]))
       await writeFile(resolve(directory, 'codex-agent.events.jsonl'), '{}\n')
       await writeFile(statePath, JSON.stringify({
-        version: '1.0', status: 'failed', stage: 'failed', workflowId: 'approval', sourceSha256: 'd'.repeat(64),
-        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', error: 'browser process exited',
+        version: '2.0', status: 'failed', stage: 'failed', workflowId: 'approval', sourceSha256: 'd'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], error: 'browser process exited',
       } satisfies CodexTestAgentState))
 
       const summary = await friendlyRunSummary(statePath)
@@ -197,8 +197,8 @@ describe('friendly autonomous result summary', () => {
         mutations: [], environmentRequirements: [], blockers: ['Required test data is absent.'], productDefects: ['Expected value differs.'], nextActions: [],
       }
       const agentState: CodexTestAgentState = {
-        version: '1.0', status: 'completed', stage: 'completed', workflowId: 'mixed', sourceSha256: 'e'.repeat(64),
-        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', outcome: 'blocked', resultPath,
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'mixed', sourceSha256: 'e'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], outcome: 'blocked', resultPath,
       }
       await writeFile(resultPath, JSON.stringify(result))
       await writeFile(statePath, JSON.stringify(agentState))

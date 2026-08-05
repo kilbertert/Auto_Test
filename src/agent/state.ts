@@ -15,13 +15,15 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
 export function initialCodexTestState(workflowId: string, sourceSha256: string): CodexTestAgentState {
   const now = new Date().toISOString()
   return {
-    version: '1.0',
+    version: '2.0',
     status: 'running',
     stage: 'preparing',
     workflowId,
     sourceSha256,
     startedAt: now,
     updatedAt: now,
+    threadGeneration: 0,
+    completedCaseIds: [],
   }
 }
 

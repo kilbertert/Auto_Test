@@ -200,7 +200,7 @@ async function main(): Promise<void> {
 
   server.registerTool('execution_receipts', {
     title: 'List captured browser execution receipts',
-    description: 'Return compact metadata for completed Playwright browser operations in the active run, narrowed to the active case window when one is explicitly configured. Use recommended receipt IDs when precise case attribution is available; the complete receipt log remains on disk for deterministic validation and audit.',
+    description: 'Return compact metadata for completed Playwright browser operations in the active run, narrowed to the active execution epoch when one is configured. Use recommended receipt IDs when precise case attribution is available; the complete receipt log remains on disk for deterministic validation and audit.',
     inputSchema: {
       caseId: z.string().min(1).optional(),
       detail: z.enum(['compact', 'full']).optional(),
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
     return text(summarizeExecutionReceipts(
       receipts,
       scopedCaseIds,
-      config.activeCaseIds ? 'active_case_window' : 'active_run',
+      config.activeCaseIds ? 'active_execution_epoch' : 'active_run',
     ))
   })
 
@@ -313,7 +313,7 @@ async function main(): Promise<void> {
 
   server.registerTool('case_result_record', {
     title: 'Record final case result',
-    description: 'Optionally checkpoint one case outcome for recovery. The same Codex thread produces the authoritative final structured result.',
+    description: 'Optionally publish one case outcome as an incremental delivery hint. The runner-owned per-case result store remains authoritative for recovery and final aggregation; this tool never gates browser execution.',
     inputSchema: {
       caseId: z.string().min(1),
       outcome: z.enum(['passed', 'product_failed', 'blocked']),

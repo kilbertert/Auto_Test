@@ -107,7 +107,7 @@ export interface CodexTestAgentResult {
 }
 
 export interface CodexTestAgentState {
-  version: '1.0'
+  version: '2.0'
   status: 'running' | 'completed' | 'failed'
   stage: 'preparing' | 'executing' | 'finalizing' | 'completed' | 'failed'
   workflowId: string
@@ -116,20 +116,26 @@ export interface CodexTestAgentState {
   updatedAt: string
   finishedAt?: string
   threadId?: string
+  threadGeneration: number
   resultPath?: string
   resultWorkbookPath?: string
   outcome?: CodexTestOutcome
   error?: string
-  executionMode?: 'single_thread' | 'case_windows'
-  caseBatchSize?: number
-  caseBatchCount?: number
-  completedBatchIds?: string[]
-  activeBatch?: {
+  completedCaseIds: string[]
+  epochCount?: number
+  activeEpoch?: {
     id: string
     index: number
+    total: number
     caseIds: string[]
-    stage: 'executing' | 'auditing' | 'finalizing'
+    stage: 'executing' | 'finalizing' | 'checkpointing'
     threadId?: string
+  }
+  checkpointPath?: string
+  lastUsage?: {
+    inputTokens: number
+    cachedInputTokens: number
+    outputTokens: number
   }
 }
 
