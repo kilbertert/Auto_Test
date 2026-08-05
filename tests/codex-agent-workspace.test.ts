@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -153,6 +153,8 @@ describe('Codex agent workspace', () => {
     expect(workspace.mcpEnvironment.FIXTURE_MODEL_KEY).toBe('')
     expect(serializedWorkspace).not.toContain('sensitive-value')
     expect(await readFile(workspace.runValuesPath!, 'utf8')).not.toContain('provider-key')
+    expect(workspace.runValuesPath).toBe(resolve(workspace.privateDirectory, 'run-values.json'))
+    await expect(access(resolve(workspace.inputDirectory, 'run-values.json'))).rejects.toMatchObject({ code: 'ENOENT' })
     if (process.platform !== 'win32') {
       expect((await stat(workspace.playwrightSecretsPath)).mode & 0o777).toBe(0o600)
       await chmod(workspace.playwrightSecretsPath, 0o600)
@@ -194,6 +196,8 @@ describe('Codex agent workspace', () => {
     await writeFile(initial.caseResultsPath, JSON.stringify(decisions))
     await writeFile(initial.planPath, JSON.stringify(plan))
     await writeFile(initial.fieldCompositionPath, JSON.stringify(fieldGates))
+    const legacyRunValuesPath = resolve(initial.inputDirectory, 'run-values.json')
+    await writeFile(legacyRunValuesPath, 'legacy-plaintext-value')
 
     const resumed = await prepareCodexAgentWorkspace({ ...options, secrets: { 'fixture.accessCode': 'rotated-value' }, resume: true })
 
@@ -203,6 +207,8 @@ describe('Codex agent workspace', () => {
     expect(JSON.parse(await readFile(resumed.planPath, 'utf8'))).toEqual(plan)
     expect(JSON.parse(await readFile(resumed.fieldCompositionPath, 'utf8'))).toEqual(fieldGates)
     expect(await readFile(resumed.playwrightSecretsPath, 'utf8')).toContain('rotated-value')
+    expect(await readFile(resumed.runValuesPath!, 'utf8')).toContain('rotated-value')
+    await expect(access(legacyRunValuesPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('allows an append-only registered origin during resume', async () => {

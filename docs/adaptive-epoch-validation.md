@@ -15,7 +15,7 @@ npm run check
 结果：
 
 - TypeScript typecheck 通过；
-- 44 个测试文件、294 个测试通过；
+- 45 个测试文件、299 个测试通过；
 - `tsc -p tsconfig.json` 构建通过；
 - 覆盖容量规划、稳定 epoch ID、单 case Manifest 限制、逐 case 幂等存储、thread 轮换、active epoch 恢复、finalization-only 恢复、pending Mutation 停止调度和旧版状态 fail closed。
 
@@ -47,9 +47,33 @@ npm run check
 - pending Mutation 会阻止后续 epoch，并为未调度 case 生成明确的 `blocked` 结果；
 - `version: 1.0` 及旧 `single_thread/case_windows` 状态不会被猜测迁移。
 
+## 真实 LTA 只读 canary
+
+使用真实 `LTA后台测试用例.xlsx`、已注册 Profile `lta-readonly-canary` 和真实 LTA 页面执行第一条登录 case。该运行使用本地 Provider 的 `gpt-5.6-sol` Responses 协议，输出目录为：
+
+```text
+artifacts/acceptance/adaptive-epoch-lta-one-sol-redacted-20260805
+```
+
+结构化验收结果：
+
+- `passed`，1/1 case passed；
+- state `version: 2.0`，1 个 epoch，`threadGeneration: 1`；
+- 7 条 case 证据、2 条 case 回执、31 条完整执行回执；
+- 逐 case store、epoch 交付 artifact 和结果工作簿均存在；
+- Mutation Ledger `pending=0`，Environment Requirement 数量为 0；
+- 运行期间发生一次模型流式连接中断，Codex 自动重连后继续完成，未误报业务失败；
+- `agent-workspace` 及其排除原始输入后的外部文本制品精确 secret 命中为 0。
+
+这证明当前修复工作树可以在真实 LTA 登录场景中完成只读业务 canary，并在 Provider 中断后继续交付。但它不是 285 条正式 LTA 的业务准确率验收，也没有真实故障案例；用户名在截图中仍可见，运行目录只能留在受控测试环境，截图/PDF 外发前必须人工脱敏。
+
+本轮还记录了两个未纳入本修复分支的基础设施边界：提供的直连 Key 对 `https://api.psydo.top/v1/{models,responses}` 返回 401；当前 Codex CLI 拒绝 `wire_api = "chat"`，因此仓库现有 Chat Profile 不能直接启动。正式 Windows 运行必须使用已确认可用的 Responses Provider/Key，不能把这两次阻断当作业务失败。
+
 ## 尚未完成
 
 - 本次重构尚未在 Windows runner 上重新构建和解压验证便携 ZIP；
 - 尚未用真实 285-case 网站执行验证模型调用、浏览器稳定性和长时间心跳；
 - 尚无真实故障案例，不能确认业务判断准确率；
-- 历史充电 canary 是旧运行时证据，只能作为历史参考，不能证明本次 epoch 重构已经完成业务验收。
+- 尚未在 Windows runner 上用包含本修复的私有 ZIP 重新构建、解压和执行上述 LTA canary；
+- 尚未以可公开访问的有效 Responses Provider/Key 完成 Windows 外部网络验收；
+- 历史充电 canary 是旧运行时证据，只能作为历史参考，不能证明本次 epoch 重构覆盖新的 LTA 正式套件。

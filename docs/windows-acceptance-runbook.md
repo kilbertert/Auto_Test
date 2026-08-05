@@ -177,4 +177,6 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 
 `.agent-private` 用于本机恢复和审计，不应外发。页面证据也可能包含业务数据，离开测试团队前必须先检查和脱敏。
 
+文本制品会在每个 Codex turn 后自动清洗本轮 secret、Authorization、Cookie、Bearer 和 API key；原始输入目录不会被改写，`.agent-private` 仍然是本机私有恢复材料。截图、PDF 等二进制证据不做自动 OCR 或像素擦除，外发前必须人工检查。验收门禁应至少确认 `agent-workspace` 文本制品没有精确 secret 命中，再结合人工检查二进制证据。
+
 更详细的安装、私有 Provider、安全边界和命令说明见 [Windows 快速操作指南](windows-quick-start.md)。

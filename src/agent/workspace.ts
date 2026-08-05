@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { ModelProfile } from '../workflow/model-profile.js'
@@ -358,8 +358,9 @@ export async function prepareCodexAgentWorkspace(options: {
     aliases.push({ secretRef, purpose, aliases: names })
   })
   await writePrivateText(playwrightSecretsPath, `${secretLines.join('\n')}\n`)
-  const runValuesPath = fullAgentAccess ? resolve(inputDirectory, 'run-values.json') : undefined
+  const runValuesPath = fullAgentAccess ? resolve(privateDirectory, 'run-values.json') : undefined
   if (runValuesPath) await writePrivateJson(runValuesPath, runValues)
+  await rm(resolve(inputDirectory, 'run-values.json'), { force: true })
   await writePrivateJson(inputIndexPath, {
     sourceFile: stagedSourceFilePath,
     briefFile: stagedBriefFilePath,
