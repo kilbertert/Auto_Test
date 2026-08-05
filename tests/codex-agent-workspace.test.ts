@@ -270,4 +270,54 @@ describe('Codex agent workspace', () => {
     expect(playwrightConfig.codegen).toBe('none')
     expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('Restricted Workspace')
   })
+
+  it('writes the selected model profile into the isolated Codex config and forwards its API key env', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-model-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), [
+      'model = "fixture-model"',
+      'model_provider = "fixture"',
+      '',
+      '[model_providers.fixture]',
+      'base_url = "https://model.example.test/v1"',
+      'wire_api = "responses"',
+      'env_key = "FIXTURE_MODEL_KEY"',
+    ].join('\n'), { mode: 0o600 })
+    const profile: EnvironmentProfile = {
+      id: 'workspace-fixture',
+      origins: ['https://app.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }
+
+    const workspace = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest(profile.origins),
+      profile,
+      secrets: {},
+      headed: false,
+      browserExecutablePath: '/verified/chromium',
+      sourceCodexHome: sourceHome,
+      environment: { GLM_API_KEY: 'glm-secret', FIXTURE_MODEL_KEY: 'fixture-secret' },
+      modelProfile: {
+        id: 'glm', model: 'glm-4.6', providerId: 'glm_api',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'chat', envKey: 'GLM_API_KEY', reasoningEffort: 'xhigh',
+      },
+    })
+
+    const config = await readFile(resolve(workspace.agentHome, 'config.toml'), 'utf8')
+    expect(config).toContain('model = "glm-4.6"')
+    expect(config).toContain('model_provider = "glm_api"')
+    expect(config).toContain('[model_providers.glm_api]')
+    expect(config).toContain('base_url = "https://open.bigmodel.cn/api/paas/v4"')
+    expect(config).toContain('wire_api = "chat"')
+    expect(config).toContain('env_key = "GLM_API_KEY"')
+    expect(config).toContain('model_reasoning_effort = "xhigh"')
+    expect(config).not.toContain('fixture-model')
+    expect(config).not.toContain('FIXTURE_MODEL_KEY')
+    expect(workspace.codexEnvironment).toMatchObject({ GLM_API_KEY: 'glm-secret' })
+    expect(workspace.codexEnvironment).not.toHaveProperty('FIXTURE_MODEL_KEY')
+  })
 })

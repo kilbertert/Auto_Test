@@ -17,6 +17,7 @@ import {
   loadEnvironmentProfileSecrets,
   selectEnvironmentProfile,
 } from '../workflow/environment-profile.js'
+import { defaultModelProfileRegistryPath, loadModelProfileRegistry, selectModelProfile } from '../workflow/model-profile.js'
 import { discoverWorkflowInputBundle } from '../workflow/input-bundle.js'
 import { workflowSecretEnvironment } from '../workflow/intake-secrets.js'
 import { intakeWorkflowXlsx } from '../workflow/intake.js'
@@ -41,6 +42,8 @@ export interface AgentTestCliOptions {
   codexHome?: string
   resume?: boolean
   testDataAccess: 'direct' | 'opaque'
+  modelProfileId?: string
+  modelProfileRegistryPath: string
 }
 
 interface AgentEnvironmentSelection {
@@ -92,6 +95,8 @@ function help(): string {
     '  --case-batch-size <count>    显式启用 case-window 兜底；每个 Codex 上下文负责 N 个 case（默认 native 单 thread）',
     '  --codex-bin <path>          显式 Codex 可执行文件；通常无需设置',
     '  --codex-home <path>         源 Codex 配置目录；运行仍使用隔离副本',
+    '  --model-profile <id>        选择已注册的模型供应商 Profile；省略时使用注册表默认项或源 Codex 配置',
+    `  --model-profile-registry <path>  模型 Profile 注册表，默认 ${defaultModelProfileRegistryPath()}`,
     '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
     '  --resume                    恢复同一输出目录中的中断 run、Codex thread 与 Mutation Ledger',
   ].join('\n')
@@ -161,6 +166,8 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
     ...(valueAfter(args, '--codex-bin') ? { codexExecutable: resolve(valueAfter(args, '--codex-bin')!) } : {}),
     ...(valueAfter(args, '--codex-home') ? { codexHome: resolve(valueAfter(args, '--codex-home')!) } : {}),
+    ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
+    modelProfileRegistryPath: resolve(valueAfter(args, '--model-profile-registry') ?? defaultModelProfileRegistryPath()),
   }
 }
 
@@ -448,6 +455,33 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
   }
 
+  const modelSelectionPath = resolve(options.outputDirectory, 'model-selection.json')
+  let modelProfile
+  try {
+    const registry = await loadModelProfileRegistry(options.modelProfileRegistryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    let requestedId = options.modelProfileId
+    if (!requestedId && options.resume) {
+      const recorded = await readFile(modelSelectionPath, 'utf8').then((value) => (JSON.parse(value) as { id?: string }).id).catch(() => undefined)
+      if (recorded) requestedId = recorded
+    }
+    const selection = selectModelProfile(registry, requestedId)
+    if (selection) {
+      const apiKey = process.env[selection.profile.envKey]
+      if (apiKey === undefined) {
+        throw new Error(`模型 Profile“${selection.profile.id}”需要环境变量 ${selection.profile.envKey}，但当前未设置。`)
+      }
+      modelProfile = selection.profile
+      printProgress(`使用模型 Profile“${selection.profile.id}”（${selection.profile.model}）`)
+      if (!options.resume) await writePrivateJson(modelSelectionPath, { id: selection.profile.id, model: selection.profile.model })
+    }
+  } catch (error) {
+    if (options.resume) throw error
+    return writePreExecutionBlock(options.outputDirectory, options.filePath, intake.manifest, error, 'environment', 'environment')
+  }
+
   const run = await runCodexTestAgent({
     outputDirectory: options.outputDirectory,
     manifest: intake.manifest,
@@ -467,6 +501,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
     ...(options.resume ? { resume: true } : {}),
     testDataAccess: options.testDataAccess,
+    ...(modelProfile ? { modelProfile } : {}),
     onProgress: (progress) => printProgress(progress.message),
   })
   console.log(`测试状态：${run.state.status}`)

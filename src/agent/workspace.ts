@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
+import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import type { CodexTestRisk } from './types.js'
@@ -142,8 +143,35 @@ function codexProcessEnvironment(environment: NodeJS.ProcessEnv, providerEnviron
   return result
 }
 
-async function prepareAgentHome(agentHome: string, sourceHome: string): Promise<string | undefined> {
+function escapeTomlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function configTomlForModelProfile(profile: ModelProfile): string {
+  const lines = [
+    `model = "${escapeTomlString(profile.model)}"`,
+    `model_provider = "${escapeTomlString(profile.providerId)}"`,
+  ]
+  if (profile.reasoningEffort) lines.push(`model_reasoning_effort = "${profile.reasoningEffort}"`)
+  if (profile.serviceTier) lines.push(`service_tier = "${escapeTomlString(profile.serviceTier)}"`)
+  lines.push(
+    '',
+    `[model_providers.${escapeTomlString(profile.providerId)}]`,
+    `name = "${escapeTomlString(profile.providerId)}"`,
+    `base_url = "${escapeTomlString(profile.baseUrl)}"`,
+    `wire_api = "${profile.wireApi}"`,
+    `env_key = "${escapeTomlString(profile.envKey)}"`,
+    'requires_openai_auth = false',
+  )
+  return `${lines.join('\n')}\n`
+}
+
+async function prepareAgentHome(agentHome: string, sourceHome: string, modelProfile?: ModelProfile): Promise<string | undefined> {
   await mkdir(agentHome, { recursive: true, mode: 0o700 })
+  if (modelProfile) {
+    await writePrivateText(resolve(agentHome, 'config.toml'), configTomlForModelProfile(modelProfile))
+    return modelProfile.envKey
+  }
   const sourceConfig = await readFile(resolve(sourceHome, 'config.toml'), 'utf8').catch(() => '')
   const assignment = (key: string) => new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, 'm').exec(sourceConfig)?.[0]
   const providerId = /^[ \t]*model_provider[ \t]*=[ \t]*"([^"]+)"[ \t]*$/m.exec(sourceConfig)?.[1]
@@ -193,6 +221,7 @@ export async function prepareCodexAgentWorkspace(options: {
   environment?: NodeJS.ProcessEnv
   resume?: boolean
   testDataAccess?: 'direct' | 'opaque'
+  modelProfile?: ModelProfile
 }): Promise<CodexAgentWorkspace> {
   const outputDirectory = resolve(options.outputDirectory)
   const workspaceDirectory = resolve(outputDirectory, 'agent-workspace')
@@ -224,7 +253,7 @@ export async function prepareCodexAgentWorkspace(options: {
     mkdir(privateDirectory, { recursive: true, mode: 0o700 }),
     mkdir(evidenceDirectory, { recursive: true, mode: 0o750 }),
   ])
-  const providerEnvironmentName = await prepareAgentHome(agentHome, options.sourceCodexHome)
+  const providerEnvironmentName = await prepareAgentHome(agentHome, options.sourceCodexHome, options.modelProfile)
   const codexEnvironment = codexProcessEnvironment(options.environment ?? process.env, providerEnvironmentName)
   const mcpEnvironment = codexProcessEnvironment(options.environment ?? process.env)
   if (providerEnvironmentName) mcpEnvironment[providerEnvironmentName] = ''

@@ -5,6 +5,7 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, delimiter, dirname, extname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
+import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { buildCodexCaseWindows, DEFAULT_CODEX_CASE_BATCH_SIZE, manifestForCaseWindow, type CodexCaseWindow } from './case-windows.js'
 import type { CodexTestControlConfig } from './control-types.js'
@@ -40,6 +41,7 @@ export interface CodexTestAgentOptions {
   progressHeartbeatMs?: number
   testDataAccess?: 'direct' | 'opaque'
   caseBatchSize?: number
+  modelProfile?: ModelProfile
 }
 
 export interface CodexTestAgentRun {
@@ -383,10 +385,16 @@ function enforceEnvironmentRequirements(
 }
 
 function isOperationalBlock(message: string): boolean {
-  return /usage limit|quota|credit|rate.?limit|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response/i.test(message)
+  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response/i.test(message)
 }
 
 function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {
+  if (/at capacity|capacity|try a different model/i.test(message)) {
+    return {
+      reason: '当前模型供应商容量不足或所选模型暂时不可用。',
+      nextAction: '使用 --model-profile 切换到另一个已注册的模型供应商后，使用原结果目录继续上次测试。',
+    }
+  }
   if (/usage limit|quota|credit|rate.?limit|\b429\b/i.test(message)) {
     return {
       reason: '模型服务额度不足或调用频率受限。',
@@ -698,6 +706,7 @@ export async function runCodexTestAgent(
       environment: process.env,
       testDataAccess: options.testDataAccess ?? 'direct',
       ...(options.resume ? { resume: true } : {}),
+      ...(options.modelProfile ? { modelProfile: options.modelProfile } : {}),
     })
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath

@@ -17,6 +17,7 @@ import {
 import { friendlyRunSummary } from '../usability/result-summary.js'
 import { planEasyRegistration, preflightEasyWorkflow } from '../usability/workflow-preflight.js'
 import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '../workflow/environment-profile.js'
+import { defaultModelProfileRegistryPath, loadModelProfileRegistry, selectModelProfile, type ModelProfile } from '../workflow/model-profile.js'
 
 interface EasyRunOptions {
   filePath: string
@@ -33,6 +34,7 @@ interface EasyRunOptions {
   legacyRuntime?: boolean
   resume?: boolean
   testDataAccess?: 'direct' | 'opaque'
+  modelProfileId?: string
 }
 
 const rl = createInterface({ input, output })
@@ -274,6 +276,8 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       ...(options.caseBatchSize !== undefined ? { caseBatchSize: options.caseBatchSize } : {}),
       ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
+      ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
+      modelProfileRegistryPath: defaultModelProfileRegistryPath(),
       testDataAccess: options.testDataAccess ?? 'direct',
     })
     statePath = resolve(outputDirectory, 'codex-agent.state.json')
@@ -287,6 +291,23 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   return exitCode
 }
 
+async function chooseModelProfile(): Promise<string | undefined> {
+  const registry = await loadModelProfileRegistry(defaultModelProfileRegistryPath()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (!registry || registry.profiles.length === 0) return undefined
+  const defaultId = registry.defaultProfileId ?? registry.profiles[0]!.id
+  if (registry.profiles.length === 1) return registry.profiles[0]!.id
+  console.log('\n可用模型 Profile：')
+  for (const profile of registry.profiles) {
+    const marker = profile.id === defaultId ? '（默认）' : ''
+    const ready = process.env[profile.envKey] !== undefined ? '✓' : '✗'
+    console.log(`  ${ready} ${profile.id}：${profile.model} @ ${profile.baseUrl}${marker}`)
+  }
+  return ask('请输入本次使用的模型 Profile 名称', defaultId)
+}
+
 async function runInteractive(): Promise<void> {
   const selected = await windowsExcelPicker()
   const filePath = selected ?? stripDraggedPath(await ask('将测试用例 Excel 拖到窗口中，然后按回车'))
@@ -294,12 +315,14 @@ async function runInteractive(): Promise<void> {
   const urls = urlValues(await ask('粘贴网站 URL；多个地址用空格分开'))
   const single = await confirm('是否先只执行一条数据进行安全验证', true)
   const headed = await confirm('是否显示浏览器中的自动化操作', process.platform === 'win32')
+  const modelProfileId = await chooseModelProfile()
   await runEasyWorkflow({
     filePath,
     urls,
     ...(single ? { maxIterations: 1 } : {}),
     headed,
     ...(headed ? { slowMo: 150 } : {}),
+    ...(modelProfileId ? { modelProfileId } : {}),
   })
 }
 
@@ -363,6 +386,22 @@ async function doctor(): Promise<boolean> {
   }
   if (!chromiumCheck.ok && input.isTTY && await confirm('现在安装 Chromium 浏览器', true)) {
     chromiumCheck.ok = await spawnInherited('npx', ['playwright', 'install', 'chromium']) === 0
+  }
+  const modelRegistryPath = defaultModelProfileRegistryPath()
+  const modelRegistry = await loadModelProfileRegistry(modelRegistryPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (modelRegistry && modelRegistry.profiles.length > 0) {
+    console.log(`\n模型 Profile 注册表：${modelRegistryPath}`)
+    for (const profile of modelRegistry.profiles) {
+      const keyReady = process.env[profile.envKey] !== undefined
+      const marker = profile.id === modelRegistry.defaultProfileId ? '（默认）' : ''
+      console.log(`  ${keyReady ? '✓' : '✗'} ${profile.id}：${profile.model} @ ${profile.baseUrl}（env ${profile.envKey}）${marker}`)
+    }
+  } else {
+    console.log(`\n模型 Profile 注册表：未配置（${modelRegistryPath}）`)
+    console.log('  未配置多模型供应商时，运行使用源 Codex 配置中的 Provider。')
   }
   console.log(`\n环境配置目录：${defaultEnvironmentProfileRegistryPath()}`)
   console.log(`Codex API 配置：${codexConfigPath}`)
@@ -462,6 +501,7 @@ async function main(): Promise<void> {
       ...(args.includes('--one') ? { maxIterations: 1 } : {}),
       ...(valueAfter(args, '--output-dir') ? { outputDirectory: valueAfter(args, '--output-dir')! } : {}),
       ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
+      ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
       ...(caseBatchSize !== undefined ? { caseBatchSize } : {}),
@@ -484,6 +524,7 @@ async function main(): Promise<void> {
     console.log('      默认使用一个持续的 Codex thread；只有显式提供 --case-batch-size 时才启用 case-window 兜底模式')
     console.log('      默认给予 Codex 原始材料、可写 run 工作区、shell、网络和完整 Playwright；--opaque-test-data 恢复旧受限模式')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
+    console.log('      多模型供应商：--model-profile <id> 切换已注册的模型 Profile；省略时使用注册表默认项或源 Codex 配置')
     console.log('      默认运行 Codex-native 测试代理；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')

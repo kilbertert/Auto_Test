@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "defaultProfileId": "primary",
+  "profiles": [
+    {
+      "id": "primary",
+      "model": "gpt-4.1",
+      "providerId": "primary_api",
+      "baseUrl": "https://model-api.example.test/v1",
+      "wireApi": "responses",
+      "envKey": "AUTO_TEST_MODEL_API_KEY"
+    },
+    {
+      "id": "glm",
+      "model": "glm-4.6",
+      "providerId": "glm_api",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "wireApi": "chat",
+      "envKey": "GLM_API_KEY",
+      "reasoningEffort": "xhigh"
+    }
+  ]
+}

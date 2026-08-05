@@ -140,6 +140,19 @@ Profiles live at `~/.config/auto-test/environment-profiles.json` (Linux/macOS) o
 `storageState`/`sessionStorage` per run; auth files must be `0600`. Write permission is governed
 only by the Profile, never by inferred per-case risk.
 
+## Model profile (multi-provider switching)
+
+A separate `model-profiles.json` registry (same config dir as environment profiles; template at
+`templates/model-profiles.example.json`) lists model providers. Each profile carries `model`,
+`providerId`, `baseUrl`, `wireApi` (`responses`|`chat`), `envKey`, and optional `reasoningEffort`.
+`--model-profile <id>` (or the `easy` menu / `doctor`) selects one; `prepareAgentHome` writes the
+selected profile into the isolated Codex `config.toml` instead of copying the source provider. With
+no registry, runs fall back to the source Codex config. Capacity errors (`at capacity`,
+`try a different model`) are classified as a resumable `infrastructure` block with a switch-provider
+next action; switching providers on `--resume` continues the same Codex thread. The model profile is
+**not** immutable on resume (unlike the environment profile) - it is a control-plane selection, not a
+business/safety boundary. `src/workflow/model-profile.ts`.
+
 ## Resume
 
 `--resume` with the original `--output-dir` resumes the same Codex thread (id recovered from state
