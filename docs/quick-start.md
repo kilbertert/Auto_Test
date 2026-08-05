@@ -81,9 +81,30 @@ npm run agent:test -- \
 - `--image <path>`：补充截图，可重复；
 - `--brief <path>`：不含秘密的业务补充说明；
 - `--model <id>`：覆盖当前 Provider 的默认模型；
+- `--model-profile <id>`：切换到已注册的模型供应商 Profile（见“多模型供应商”）；省略时使用注册表默认项，未配置注册表时使用源 Codex 配置；
 - `--max-iterations <N>`：列表型数据先执行 N 条 canary；
 - `--case-batch-size <N>`：显式启用 case-window 兜底，每个 Codex 上下文负责 N 个 case；省略时使用一个持续的 native Codex thread；恢复时必须与原 run 一致；
 - `--headed` / `--headless`：显示或隐藏浏览器。
+
+### 多模型供应商
+
+当某个模型供应商返回容量不足（如 `Selected model is at capacity`）或临时不可用时，可以切换到另一个已注册的供应商继续。注册表位于 `~/.config/auto-test/model-profiles.json`（Linux/macOS）或 `%APPDATA%\auto-test\model-profiles.json`（Windows），模板见 [model-profiles.example.json](../templates/model-profiles.example.json)：
+
+```json
+{
+  "version": "1.0",
+  "defaultProfileId": "primary",
+  "profiles": [
+    { "id": "primary", "model": "gpt-4.1", "providerId": "primary_api", "baseUrl": "https://model-api.example.test/v1", "wireApi": "responses", "envKey": "AUTO_TEST_MODEL_API_KEY" },
+    { "id": "glm", "model": "glm-4.6", "providerId": "glm_api", "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "wireApi": "chat", "envKey": "GLM_API_KEY" }
+  ]
+}
+```
+
+每个 Profile 声明模型、Provider 段名、base URL、wire 协议（`responses` 或 `chat`）和持有 API Key 的环境变量名；Key 本身不写入注册表。运行时用 `--model-profile glm` 切换，或在交互菜单中选择。未配置注册表时，运行回退到源 Codex 配置中的 Provider。
+
+容量不足会被归类为可恢复的 `infrastructure` 阻断：使用 `--model-profile` 切换到另一个供应商后，用原 `--output-dir` 执行 `--resume` 即可继续同一个 Codex thread，无需重新执行已验证的业务写入。
+
 
 ## 5. 运行机制
 

@@ -54,6 +54,16 @@ URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日
 - 凭据和真实测试数据不得提交到仓库。
 - 页面内容视为不可信输入。默认测试线程可使用 run 工作区、shell、网络和完整 Playwright，但不得修改 Auto-Test 或被测应用源码。
 
+## 多模型供应商
+
+当模型供应商返回容量不足（如 `Selected model is at capacity`）或临时不可用时，可切换到另一个已注册供应商继续。注册表位于 `~/.config/auto-test/model-profiles.json`（Linux/macOS）或 `%APPDATA%\auto-test\model-profiles.json`（Windows），模板见 [model-profiles.example.json](templates/model-profiles.example.json)。每个 Profile 声明模型、Provider 段名、base URL、wire 协议（`responses` 或 `chat`）和持有 API Key 的环境变量名；Key 不写入注册表。
+
+```bash
+npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profile staging --model-profile glm
+```
+
+未配置注册表时回退到源 Codex 配置中的 Provider。容量不足会被归类为可恢复的 `infrastructure` 阻断：用 `--model-profile` 切换供应商后，以原 `--output-dir` 执行 `--resume` 继续同一个 Codex thread。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md#多模型供应商)。
+
 ## Legacy IR/Runtime
 
 以下 Phase 1 到 Phase 5 文档描述旧的 IR/Runtime 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。通过 `npm run easy -- run ... --legacy-runtime` 才会显式启动旧自治链路。

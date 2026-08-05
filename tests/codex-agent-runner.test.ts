@@ -1109,6 +1109,33 @@ describe('Codex test agent runner', () => {
     expect(run.result?.outcome).toBe('passed')
   })
 
+  it('classifies a model capacity error as a resumable infrastructure block with a provider-switch hint', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-capacity-'))
+    directories.push(directory)
+    const sourceHome = resolve(directory, 'source-home')
+    await mkdir(sourceHome)
+    await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const codexExecutable = await fakeCodexExecutable(directory)
+    const workflow = manifest('https://tasks.example.test')
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: sourceHome, codexExecutable,
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => ({ id: 'thread-capacity', runStreamed: async () => failedStream('Selected model is at capacity. Please try a different model.', 'thread-capacity') }),
+    })
+
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]?.failureSource).toBe('infrastructure')
+    expect(run.result?.blockers.some((blocker) => /容量不足/.test(blocker))).toBe(true)
+    expect(run.result?.nextActions.some((action) => /--model-profile/.test(action))).toBe(true)
+  })
+
   it('accepts a valid Codex result without framework plans, field gates, case checkpoints, or mandatory ledger entries', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-field-gate-'))
     directories.push(directory)

@@ -31,6 +31,18 @@ describe('Codex agent CLI', () => {
     expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--opaque-test-data']).testDataAccess).toBe('opaque')
   })
 
+  it('parses the model-profile selection and registry path', () => {
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--model-profile', 'glm', '--model-profile-registry', '/custom/model-profiles.json'])
+    expect(options.modelProfileId).toBe('glm')
+    expect(options.modelProfileRegistryPath).toMatch(/[\\/]model-profiles\.json$/)
+  })
+
+  it('defaults the model-profile registry path', () => {
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx'])
+    expect(options.modelProfileId).toBeUndefined()
+    expect(options.modelProfileRegistryPath).toMatch(/auto-test[\\/]model-profiles\.json$/)
+  })
+
   it('fails closed when environment and workbook secrets disagree', () => {
     expect(() => mergeAgentSecrets(
       { 'fixture.username': 'environment-user' },
