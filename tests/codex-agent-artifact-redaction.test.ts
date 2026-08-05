@@ -57,4 +57,22 @@ describe('agent artifact redaction', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  it('keeps JSON and JSONL parseable when numeric values resemble sensitive identifiers', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-structured-artifact-redaction-'))
+    try {
+      const jsonPath = resolve(directory, 'event.json')
+      const jsonlPath = resolve(directory, 'events.jsonl')
+      await writeFile(jsonPath, JSON.stringify({ cost: 0.09356, message: 'fixture-password' }))
+      await writeFile(jsonlPath, `${JSON.stringify({ cost: 0.09356, message: 'fixture-password' })}\n`)
+
+      await redactAgentTextArtifacts(directory, ['fixture-password'])
+
+      expect(JSON.parse(await readFile(jsonPath, 'utf8'))).toEqual({ cost: 0.09356, message: '<redacted-secret>' })
+      const lines = (await readFile(jsonlPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+      expect(lines).toEqual([{ cost: 0.09356, message: '<redacted-secret>' }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })

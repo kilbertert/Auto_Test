@@ -11,6 +11,21 @@ export function redactAgentValue(value: string, secrets: string[]): string {
   return output
 }
 
+function mapStringLeaves(value: unknown, transform: (text: string) => string): unknown {
+  if (typeof value === 'string') return transform(value)
+  if (Array.isArray(value)) return value.map((item) => mapStringLeaves(item, transform))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => [key, mapStringLeaves(item, transform)]),
+  )
+}
+
+/** Redact exact runtime secrets only from string leaves of a structured value. */
+export function redactAgentJsonValue(value: unknown, secrets: string[]): unknown {
+  return mapStringLeaves(value, (text) => redactAgentValue(text, secrets))
+}
+
 export function redactAgentArtifactText(value: string, secrets: string[]): string {
   return redactSensitiveContent(redactAgentValue(value, secrets))
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
@@ -18,6 +33,11 @@ export function redactAgentArtifactText(value: string, secrets: string[]): strin
       /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)[^"',\r\n}]+/gi,
       '$1<redacted>',
     )
+}
+
+/** Redact only string leaves so JSON numbers, booleans, and structure remain valid. */
+export function redactAgentArtifactValue(value: unknown, secrets: string[]): unknown {
+  return mapStringLeaves(value, (text) => redactAgentArtifactText(text, secrets))
 }
 
 export function transientAgentEventValues(event: unknown): string[] {

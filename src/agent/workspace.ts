@@ -283,6 +283,7 @@ async function prepareAgentHome(agentHome: string, sourceHome: string, modelProf
     assignment('model'),
     assignment('model_provider'),
     assignment('model_reasoning_effort'),
+    assignment('model_context_window'),
     assignment('service_tier'),
     providerSection,
   ].filter(Boolean).join('\n')

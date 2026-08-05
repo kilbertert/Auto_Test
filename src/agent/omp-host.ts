@@ -44,6 +44,15 @@ interface OmpChunkFrame {
 
 type OmpFrame = Record<string, unknown>
 
+const PASSIVE_EXTENSION_UI_METHODS = new Set([
+  'cancel',
+  'notify',
+  'setStatus',
+  'setWidget',
+  'setTitle',
+  'set_editor_text',
+])
+
 const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024
 const DEFAULT_MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024
 const DEFAULT_CHUNK_BYTES = 256 * 1024
@@ -447,6 +456,7 @@ class OmpRpcSession implements AgentHostSession {
       return
     }
     if (frame.type === 'extension_ui_request') {
+      if (typeof frame.method === 'string' && PASSIVE_EXTENSION_UI_METHODS.has(frame.method)) return
       this.fail(new AgentHostError('omp', 'OMP requested interactive RPC UI input in headless Auto-Test mode'))
       return
     }

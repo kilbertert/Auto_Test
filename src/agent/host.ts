@@ -203,6 +203,61 @@ function normalizeOmpMessage(raw: Record<string, unknown>): AgentEvent | undefin
   return eventWithRaw({ type: 'agent_message', text }, raw)
 }
 
+function parseOmpMcpIdentity(value: string, inner?: Record<string, unknown>): { server?: string; tool: string } | undefined {
+  if (!value.startsWith('mcp__')) return undefined
+  const innerServer = stringValue(inner?.serverName)
+  const innerTool = stringValue(inner?.mcpToolName)
+  if (innerTool) return { ...(innerServer ? { server: innerServer } : {}), tool: innerTool }
+  if (value.startsWith('mcp__playwright_')) return { server: 'playwright', tool: value.slice('mcp__playwright_'.length) }
+  if (value.startsWith('mcp__auto_test_control_')) {
+    return { server: 'auto-test-control', tool: value.slice('mcp__auto_test_control_'.length) }
+  }
+  return { tool: value }
+}
+
+function parseOmpXdArguments(value: unknown): unknown {
+  if (typeof value !== 'string') return undefined
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+function ompXdInvocation(raw: Record<string, unknown>): {
+  server?: string
+  tool: string
+  arguments?: unknown
+  failed: boolean
+} | undefined {
+  const result = recordValue(raw.result)
+  const xdev = recordValue(recordValue(result?.details)?.xdev)
+  const inner = recordValue(xdev?.inner)
+  const completedIdentity = stringValue(xdev?.mode) === 'execute'
+    ? parseOmpMcpIdentity(stringValue(xdev?.tool) ?? '', inner)
+    : undefined
+  if (completedIdentity) {
+    return {
+      ...completedIdentity,
+      ...(xdev?.args !== undefined ? { arguments: xdev.args } : {}),
+      failed: raw.isError === true || result?.isError === true || inner?.isError === true,
+    }
+  }
+
+  if (raw.type !== 'tool_execution_start' || raw.toolName !== 'write') return undefined
+  const args = recordValue(raw.args)
+  const path = stringValue(args?.path)
+  if (!path?.startsWith('xd://mcp__')) return undefined
+  const identity = parseOmpMcpIdentity(path.slice('xd://'.length))
+  if (!identity) return undefined
+  const invocationArguments = parseOmpXdArguments(args?.content)
+  return {
+    ...identity,
+    ...(invocationArguments !== undefined ? { arguments: invocationArguments } : {}),
+    failed: false,
+  }
+}
+
 /** Normalize Codex SDK events, OMP RPC events, and already-normalized events. */
 export function normalizeAgentEvent(value: unknown): AgentEvent {
   if (!recordValue(value)) return { type: 'error', message: 'Agent host emitted a non-object event', raw: value }
@@ -248,13 +303,15 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
   if (raw.type === 'tool_execution_start' || raw.type === 'tool_execution_end') {
     const details = recordValue(raw)
     const type = raw.type === 'tool_execution_start' ? 'tool_started' : 'tool_completed'
+    const xdev = ompXdInvocation(raw)
     return eventWithRaw({
       type,
       id: stringValue(details?.toolCallId),
       callId: stringValue(details?.toolCallId),
-      tool: stringValue(details?.toolName) ?? 'agent_tool',
-      status: details?.isError === true ? 'failed' : 'completed',
-      arguments: details?.args,
+      ...(xdev?.server ? { server: xdev.server } : {}),
+      tool: xdev?.tool ?? stringValue(details?.toolName) ?? 'agent_tool',
+      status: xdev?.failed || details?.isError === true ? 'failed' : 'completed',
+      arguments: xdev?.arguments ?? details?.args,
       result: details?.result ?? details?.partialResult,
     }, raw)
   }

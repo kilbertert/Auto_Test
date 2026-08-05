@@ -117,6 +117,31 @@ describe('AgentHost contract', () => {
       result: { ok: true },
     })).toMatchObject({ type: 'tool_completed', tool: 'browser_click', callId: 'tool-1' })
     expect(normalizeAgentEvent({
+      type: 'tool_execution_start',
+      toolCallId: 'xdev-start',
+      toolName: 'write',
+      args: { path: 'xd://mcp__playwright_browser_click', content: '{"element":"Log In","ref":"e1"}' },
+    })).toMatchObject({
+      type: 'tool_started', server: 'playwright', tool: 'browser_click',
+      arguments: { element: 'Log In', ref: 'e1' },
+    })
+    expect(normalizeAgentEvent({
+      type: 'tool_execution_end',
+      toolCallId: 'xdev-end',
+      toolName: 'write',
+      result: {
+        details: {
+          xdev: {
+            tool: 'mcp__auto_test_control_case_execution_begin', mode: 'execute', args: { caseId: 'case-one' },
+            inner: { serverName: 'auto-test-control', mcpToolName: 'case_execution_begin' },
+          },
+        },
+      },
+    })).toMatchObject({
+      type: 'tool_completed', server: 'auto-test-control', tool: 'case_execution_begin',
+      arguments: { caseId: 'case-one' },
+    })
+    expect(normalizeAgentEvent({
       type: 'message_end',
       message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
     })).toMatchObject({ type: 'agent_message', text: 'done' })
@@ -196,6 +221,8 @@ describe('AgentHost contract', () => {
     await mkdir(agentHome, { recursive: true })
     await mkdir(workspaceDirectory, { recursive: true })
     const processFactory = (): ChildProcessWithoutNullStreams => fakeOmpProcess(directory, (send) => {
+      send({ type: 'extension_ui_request', id: 'widget-1', method: 'setWidget', widgetKey: 'status', widgetLines: ['working'] })
+      send({ type: 'extension_ui_request', id: 'notice-1', method: 'notify', message: 'fixture notice' })
       send({ type: 'agent_start' })
       send({ type: 'tool_execution_start', toolCallId: 'click-1', toolName: 'browser_click', args: { label: 'fixture' } })
       send({ type: 'tool_execution_end', toolCallId: 'click-1', toolName: 'browser_click', result: { ok: true } })
@@ -235,6 +262,35 @@ describe('AgentHost contract', () => {
     expect(events.find((event) => event.type === 'agent_message')?.text).toBe('fixture completed')
     expect(events.find((event) => event.type === 'tool_completed')?.tool).toBe('browser_click')
     expect(events.filter((event) => event.type === 'agent_message')).toHaveLength(1)
+    await session.close?.()
+  })
+
+  it('fails closed when OMP requests actual user input in headless mode', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-omp-interactive-ui-'))
+    directories.push(directory)
+    const processFactory = (() => fakeOmpProcess(directory, (send) => {
+      send({
+        type: 'extension_ui_request',
+        id: 'confirm-1',
+        method: 'confirm',
+        title: 'Interactive confirmation',
+        message: 'Continue?',
+      })
+    })) as unknown as typeof spawn
+    const host = new OmpAgentHost({ spawnProcess: processFactory })
+    const root = resolve(directory, 'workspace')
+    await mkdir(root, { recursive: true })
+    const session = await host.start({
+      workspaceDirectory: root, agentHome: resolve(directory, 'home'), executable: process.platform === 'win32' ? process.execPath : '/bin/true',
+      playwrightConfigPath: resolve(directory, 'playwright.json'), playwrightSecretsPath: resolve(directory, 'secrets.env'), controlConfigPath: resolve(directory, 'control.json'),
+      environment: {}, mcpEnvironment: {}, fullAgentAccess: true,
+    })
+    const stream = await session.run([{ type: 'text', text: 'interactive fixture' }])
+    await expect(async () => {
+      for await (const _event of stream.events) {
+        // Consume until the adapter rejects the interactive request.
+      }
+    }).rejects.toThrow('interactive RPC UI input')
     await session.close?.()
   })
 

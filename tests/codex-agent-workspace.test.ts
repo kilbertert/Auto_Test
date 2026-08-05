@@ -46,6 +46,7 @@ describe('Codex agent workspace', () => {
     await writeFile(resolve(sourceHome, 'config.toml'), [
       'model = "fixture-model"',
       'model_provider = "fixture"',
+      'model_context_window = 400000',
       '',
       '[model_providers.fixture]',
       'name = "Fixture"',
@@ -119,6 +120,7 @@ describe('Codex agent workspace', () => {
     ].join('\n')
 
     expect(config).toContain('[model_providers.fixture]')
+    expect(config).toContain('model_context_window = 400000')
     expect(config).not.toContain('mcp_servers.unrelated')
     expect(playwrightConfig.browser.launchOptions.executablePath).toBe('/verified/chromium')
     expect(playwrightConfig.network).toBeUndefined()

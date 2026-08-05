@@ -16,7 +16,7 @@ function result(hostOutcome: 'passed' | 'product_failed' | 'blocked' = 'passed')
   return {
     version: '1.0', workflowId: 'competition-fixture', sourceSha256: 'b'.repeat(64), outcome: hostOutcome,
     summary: 'fixture', startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:00:01.000Z',
-    cases: [{ caseId: 'case-one', title: 'fixture', outcome: hostOutcome, summary: hostOutcome, ...(hostOutcome !== 'passed' ? { failureSource: hostOutcome === 'product_failed' ? 'product' as const : 'agent_execution' as const, failureKind: 'execution' as const } : {}), evidence: [{ kind: 'observation', description: 'fixture evidence' }] }],
+    cases: [{ caseId: 'case-one', title: 'fixture', outcome: hostOutcome, summary: hostOutcome, ...(hostOutcome !== 'passed' ? { failureSource: hostOutcome === 'product_failed' ? 'product' as const : 'agent_execution' as const, failureKind: 'execution' as const } : {}), evidence: [{ kind: 'observation', description: 'fixture evidence', path: 'evidence/fixture.txt' }] }],
     mutations: [], environmentRequirements: [], blockers: hostOutcome === 'blocked' ? ['blocked'] : [], productDefects: hostOutcome === 'product_failed' ? ['defect'] : [], nextActions: [],
   }
 }
@@ -25,6 +25,7 @@ async function makeRun(root: string, hostId: string, runResult: CodexTestAgentRe
   const directory = resolve(root, hostId)
   await mkdir(resolve(directory, '.agent-private'), { recursive: true })
   await mkdir(resolve(directory, 'agent-workspace'), { recursive: true })
+  await mkdir(resolve(directory, 'agent-workspace', 'evidence'), { recursive: true })
   const state: CodexTestAgentState = {
     version: '2.0', status: 'completed', stage: 'completed', workflowId: runResult.workflowId, sourceSha256: runResult.sourceSha256,
     agentHost: hostId, startedAt: runResult.startedAt, updatedAt: runResult.finishedAt, finishedAt: runResult.finishedAt,
@@ -58,6 +59,7 @@ async function makeRun(root: string, hostId: string, runResult: CodexTestAgentRe
   await writeFile(resolve(directory, `${hostId}-result.xlsx`), 'fixture workbook')
   await writeFile(resolve(directory, '.agent-private', 'mutation-ledger.json'), '[]')
   await writeFile(resolve(directory, 'agent-workspace', 'execution-receipts.json'), '[]')
+  await writeFile(resolve(directory, 'agent-workspace', 'evidence', 'fixture.txt'), 'fixture evidence')
   return directory
 }
 
@@ -265,7 +267,7 @@ describe('AgentHost competition contract', () => {
     const omp = await makeRun(root, 'omp', expected)
     const outside = resolve(root, 'outside-evidence.txt')
     await writeFile(outside, 'outside')
-    await symlink(outside, resolve(omp, 'linked-evidence.txt'))
+    await symlink(outside, resolve(omp, 'agent-workspace', 'linked-evidence.txt'))
     const resultPath = resolve(omp, 'codex-agent.result.json')
     const ompResult = JSON.parse(await readFile(resultPath, 'utf8')) as CodexTestAgentResult
     ompResult.cases[0]!.evidence = [{ kind: 'observation', path: 'linked-evidence.txt', description: 'linked evidence' }]

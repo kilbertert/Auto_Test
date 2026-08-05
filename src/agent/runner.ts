@@ -18,7 +18,7 @@ import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentH
 import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
-import { redactAgentArtifactText, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
+import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { agentTestResultSchema, enforceMutationLedger, parseAgentTestResult } from './result.js'
 import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
 import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
@@ -83,7 +83,7 @@ async function appendEvent(
   receiptRecorder?: ExecutionReceiptRecorder,
 ): Promise<void> {
   const source = event.raw ?? event
-  const serialized = redactAgentArtifactText(JSON.stringify(source), [...secrets, ...transientAgentEventValues(source)])
+  const serialized = JSON.stringify(redactAgentArtifactValue(source, [...secrets, ...transientAgentEventValues(source)]))
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
   await receiptRecorder?.observe(event)
@@ -205,7 +205,7 @@ function finalResultProblems(
 }
 
 function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
-  return JSON.parse(redactAgentValue(JSON.stringify(value), secrets)) as T
+  return redactAgentJsonValue(value, secrets) as T
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {

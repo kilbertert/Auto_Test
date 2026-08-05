@@ -1,6 +1,6 @@
 import { chmod, readFile, readdir, writeFile } from 'node:fs/promises'
 import { extname, resolve } from 'node:path'
-import { redactAgentArtifactText } from './redact.js'
+import { redactAgentArtifactText, redactAgentArtifactValue } from './redact.js'
 
 const textArtifactExtensions = new Set(['.csv', '.json', '.jsonl', '.log', '.md', '.txt', '.yaml', '.yml'])
 
@@ -30,11 +30,38 @@ export async function redactAgentTextArtifact(path: string, secrets: string[]): 
     throw error
   })
   if (content === undefined || content.includes('\u0000')) return false
-  const redacted = redactAgentArtifactText(content, secrets)
+  const extension = extname(path).toLowerCase()
+  const redacted = extension === '.json'
+    ? redactJson(content, secrets)
+    : extension === '.jsonl'
+      ? redactJsonLines(content, secrets)
+      : redactAgentArtifactText(content, secrets)
   if (redacted === content) return false
   await writeFile(path, redacted, 'utf8')
   if (process.platform !== 'win32') await chmod(path, 0o640)
   return true
+}
+
+function redactJson(content: string, secrets: string[]): string {
+  try {
+    return `${JSON.stringify(redactAgentArtifactValue(JSON.parse(content), secrets), null, 2)}\n`
+  } catch {
+    return redactAgentArtifactText(content, secrets)
+  }
+}
+
+function redactJsonLines(content: string, secrets: string[]): string {
+  const trailingNewline = content.endsWith('\n')
+  const lines = content.split(/\r?\n/)
+  if (trailingNewline) lines.pop()
+  try {
+    const redacted = lines.map((line) => line.length === 0
+      ? ''
+      : JSON.stringify(redactAgentArtifactValue(JSON.parse(line), secrets)))
+    return `${redacted.join('\n')}${trailingNewline ? '\n' : ''}`
+  } catch {
+    return redactAgentArtifactText(content, secrets)
+  }
 }
 
 async function redactDirectory(

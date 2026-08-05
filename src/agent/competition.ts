@@ -331,6 +331,21 @@ async function evidencePathEscapesRun(runDirectory: string, evidencePath: string
   }
 }
 
+async function evidencePathEscapesWorkspace(runDirectory: string, evidencePath: string): Promise<boolean> {
+  if (isAbsolute(evidencePath)) return true
+  const workspaceDirectory = resolve(runDirectory, 'agent-workspace')
+  const lexicalPath = resolve(workspaceDirectory, evidencePath)
+  const lexicalRelative = relative(workspaceDirectory, lexicalPath)
+  if (lexicalRelative.startsWith('..') || isAbsolute(lexicalRelative)) return true
+  try {
+    const [realWorkspace, realEvidence] = await Promise.all([realpath(workspaceDirectory), realpath(lexicalPath)])
+    const realRelative = relative(realWorkspace, realEvidence)
+    return realRelative.startsWith('..') || isAbsolute(realRelative)
+  } catch {
+    return true
+  }
+}
+
 async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCaseIds: Set<string>): Promise<string[]> {
   const problems: string[] = []
   const { summary, result, state, ledger, receipts, selection } = candidate
@@ -402,9 +417,9 @@ async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCa
         continue
       }
       if (!evidence.path) continue
-      const path = resolve(summary.runDirectory, evidence.path)
+      const path = resolve(summary.runDirectory, 'agent-workspace', evidence.path)
       const evidenceIsFile = await stat(path).then((value) => value.isFile(), () => false)
-      if (await evidencePathEscapesRun(summary.runDirectory, evidence.path) || !evidenceIsFile) {
+      if (await evidencePathEscapesWorkspace(summary.runDirectory, evidence.path) || !evidenceIsFile) {
         problems.push(`${summary.hostId} 的 case ${item.caseId} 引用了不存在或越界证据 ${evidence.path}`)
       }
     }
