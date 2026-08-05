@@ -471,7 +471,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     if (selection) {
       const apiKey = process.env[selection.profile.envKey]
       if (apiKey === undefined) {
-        throw new Error(`模型 Profile“${selection.profile.id}”需要环境变量 ${selection.profile.envKey}，但当前未设置。`)
+        printProgress(`警告：模型 Profile“${selection.profile.id}”的环境变量 ${selection.profile.envKey} 未设置；若该供应商需要密钥，运行将在首次模型调用时被阻断。`)
       }
       modelProfile = selection.profile
       printProgress(`使用模型 Profile“${selection.profile.id}”（${selection.profile.model}）`)
