@@ -125,7 +125,10 @@ jobs:
         run: |
           $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
           $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
-          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-probe.cmd'
+          $stubDirectory = Join-Path $env:RUNNER_TEMP '探针%路径'
+          $probeTemp = Join-Path $env:RUNNER_TEMP '捕获%目录'
+          New-Item -ItemType Directory -Force $stubDirectory, $probeTemp | Out-Null
+          $stubPath = Join-Path $stubDirectory 'auto-test-codex-probe.cmd'
           $stubCodex = @'
           @echo off
           if not "%~1"=="--version" goto :probe
@@ -137,13 +140,19 @@ jobs:
           exit /b 0
           '@
           try {
+            $previousTemp = $env:TEMP
+            $previousTmp = $env:TMP
+            $env:TEMP = $probeTemp
+            $env:TMP = $probeTemp
             [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
             $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
             .\Auto-Test.cmd --setup-only
             if ($LASTEXITCODE -ne 0) { throw "Expected successful stderr probe handling, got $LASTEXITCODE" }
           } finally {
+            $env:TEMP = $previousTemp
+            $env:TMP = $previousTmp
             Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
-            Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $stubDirectory, $probeTemp -ErrorAction SilentlyContinue
           }
 
       - name: Verify Windows Codex probe timeout and rollback
@@ -189,6 +198,49 @@ jobs:
           } finally {
             Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
             Remove-Item Env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+            Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify Windows Codex probe output limit and rollback
+        shell: pwsh
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-output-limit.cmd'
+          $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          $stubCodex = @'
+          @echo off
+          if not "%~1"=="--version" goto :probe
+          echo codex-cli 0.146.0
+          exit /b 0
+          :probe
+          powershell.exe -NoProfile -Command "[Console]::Out.Write('x' * 5242880)"
+          exit /b 0
+          '@
+          try {
+            $configBefore = Get-Content -Raw -Encoding UTF8 $configPath
+            $secretBefore = Get-Content -Raw -Encoding UTF8 $secretPath
+            [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+            try {
+              $output = .\Auto-Test.cmd --api-key synthetic-output-limit-key --setup-only 2>&1 | Out-String
+              $exitCode = $LASTEXITCODE
+            } finally {
+              $ErrorActionPreference = $previousErrorActionPreference
+              $stopwatch.Stop()
+            }
+            if ($exitCode -ne 1) { throw "Expected oversized probe to exit 1, got $exitCode" }
+            if ($stopwatch.Elapsed.TotalSeconds -gt 15) { throw "Oversized probe took $($stopwatch.Elapsed.TotalSeconds) seconds" }
+            if ($output -notmatch '4 MiB') { throw "Missing output-limit diagnostic: $output" }
+            if ((Get-Content -Raw -Encoding UTF8 $configPath) -ne $configBefore) { throw 'Provider config was not restored after output limit' }
+            if ((Get-Content -Raw -Encoding UTF8 $secretPath) -ne $secretBefore) { throw 'Provider secret was not restored after output limit' }
+            $global:LASTEXITCODE = 0
+          } finally {
+            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
             Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
           }
 

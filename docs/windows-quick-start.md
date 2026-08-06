@@ -43,7 +43,7 @@ requires_openai_auth = false
 
 Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
 
-旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。
+旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
 
 只有确认私有网关正常但响应时间确实超过 120 秒时，才临时调高等待时间；取值范围为 1 到 3600 秒。这个参数不会修复额度不足、限流或断流，不应作为日常配置：
 

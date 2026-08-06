@@ -31,7 +31,7 @@ Set-Location "D:\Auto-Test"
 继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 路径必须通过 Auto-Test 的 Provider 探针；OMP 路径至少通过 `omp --version`，并由 OMP 自身完成 Provider 检查，或用真实 AgentHost canary 验证 Provider 可用。OMP 使用 `--omp-home` 或 `AUTO_TEST_OMP_HOME` 提供 provider/auth 配置时，实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
 选择 OMP 时，Windows 启动器不会显示 Codex Provider 探针结果；`omp --version` 只能证明 OMP 可启动，不代表 Provider 或业务验收通过。
 
-模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。这不是业务测试结果。OMP 的 Provider 探针由 OMP 自身负责，Auto-Test 只检查其启动层。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
+模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。stdout+stderr 总量超过 4 MiB 同样会终止进程树、回滚配置并清理捕获文件。这不是业务测试结果。OMP 的 Provider 探针由 OMP 自身负责，Auto-Test 只检查其启动层。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
 
 如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
 

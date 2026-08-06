@@ -470,6 +470,10 @@ function ConvertTo-NativeArgument([string] $Value) {
   return '"' + $Value.Replace('"', '\"') + '"'
 }
 
+function ConvertTo-PowerShellLiteral([string] $Value) {
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Start-CodexProbeProcess([string] $Executable) {
   $arguments = @(
     'exec',
@@ -483,7 +487,7 @@ function Start-CodexProbeProcess([string] $Executable) {
     '-C',
     $RepositoryRoot
   )
-  $argumentLine = (($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
+  $argumentLiterals = (($arguments | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ', ')
   $captureRoot = Join-Path ([IO.Path]::GetTempPath()) 'auto-test-codex-probes'
   New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
   Get-ChildItem -Directory $captureRoot -ErrorAction SilentlyContinue |
@@ -493,23 +497,21 @@ function Start-CodexProbeProcess([string] $Executable) {
   New-Item -ItemType Directory -Force -Path $captureDirectory | Out-Null
   $standardOutputPath = Join-Path $captureDirectory 'stdout.log'
   $standardErrorPath = Join-Path $captureDirectory 'stderr.log'
-  $wrapperPath = Join-Path $captureDirectory 'probe.cmd'
-  $invokeExecutable = ConvertTo-NativeArgument $Executable
-  if ([IO.Path]::GetExtension($Executable) -match '(?i)^\.(cmd|bat)$') {
-    $invokeExecutable = "call $invokeExecutable"
-  }
-  $wrapper = @(
-    '@echo off',
-    "$invokeExecutable $argumentLine 1>$(ConvertTo-NativeArgument $standardOutputPath) 2>$(ConvertTo-NativeArgument $standardErrorPath)",
-    'exit /b %errorlevel%'
-  ) -join "`r`n"
-  [IO.File]::WriteAllText($wrapperPath, $wrapper, [Text.Encoding]::Default)
+  $wrapperPath = Join-Path $captureDirectory 'probe.ps1'
+  $wrapper = @"
+`$ErrorActionPreference = 'Continue'
+`$probeArguments = @($argumentLiterals)
+& $(ConvertTo-PowerShellLiteral $Executable) @probeArguments 1> $(ConvertTo-PowerShellLiteral $standardOutputPath) 2> $(ConvertTo-PowerShellLiteral $standardErrorPath)
+exit `$LASTEXITCODE
+"@
+  # Windows PowerShell 5.1 requires a BOM to decode non-ASCII script paths and literals as UTF-8.
+  [IO.File]::WriteAllText($wrapperPath, $wrapper, [Text.UTF8Encoding]::new($true))
 
   # Capture to files instead of redirected pipes. Detached descendants may
   # inherit file handles, but they cannot keep the launcher waiting for EOF.
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $env:ComSpec
-  $startInfo.Arguments = "/d /s /c `"`"$wrapperPath`"`""
+  $startInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+  $startInfo.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $(ConvertTo-NativeArgument $wrapperPath)"
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
   $startInfo.RedirectStandardOutput = $false
@@ -531,20 +533,35 @@ function Start-CodexProbeProcess([string] $Executable) {
   }
 }
 
-function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSeconds) {
+function Get-CodexProbeCaptureBytes($Invocation) {
+  [long] $total = 0
+  foreach ($path in @($Invocation.StandardOutputPath, $Invocation.StandardErrorPath)) {
+    $item = Get-Item $path -ErrorAction SilentlyContinue
+    if ($item) { $total += $item.Length }
+  }
+  return $total
+}
+
+function Wait-CodexProbeInvocation($Invocation, [int] $TimeoutSeconds) {
+  $process = $Invocation.Process
+  [long] $captureLimitBytes = 4MB
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   $nextHeartbeatSeconds = 20
   while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+    if ((Get-CodexProbeCaptureBytes $Invocation) -gt $captureLimitBytes) { return 'output_limit' }
     $remainingMilliseconds = [int] [Math]::Ceiling(($TimeoutSeconds - $stopwatch.Elapsed.TotalSeconds) * 1000)
     $waitMilliseconds = [Math]::Max(1, [Math]::Min(1000, $remainingMilliseconds))
-    if ($Process.WaitForExit($waitMilliseconds)) { return $true }
+    if ($process.WaitForExit($waitMilliseconds)) {
+      if ((Get-CodexProbeCaptureBytes $Invocation) -gt $captureLimitBytes) { return 'output_limit' }
+      return 'completed'
+    }
     if ($stopwatch.Elapsed.TotalSeconds -ge $nextHeartbeatSeconds) {
       $elapsedSeconds = [int] [Math]::Floor($stopwatch.Elapsed.TotalSeconds)
       Write-Host "[检查] 模型 API 仍在响应中（已等待 $elapsedSeconds 秒，最多 $TimeoutSeconds 秒）……"
       $nextHeartbeatSeconds += 20
     }
   }
-  return $Process.HasExited
+  return $(if ($process.HasExited) { 'completed' } else { 'timeout' })
 }
 
 function Stop-CodexProbeProcess([Diagnostics.Process] $Process) {
@@ -588,7 +605,12 @@ function Test-CodexProvider {
       } catch {
         throw "无法启动模型 API 探针：$($_.Exception.Message)"
       }
-      if (-not (Wait-CodexProbeProcess $probeProcess $timeoutSeconds)) {
+      $probeStatus = Wait-CodexProbeInvocation $probeInvocation $timeoutSeconds
+      if ($probeStatus -eq 'output_limit') {
+        Stop-CodexProbeProcess $probeProcess
+        throw '模型 API 探针 stdout/stderr 总量超过 4 MiB，已终止异常输出并清理探针进程。'
+      }
+      if ($probeStatus -eq 'timeout') {
         Stop-CodexProbeProcess $probeProcess
         throw "模型 API 探针在 $timeoutSeconds 秒内未完成，已终止卡住的 Codex 进程。请检查模型服务、Windows 网络、代理或流式响应稳定性；仅在网关确实较慢时调整 AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS。"
       }
