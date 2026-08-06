@@ -1,4 +1,4 @@
-import type { ThreadEvent } from '@openai/codex-sdk'
+import { normalizeAgentEvent, type AgentEvent } from './host.js'
 
 export type CodexTestAgentProgressKind = 'stage' | 'activity' | 'heartbeat' | 'warning'
 
@@ -8,6 +8,10 @@ export interface CodexTestAgentProgress {
 }
 
 export type CodexTestAgentProgressSink = (progress: CodexTestAgentProgress) => void
+
+export type AgentTestProgressKind = CodexTestAgentProgressKind
+export type AgentTestProgress = CodexTestAgentProgress
+export type AgentTestProgressSink = CodexTestAgentProgressSink
 
 const browserToolLabels: Record<string, string> = {
   browser_navigate: '打开目标页面',
@@ -67,59 +71,68 @@ const controlToolLabels: Record<string, string> = {
 function toolLabel(server: string, tool: string): string {
   if (server === 'playwright') return browserToolLabels[tool] ?? '执行受控浏览器动作'
   if (server === 'auto-test-control') return controlToolLabels[tool] ?? '更新测试交付记录'
+  if (tool === 'web_search') return '检索测试所需的外部资料'
   return '调用受控测试工具'
 }
 
-export function progressFromThreadEvent(event: ThreadEvent): CodexTestAgentProgress | undefined {
-  if (event.type === 'thread.started') {
-    return { kind: 'stage', message: 'Codex 测试线程已建立；中断后可以从本次结果目录恢复' }
+function normalizedToolIdentity(server: string | undefined, tool: string | undefined): { server: string; tool: string } {
+  if (server) return { server, tool: tool ?? '' }
+  const value = tool ?? ''
+  const browser = Object.keys(browserToolLabels).find((name) => value === name || value.endsWith(`_${name}`))
+  if (browser) return { server: 'playwright', tool: browser }
+  const control = Object.keys(controlToolLabels).find((name) => value === name || value.endsWith(`_${name}`))
+  if (control) return { server: 'auto-test-control', tool: control }
+  return { server: '', tool: value }
+}
+
+export function progressFromAgentEvent(value: unknown): CodexTestAgentProgress | undefined {
+  const event = normalizeAgentEvent(value)
+  if (event.type === 'thread_started') {
+    return { kind: 'stage', message: 'AgentHost 测试线程已建立；中断后可以从本次结果目录恢复' }
   }
-  if (event.type === 'turn.started') {
-    return { kind: 'stage', message: 'Codex 正在理解测试用例、页面证据和下一步动作' }
+  if (event.type === 'turn_started') {
+    return { kind: 'stage', message: '测试代理正在理解测试用例、页面证据和下一步动作' }
   }
-  if (event.type === 'turn.completed') {
-    return { kind: 'stage', message: 'Codex 本轮执行结束，正在核对结构化交付是否完整' }
+  if (event.type === 'turn_completed') {
+    return { kind: 'stage', message: '测试代理本轮执行结束，正在核对结构化交付是否完整' }
   }
   if (event.type === 'error') {
-    const reconnect = /^Reconnecting\.\.\.\s*(\d+\/\d+)/i.exec(event.message)
-    if (reconnect) return { kind: 'warning', message: `模型连接暂时中断，Codex 正在自动重连（${reconnect[1]}）` }
+    const reconnect = /^Reconnecting\.\.\.\s*(\d+\/\d+)/i.exec(event.message ?? '')
+    if (reconnect) return { kind: 'warning', message: `模型连接暂时中断，AgentHost 正在自动重连（${reconnect[1]}）` }
     return undefined
   }
-  if (event.type !== 'item.started' && event.type !== 'item.completed') return undefined
-
-  const item = event.item
-  if (item.type === 'mcp_tool_call') {
-    const label = toolLabel(item.server, item.tool)
-    if (event.type === 'item.started') return { kind: 'activity', message: `正在${label}` }
-    if (item.status === 'failed') return { kind: 'warning', message: `${label}返回失败，Codex 正在分析并尝试恢复` }
+  if (event.type === 'tool_started' || event.type === 'tool_completed') {
+    const identity = normalizedToolIdentity(event.server, event.tool)
+    const label = toolLabel(identity.server, identity.tool)
+    if (event.type === 'tool_started') return { kind: 'activity', message: `正在${label}` }
+    if (event.status === 'failed') return { kind: 'warning', message: `${label}返回失败，测试代理正在分析并尝试恢复` }
     return { kind: 'activity', message: `${label}已完成` }
   }
-  if (item.type === 'command_execution') {
-    if (event.type === 'item.started') return { kind: 'activity', message: 'Codex 正在运行测试辅助命令或脚本' }
-    if (item.status === 'failed') return { kind: 'warning', message: '测试辅助命令执行失败，Codex 正在分析并恢复' }
+  if (event.type === 'command_started' || event.type === 'command_completed') {
+    if (event.type === 'command_started') return { kind: 'activity', message: '测试代理正在运行测试辅助命令或脚本' }
+    if (event.status === 'failed') return { kind: 'warning', message: '测试辅助命令执行失败，测试代理正在分析并恢复' }
     return { kind: 'activity', message: '测试辅助命令或脚本已完成' }
   }
-  if (item.type === 'file_change') {
-    if (event.type === 'item.started') return { kind: 'activity', message: 'Codex 正在更新本次运行的临时脚本或记录' }
-    if (item.status === 'failed') return { kind: 'warning', message: '本次运行工作区文件更新失败，Codex 正在恢复' }
+  if (event.type === 'file_change_started' || event.type === 'file_change_completed') {
+    if (event.type === 'file_change_started') return { kind: 'activity', message: '测试代理正在更新本次运行的临时脚本或记录' }
+    if (event.status === 'failed') return { kind: 'warning', message: '本次运行工作区文件更新失败，测试代理正在恢复' }
     return { kind: 'activity', message: '本次运行的临时脚本或记录已更新' }
   }
-  if (item.type === 'web_search') {
-    return { kind: 'activity', message: event.type === 'item.started' ? 'Codex 正在检索测试所需的外部资料' : '外部资料检索已完成' }
+  if (event.type === 'reasoning_started') {
+    return { kind: 'activity', message: '测试代理正在分析当前证据和下一步动作' }
   }
-  if (event.type === 'item.started' && item.type === 'reasoning') {
-    return { kind: 'activity', message: 'Codex 正在分析当前证据和下一步动作' }
+  if (event.type === 'todo_started') {
+    return { kind: 'activity', message: '测试代理正在整理当前执行步骤' }
   }
-  if (event.type === 'item.started' && item.type === 'todo_list') {
-    return { kind: 'activity', message: 'Codex 正在整理当前执行步骤' }
-  }
-  if (event.type === 'item.completed' && item.type === 'agent_message') {
-    return { kind: 'activity', message: 'Codex 已完成本轮执行说明' }
-  }
-  if (event.type === 'item.completed' && item.type === 'error') {
-    return { kind: 'warning', message: 'Codex 收到工具错误，正在判断是否能够恢复' }
+  if (event.type === 'agent_message') {
+    return { kind: 'activity', message: '测试代理已完成本轮执行说明' }
   }
   return undefined
+}
+
+/** Backward-compatible name retained for integrations that imported the old helper. */
+export function progressFromThreadEvent(event: unknown): CodexTestAgentProgress | undefined {
+  return progressFromAgentEvent(event)
 }
 
 function elapsedLabel(milliseconds: number): string {
@@ -149,8 +162,8 @@ export class CodexTestProgressReporter {
     }
   }
 
-  observe(event: ThreadEvent): void {
-    const progress = progressFromThreadEvent(event)
+  observe(event: AgentEvent | unknown): void {
+    const progress = progressFromAgentEvent(event)
     if (progress) this.report(progress.kind, progress.message)
   }
 
@@ -175,3 +188,6 @@ export class CodexTestProgressReporter {
     this.heartbeat = undefined
   }
 }
+
+/** Host-neutral name; the historical Codex export remains compatible. */
+export class AgentTestProgressReporter extends CodexTestProgressReporter {}

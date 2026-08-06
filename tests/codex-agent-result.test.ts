@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexTestResultSchema, enforceMutationLedger, parseCodexTestResult } from '../src/agent/result.js'
+import { codexTestResultSchema, enforceMutationLedger, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 
 function result(): CodexTestAgentResult {
@@ -50,6 +50,11 @@ describe('Codex test result contract', () => {
     invalid.cases = [{ caseId: 'filter-catalog', title: 'Filter', outcome: 'passed', summary: 'ok' }]
 
     expect(() => parseCodexTestResult(JSON.stringify(invalid))).toThrow(/schema validation.*evidence/i)
+  })
+
+  it('recovers a valid result from a later Markdown fence', () => {
+    const value = `Here is a selector example:\n\n\`\`\`json\n{"not":"a test result"}\n\`\`\`\n\nFinal delivery:\n\n\`\`\`json\n${JSON.stringify(result())}\n\`\`\``
+    expect(parseAgentTestResult(value)).toMatchObject({ workflowId: 'catalog-check', outcome: 'passed' })
   })
 
   it('forces a blocked outcome when the authoritative ledger still contains a pending mutation', () => {

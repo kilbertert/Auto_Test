@@ -1,6 +1,6 @@
-import type { CodexTestEnvironmentRequirement, CodexTestRisk } from './types.js'
+import type { CodexTestRisk } from './types.js'
 
-export interface CodexTestControlConfig {
+export interface AgentTestControlConfig {
   version: '1.0'
   workflowId: string
   sourceSha256: string
@@ -22,3 +22,6 @@ export interface CodexTestControlConfig {
   secretValuesPath?: string
   testDataAccess?: 'direct' | 'opaque'
 }
+
+/** Historical Codex-prefixed name remains source-compatible. */
+export type CodexTestControlConfig = AgentTestControlConfig

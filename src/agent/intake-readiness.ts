@@ -9,7 +9,7 @@ const sha256Pattern = /^[a-f0-9]{64}$/i
 
 /**
  * Intake diagnostics describe source quality. Only the immutable execution
- * contract can prevent a Codex-native run from starting.
+ * contract can prevent an AgentHost run from starting.
  */
 export function assessAgentIntakeReadiness(manifest: WorkflowIntakeManifest): AgentIntakeReadiness {
   const problems: string[] = []

@@ -1,8 +1,8 @@
-# Codex-native 跨场景测试快速指南
+# AgentHost 跨场景测试快速指南
 
-Auto-Test 的默认入口是一个逻辑 Codex Run。Runner 是薄运行外壳：Codex 负责理解原始测试材料、规划页面操作、执行和断言；Runner 负责输入身份、权限、浏览器、证据、Mutation Ledger、进度和确定性结果交付。
+Auto-Test 的默认入口是一个逻辑 Agent Run。Runner 是薄运行外壳：选定的 Codex 或 OMP 宿主负责理解原始测试材料、规划页面操作、执行和断言；Core 负责输入身份、权限、浏览器、证据、Mutation Ledger、进度和确定性结果交付。
 
-长用例集不会要求工程师手工切分。Runner 根据模型 Profile 的上下文窗口和输出上限自动规划 execution epoch（执行纪元），每个 epoch 只交付有限 case；epoch 之间用 checkpoint 传递站点模型和恢复笔记，必要时启动新的物理 Codex thread。所有 epoch 仍属于同一个 Run。
+长用例集不会要求工程师手工切分。Runner 根据模型 Profile 的上下文窗口和输出上限自动规划 execution epoch（执行纪元），每个 epoch 只交付有限 case；epoch 之间用 checkpoint 传递站点模型和恢复笔记，必要时启动新的物理 AgentHost thread。所有 epoch 仍属于同一个 Run。
 
 ## 1. 首次准备
 
@@ -12,7 +12,7 @@ npx playwright install chromium
 npm run check
 ```
 
-Windows 私有包会自动安装固定版本 Node.js、Codex CLI、依赖和 Chromium，并验证配置的模型 API。公开源码运行时，请通过模型 Profile 或环境变量提供 Provider 配置，密钥不要写入仓库。
+Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖和 Chromium，并验证配置的模型 API。OMP 是可选宿主，需要在测试机另行安装并配置自己的 Provider。公开源码运行时，请通过宿主配置或模型 Profile/环境变量提供 Provider，密钥不要写入仓库。
 
 ## 2. 注册环境
 
@@ -38,6 +38,7 @@ npm run easy -- run \
   --url https://app.example.test/ \
   --url https://admin.example.test/ \
   --profile staging \
+  --agent-host codex \
   --headed \
   --case-limit 1
 ```
@@ -58,13 +59,29 @@ npm run agent:test -- \
 - `--image <path>`：补充截图，可重复；
 - `--brief <path>`：不含秘密的业务说明；
 - `--model <id>`：覆盖模型名；
+- `--agent-host codex|omp`：选择宿主；默认 `codex`；
+- `--agent-bin <path>`：当前宿主可执行文件；OMP 也可使用 `--omp-bin`；
+- `--omp-home <path>`：OMP provider/auth 配置目录；仅复制允许的配置文件到私有 run；
 - `--model-profile <id>`：选择已注册 Provider；
 - `--max-iterations <N>`：列表型数据的 canary 上限，不切分 case；
 - `--case-limit <N>`：只执行前 N 条 case；
 - `--headed` / `--headless`：显示或隐藏浏览器；
-- `--resume`：继续同一 Run，必须复用原 `--output-dir`。
+- `--resume`：继续同一 Run，必须复用原 `--output-dir`；不指定宿主时自动复用原 Run 的宿主。
 
 不存在 `--case-batch-size`。容量调度由 Model Profile 的可选字段控制：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio`、`targetOutputRatio`。未提供时使用保守默认值。
+
+### 使用 OMP
+
+```bash
+npm run easy -- run \
+  --file /private/cases.xlsx \
+  --url https://app.example.test/ \
+  --profile staging \
+  --agent-host omp \
+  --omp-bin /path/to/omp
+```
+
+OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工作区生成 `.omp/mcp.json`，把同一套 Playwright 与 Control MCP 注入 OMP；OMP 的 provider 配置可用 `--omp-home <dir>` 或 `AUTO_TEST_OMP_HOME` 指定，Core 只复制 provider/auth 白名单到私有 agent 目录，不复制用户 MCP 或历史 session。需要环境变量认证时，可用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出要转发的变量。`agent-host-selection.json` 会记录实际宿主，恢复时宿主身份必须保持一致。
 
 ## 5. 运行机制
 
@@ -73,16 +90,16 @@ npm run agent:test -- \
 ```text
 逻辑 Run
   -> capacity policy
-  -> epoch-0001 / Codex thread A
+  -> epoch-0001 / AgentHost thread A
   -> 每条 case result commit + workspace checkpoint
-  -> epoch-0002 / Codex thread B（必要时）
+  -> epoch-0002 / AgentHost thread B（必要时）
   -> per-case store
   -> immutable-order deterministic aggregate
 ```
 
-Codex 始终是真实测试执行主体。Runner 不解释业务语义，不生成第二份 Execution Plan，也不要求 `case_execution_begin/end`、`case_result_record` 或环境审计 turn 才允许浏览器工作。Control MCP 回执是可选审计信息，只有 Codex 在结果中引用的回执才会被确定性校验。
+选定的 AgentHost 始终是真实测试执行主体。Runner 不解释业务语义，不生成第二份 Execution Plan，也不要求 `case_execution_begin/end`、`case_result_record` 或环境审计 turn 才允许浏览器工作。Control MCP 回执是可选审计信息，只有宿主在结果中引用的回执才会被确定性校验。
 
-对外部业务写入使用 Mutation Ledger 记录完整业务操作。恢复时 Codex 必须先重新观察真实状态；只要存在 `pending` Mutation，最终结果就只能是 `blocked`，不会继续调度后续 epoch。
+对外部业务写入使用 Mutation Ledger 记录完整业务操作。恢复时选定的 AgentHost 必须先重新观察真实状态；只要存在 `pending` Mutation，最终结果就只能是 `blocked`，不会继续调度后续 epoch。
 
 ## 6. 结果和恢复
 
@@ -92,7 +109,7 @@ Codex 始终是真实测试执行主体。Runner 不解释业务语义，不生�
 - `codex-agent.result.json`：完整 `passed`、`product_failed` 或 `blocked` 结果；
 - `.agent-private/case-results/`：逐 case 事实源，每个 case 一个幂等 JSON 记录；
 - `.agent-private/execution-epochs/`：每个 epoch 的有界结构化结果；
-- `.agent-private/checkpoints/`：Codex 在 thread 轮换前写入的工作记忆；
+- `.agent-private/checkpoints/`：选定 AgentHost 在 thread 轮换前写入的工作记忆；
 - `.agent-private/mutation-ledger.json`：私有副作用恢复账本；
 - `agent-workspace/execution-receipts.json`：被动捕获的 Playwright 回执；
 - `agent-workspace/case-results.json`：最终确定性聚合的交付 artifact；
@@ -110,6 +127,8 @@ npm run easy -- run \
 ```
 
 恢复会校验 workflow/source 身份和 Ledger。已写入逐 case store 的 case 不会重跑；active epoch 会恢复原 thread，容量轮换后的新 epoch 会从 checkpoint 和原工作区继续。旧版 `version: 1.0` 状态、`activeBatch`、`completedBatchIds` 等状态不再兼容，恢复会 fail closed 并要求新建 Run。
+
+需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据和 Ledger，不启动新的 Agent，也不重复业务写入。两个 Run 必须同时提供 immutable `test-manifest.json`、一致的 `workflowId`/`sourceSha256`、Excel 与同名 sidecar/image 的 `input-bundle.json`、Manifest hash、Environment selection hash、平台、架构、Auto-Test 包版本、commit 和 `agent-host-selection.json`。缺少或不一致的任一合同输入时，比较器会 fail closed，结果为 `invalid`，不会继续给出宿主等价性结论。
 
 ## 7. 结果边界
 

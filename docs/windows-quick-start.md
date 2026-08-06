@@ -13,7 +13,7 @@
 启动器会自动完成：
 
 1. 从 Node.js 官方发布包安装 Auto-Test 私有的固定版本 Node.js 24，并校验官方 SHA-256；
-2. 在 Auto-Test 私有工具目录安装与服务器一致的 Codex CLI 固定版本；
+2. 在 Auto-Test 私有工具目录安装与服务器一致的默认 Codex CLI 固定版本；需要 OMP 竞争时，另行安装 OMP 并确认 `omp --version` 可用；
 3. 从私有安装包读取模型 Provider 配置，或在公开源码首次使用时提示输入；
 4. 发送一次最小模型请求，验证 API 地址、Key 和模型真实可用；
 5. 安装项目依赖和 Chromium；
@@ -108,17 +108,17 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架会先解析 Excel，并把单元格中出现但没有手工输入的网站 URL 自动加入本次目标范围。如果已有环境只覆盖其中一部分，菜单会明确列出缺少的网站并进入环境更新向导；直接使用向导默认值会保留原环境的登录状态和权限范围。环境完整后，框架会自动选择并复用登录状态。每次运行的输出目录也会自动创建。
 
-默认执行主体是 Codex 测试代理。Runner 根据 Model Profile 容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。Codex 可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
+默认执行主体是 Codex AgentHost；也可以在命令行选择 OMP AgentHost。Runner 根据模型容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。选定宿主可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
-框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。Codex 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
+框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。选定 AgentHost 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以编写一次性 Playwright/JavaScript 辅助代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
 
-每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，运行值只保存在 `.agent-private\run-values.json`，`codex-agent.events.jsonl` 保存脱敏后的线程、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 被动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存 Codex 直接生成且由框架校验的最终结果，`agent-workspace/evidence/` 保存页面证据。每个 Codex turn 结束后，框架会清洗 Agent 生成的文本制品；原始输入目录和 `.agent-private` 私有恢复材料不会被清洗。截图、PDF 等二进制证据不做自动内容擦除，外发前必须人工检查用户名、业务数据和其他敏感信息。长套件还会生成 `.agent-private\execution-epochs\`、`.agent-private\case-results\` 和 `.agent-private\checkpoints\`：前者保存有界 epoch 交付，中者是逐 case 恢复事实源，后者保存 thread 轮换时的 Codex 工作记忆。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，原 Excel 不会被改写。最终 `agent-workspace/case-results.json` 保存按 Manifest 顺序聚合的全量版本化交付。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Codex 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
+每次运行目录中的 `agent-workspace/input/` 保存原始测试材料的本次运行副本，运行值只保存在 `.agent-private\run-values.json`，`codex-agent.events.jsonl` 保存脱敏后的宿主、shell 和工具事件，`agent-workspace/execution-receipts.json` 保存 Runner 被动捕获的 Playwright 完成调用元数据，`codex-agent.result.json` 保存选定 AgentHost 生成且由框架校验的最终结果，`agent-host-selection.json` 保存实际宿主和能力，`agent-workspace/evidence/` 保存页面证据。每个 Agent turn 结束后，框架会清洗 Agent 生成的文本制品，包括输入 Secret、Authorization/Cookie/API key、运行期 `access_token`/`refresh_token` 和 JWT；JSON/JSONL 清洗后仍保持可解析，immutable `test-manifest.json` 和原始输入不会被清洗器改写。`.agent-private` 私有恢复材料同样不会被清洗。截图、PDF 等二进制证据不做自动内容擦除，外发前必须人工检查用户名、业务数据和其他敏感信息。长套件还会生成 `.agent-private\execution-epochs\`、`.agent-private\case-results\` 和 `.agent-private\checkpoints\`：前者保存有界 epoch 交付，中者是逐 case 恢复事实源，后者保存 thread 轮换时的 Agent 工作记忆。结束时还会生成 `原文件名-Auto-Test-结果.xlsx`：这是原 Excel 的副本，按每条 case 的来源行追加“Auto-Test 状态、失败来源、失败类型、执行摘要、证据索引、环境需求”六列，原 Excel 不会被改写。最终 `agent-workspace/case-results.json` 保存按 Manifest 顺序聚合的全量版本化交付。测试结束时，窗口会先显示通过、产品不符预期和阻断的用例数，再分别提示测试材料、环境/权限/数据、基础设施或 Agent 执行交付的首个直接原因。模型额度、MCP、浏览器或网络不可用时会返回 `blocked`，不会把基础设施错误误报为测试通过。
 
-完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，Codex 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Codex 会重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断。
+完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，选定的 AgentHost 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Runner 会复用原宿主重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断；当前 OMP 适配器不支持该受限模式。
 
-启动窗口会持续显示带时间的执行进度，包括 Codex thread 状态、epoch 编号、线程代数、累计完成 case 数、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger、checkpoint 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连、thread 轮换和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
+启动窗口会持续显示带时间的执行进度，包括 AgentHost thread 状态、epoch 编号、线程代数、累计完成 case 数、读取页面结构、填写表单、运行测试辅助脚本、更新 run 工作区、记录证据、核对 Mutation Ledger、checkpoint 和生成最终结果。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳，因此可以区分正常思考、自动重连、thread 轮换和明确阻断。进度只显示动作类别，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息。
 
-这些进度表示 Codex 仍在工作，不代表测试已经通过。最终结论以 `codex-agent.result.json`、其中引用的实际证据以及 Mutation Ledger 的终态为准；Execution Plan 和字段 Gate 不再是必需产物。
+这些进度表示选定 AgentHost 仍在工作，不代表测试已经通过。最终结论以 `codex-agent.result.json`、其中引用的实际证据以及 Mutation Ledger 的终态为准；Execution Plan 和字段 Gate 不再是必需产物。
 
 结束时直接显示以下三类结果：
 
@@ -144,11 +144,45 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
   --one
 ```
 
+在已安装 OMP 的 Windows 测试机上，可将宿主切换为：
+
+```powershell
+$env:AUTO_TEST_AGENT_FORWARD_ENV = "OMP_API_KEY"
+.\Auto-Test.cmd run `
+  --file "C:/TestData/cases.xlsx" `
+  --url "https://app.example.test/" `
+  --agent-host omp `
+  --omp-bin "C:/Tools/omp.cmd" `
+  --omp-home "C:/Users/tester/.omp/agent" `
+  --headed
+```
+
+OMP 的 Provider 登录和模型选择由 OMP 自身配置负责；`--omp-home` 只读取 provider/auth 配置（包括当前版本的 `agent.db` auth store）并复制到本次私有 run，用户 MCP、插件和历史会话不会进入 run。Auto-Test 还会在本次工作区写入 OMP 项目覆盖，关闭 OMP 自带 browser，确保实际使用与 Codex 相同的 Playwright MCP。复制登录态前请关闭正在写同一 OMP 配置目录的进程；恢复时省略 `--omp-home` 会保留原 run 的 Provider 副本，不会静默改用当前用户目录；也可以用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式转发 Provider 环境变量。`doctor --agent-host omp` 只检查 Node、OMP 可执行文件和 Chromium，不代表业务验收通过。
+
+OMP 目前没有 Codex SDK 同等级的操作系统 workspace sandbox，因此 Windows OMP 验收应在专用测试账号和专用测试机上进行；Auto-Test 会保留 run 工作区约束、审计与结果合同，但不会把 OMP 宣称为受限 `opaque` 宿主。
+
+Windows 启动器会先识别 `--agent-host omp`（或 `AUTO_TEST_AGENT_HOST=omp`），此路径不会安装、探针或要求 Codex Provider；只要 OMP 自身已安装并配置，Codex 额度不足不会阻断 OMP 启动。
+
+默认使用 Codex；在已安装并完成 OMP 自身 Provider 配置的测试机上，可以让 OMP 执行同一份输入：
+
+```powershell
+.\Auto-Test.cmd run `
+  --file "C:/TestData/cases.xlsx" `
+  --url "https://app.example.test/" `
+  --profile staging `
+  --agent-host omp `
+  --omp-bin "C:/Tools/omp.exe" `
+  --omp-home "C:/Users/tester/.omp/agent" `
+  --headed
+```
+
+OMP 的模型认证不使用 Auto-Test 的 Codex Model Profile；`easy doctor --agent-host omp` 只检查 OMP 可执行文件、Node.js 和 Chromium，Provider 健康仍以 OMP 自身配置和真实 AgentHost Run 为准。
+
 不需要也不应提供 `--case-batch-size`。若只想做最小 canary，使用 `--one` 或 `--case-limit 1`；长套件由容量策略自动规划。
 
-`--headed` 会显示认证刷新和 Codex 测试代理的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据、epoch 结果、checkpoint、逐 case store 和结构化结果仍保存在本次结果目录中。
+`--headed` 会显示认证刷新和选定 AgentHost 的浏览器操作；`--headless` 适合无人值守执行。浏览器在运行结束后会正常关闭，页面证据、epoch 结果、checkpoint、逐 case store 和结构化结果仍保存在本次结果目录中。
 
-默认模式给予 Codex 原始测试材料、可写 run 工作区、shell、网络、Web Search 和完整 Playwright。它只能在 run 工作区写文件，不应修改 Auto-Test 或被测应用源码。需要恢复旧的只读、MCP-only、origin 受限模式时显式加入 `--opaque-test-data`。
+默认模式给予选定 AgentHost 原始测试材料、可写 run 工作区、shell、网络、Web Search 和完整 Playwright。它只能在 run 工作区写文件，不应修改 Auto-Test 或被测应用源码。需要恢复旧的只读、MCP-only、origin 受限模式时显式加入 `--opaque-test-data`。
 
 如果电脑睡眠、网络、模型连接、浏览器或 MCP 导致运行中断，恢复网络后复用原命令、原 Excel、原环境和原结果目录，并增加 `--resume`：
 

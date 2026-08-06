@@ -2,19 +2,20 @@
 
 面向测试工程师的 AI 辅助 Web 自动化测试项目。
 
-Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。
+Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
 
-默认主链路是 Codex-native 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。一个逻辑 Codex Run 自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型 Profile 的上下文与输出容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理 Codex thread。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，框架不替 Codex 做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。
+默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
 
-当前实现已经完成原始材料工作区、环境选择与认证刷新、隔离 Codex Home、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、被动 Playwright 执行回执、自适应 epoch、逐 case 私有结果库、thread checkpoint/轮换和 Windows 启动器接入。每个 epoch 只要求 Codex 交付当前有界 case 集，最终完整结果由框架按不可变 Manifest 顺序确定性聚合，避免大用例集同时撞上上下文和单次 JSON 输出上限。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。旧版状态不再兼容恢复，必须新建 Run。基于 commit `c94ad77` 的历史 thin harness Windows 私有包曾在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该历史结果尚未验证本次自适应 epoch 重构，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
+当前实现已经完成原始材料工作区、环境选择与认证刷新、宿主隔离配置、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、被动 Playwright 执行回执、自适应 epoch、逐 case 私有结果库、thread checkpoint/轮换和 Windows 启动器接入。每个 epoch 只要求选定 AgentHost 交付当前有界 case 集，最终完整结果由框架按不可变 Manifest 顺序确定性聚合，避免大用例集同时撞上上下文和单次 JSON 输出上限。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。旧版状态不再兼容恢复，必须新建 Run。基于 commit `c94ad77` 的历史 thin harness Windows 私有包曾在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该历史结果尚未验证本次自适应 epoch 重构，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 
-执行回执由 Runner 被动捕获；Codex 可以按需使用 Control MCP 查询当前 Run 或显式 case episode，完整回执仍保存在运行目录，供确定性校验和审计。回执 ID 包含 epoch 命名空间和 turn 序号，避免物理 thread 轮换后重复使用 `item_*` 编号时互相覆盖。
+执行回执由 Runner 被动捕获；选定 AgentHost 可以按需使用 Control MCP 查询当前 Run 或显式 case episode，完整回执仍保存在运行目录，供确定性校验和审计。回执 ID 包含 epoch 命名空间和 turn 序号，避免物理 thread 轮换后重复使用 `item_*` 编号时互相覆盖。
 
-测试结束后，Windows 菜单会把同一份结构化结果确定性地整理为测试人员摘要：失败位置、原因类别、直接原因、建议操作、完成情况、Mutation Ledger 终态和证据路径。产品缺陷、代理执行失败、输入资料问题、环境阻断和基础设施故障分开显示；该展示层不调用新模型，也不覆盖执行 Codex 的业务结论。
+测试结束后，Windows 菜单会把同一份结构化结果确定性地整理为测试人员摘要：失败位置、原因类别、直接原因、建议操作、完成情况、Mutation Ledger 终态和证据路径。产品缺陷、代理执行失败、输入资料问题、环境阻断和基础设施故障分开显示；该展示层不调用新模型，也不覆盖选定 AgentHost 的业务结论。
 
 ## 当前文档
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)
+- [AgentHost 宿主契约与 Codex/OMP 比较](docs/agent-hosts.md)
 - [Windows 快速操作指南](docs/windows-quick-start.md)
 - [Windows 私有包快速打包](docs/windows-package-quick-start.md)
 - [Windows 从零验收清单](docs/windows-acceptance-runbook.md)
@@ -38,13 +39,26 @@ npm run easy
 
 ```bash
 npm run agent:test -- \
-  --file /private/cases.xlsx \
+  --file <path-to-cases.xlsx> \
   --url https://app.example.test/ \
   --profile staging \
   --output-dir artifacts/runs/example
 ```
 
+选择 OMP 时只需替换宿主参数（OMP Provider 由 OMP 自身配置管理；可用 `--omp-home` 指向 provider/auth 配置目录）：
+
+```bash
+npm run agent:test -- \
+  --file <path-to-cases.xlsx> \
+  --url https://app.example.test/ \
+  --profile staging \
+  --agent-host omp \
+  --omp-bin <path-to-omp>
+```
+
 URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
+
+需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取两份 Run 的不可变输入合同、结构化结果、证据、回执和 Ledger，不会再次调用模型或重复业务写入。合同缺失或不一致时只返回 `invalid`。
 
 ## 核心约束
 
@@ -280,7 +294,7 @@ npm run intake:workflow -- \
 - 标记跨 origin、新 BrowserContext、运行时实体捕获、验证码、物理状态、调度等待和破坏性批准等所需能力；
 - 为工作流型输入生成来源索引和诊断清单；该独立 intake 命令本身不执行浏览器操作。
 
-Codex-native 的 `npm run easy -- run` / `npm run agent:test` 会直接读取原始 Excel 并按每个来源行建立完整 case 合同。重复 ID、缺步骤/预期结果和无法解析的自由文本会保留在 Manifest 与诊断中，由同一 Codex 线程结合原始材料判断；它们不会再把整份业务输入提前挡在浏览器之外。真正的启动阻断仅限输入身份、目标 URL、case 索引和 Manifest 一致性无法建立的情况。写入权限只由 Environment Profile 控制，不由推断的 case 风险替代。
+AgentHost 的 `npm run easy -- run` / `npm run agent:test` 会直接读取原始 Excel 并按每个来源行建立完整 case 合同。重复 ID、缺步骤/预期结果和无法解析的自由文本会保留在 Manifest 与诊断中，由同一 AgentHost 会话结合原始材料判断；它们不会再把整份业务输入提前挡在浏览器之外。真正的启动阻断仅限输入身份、目标 URL、case 索引和 Manifest 一致性无法建立的情况。写入权限只由 Environment Profile 控制，不由推断的 case 风险替代。
 
 使用结构化执行证据生成工作流验收报告：
 

@@ -1,7 +1,7 @@
 import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest, WorkflowPhaseDraft } from '../workflow/types.js'
 
-export interface CodexExecutionCapacity {
+export interface AgentExecutionCapacity {
   contextWindowTokens: number
   maxOutputTokens: number
   caseOutputTokens: number
@@ -9,7 +9,7 @@ export interface CodexExecutionCapacity {
   targetOutputRatio: number
 }
 
-export interface CodexExecutionEpoch {
+export interface AgentExecutionEpoch {
   id: string
   index: number
   total: number
@@ -18,7 +18,7 @@ export interface CodexExecutionEpoch {
   estimatedOutputTokens: number
 }
 
-export const DEFAULT_CODEX_EXECUTION_CAPACITY: CodexExecutionCapacity = {
+export const DEFAULT_AGENT_EXECUTION_CAPACITY: AgentExecutionCapacity = {
   contextWindowTokens: 128_000,
   maxOutputTokens: 16_000,
   caseOutputTokens: 900,
@@ -26,26 +26,26 @@ export const DEFAULT_CODEX_EXECUTION_CAPACITY: CodexExecutionCapacity = {
   targetOutputRatio: 0.55,
 }
 
-export function capacityForModelProfile(profile?: ModelProfile): CodexExecutionCapacity {
+export function capacityForAgentProfile(profile?: ModelProfile): AgentExecutionCapacity {
   return {
-    contextWindowTokens: profile?.contextWindowTokens ?? DEFAULT_CODEX_EXECUTION_CAPACITY.contextWindowTokens,
-    maxOutputTokens: profile?.maxOutputTokens ?? DEFAULT_CODEX_EXECUTION_CAPACITY.maxOutputTokens,
-    caseOutputTokens: profile?.caseOutputTokens ?? DEFAULT_CODEX_EXECUTION_CAPACITY.caseOutputTokens,
-    targetContextRatio: profile?.targetContextRatio ?? DEFAULT_CODEX_EXECUTION_CAPACITY.targetContextRatio,
-    targetOutputRatio: profile?.targetOutputRatio ?? DEFAULT_CODEX_EXECUTION_CAPACITY.targetOutputRatio,
+    contextWindowTokens: profile?.contextWindowTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.contextWindowTokens,
+    maxOutputTokens: profile?.maxOutputTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.maxOutputTokens,
+    caseOutputTokens: profile?.caseOutputTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.caseOutputTokens,
+    targetContextRatio: profile?.targetContextRatio ?? DEFAULT_AGENT_EXECUTION_CAPACITY.targetContextRatio,
+    targetOutputRatio: profile?.targetOutputRatio ?? DEFAULT_AGENT_EXECUTION_CAPACITY.targetOutputRatio,
   }
 }
 
-export function buildCodexExecutionEpochs(
+export function buildAgentExecutionEpochs(
   manifest: WorkflowIntakeManifest,
-  capacity: CodexExecutionCapacity,
+  capacity: AgentExecutionCapacity,
   completedCaseIds: Iterable<string> = [],
-): CodexExecutionEpoch[] {
+): AgentExecutionEpoch[] {
   const completed = new Set(completedCaseIds)
   const inputBudget = Math.max(1, Math.floor(capacity.contextWindowTokens * capacity.targetContextRatio))
   const outputBudget = Math.max(1, Math.floor(capacity.maxOutputTokens * capacity.targetOutputRatio))
-  const epochs: Array<Omit<CodexExecutionEpoch, 'total'>> = []
-  let current: Omit<CodexExecutionEpoch, 'total'> | undefined
+  const epochs: Array<Omit<AgentExecutionEpoch, 'total'>> = []
+  let current: Omit<AgentExecutionEpoch, 'total'> | undefined
 
   for (const phase of manifest.phases) {
     const estimatedInputTokens = estimatePhaseInputTokens(phase)
@@ -76,9 +76,9 @@ export function buildCodexExecutionEpochs(
   return pending.map((epoch, index) => ({ ...epoch, index, total: pending.length }))
 }
 
-export function manifestForExecutionEpoch(
+export function manifestForAgentExecutionEpoch(
   manifest: WorkflowIntakeManifest,
-  epoch: CodexExecutionEpoch,
+  epoch: AgentExecutionEpoch,
 ): WorkflowIntakeManifest {
   const required = new Set(epoch.caseIds)
   const phases = manifest.phases.filter((phase) => required.has(phase.id))
@@ -103,6 +103,14 @@ export function limitManifestToCases(manifest: WorkflowIntakeManifest, limit: nu
     supplementalImages: manifest.supplementalImages.filter((image) => imageIds.has(image.id)),
   }
 }
+
+/** Historical Codex-prefixed exports remain source-compatible aliases. */
+export type CodexExecutionCapacity = AgentExecutionCapacity
+export type CodexExecutionEpoch = AgentExecutionEpoch
+export const DEFAULT_CODEX_EXECUTION_CAPACITY = DEFAULT_AGENT_EXECUTION_CAPACITY
+export const capacityForModelProfile = capacityForAgentProfile
+export const buildCodexExecutionEpochs = buildAgentExecutionEpochs
+export const manifestForExecutionEpoch = manifestForAgentExecutionEpoch
 
 function estimatePhaseInputTokens(phase: WorkflowPhaseDraft): number {
   const bytes = Buffer.byteLength(JSON.stringify(phase), 'utf8')

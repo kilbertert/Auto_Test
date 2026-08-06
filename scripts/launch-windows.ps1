@@ -697,6 +697,36 @@ function Ensure-ProjectRuntime {
   Write-Host '[OK] Auto-Test 项目依赖和浏览器已就绪'
 }
 
+function Get-RequestedAgentHost([string[]] $Arguments) {
+  $explicitHost = $null
+  for ($index = 0; $index -lt $Arguments.Count; $index++) {
+    if ($Arguments[$index] -eq '--agent-host' -and ($index + 1) -lt $Arguments.Count) {
+      $explicitHost = $Arguments[$index + 1]
+      break
+    }
+  }
+  if ($explicitHost) { return $explicitHost }
+  if ($env:AUTO_TEST_AGENT_HOST) { return $env:AUTO_TEST_AGENT_HOST }
+  foreach ($argument in $Arguments) {
+    if ($argument -eq '--omp-bin' -or $argument -eq '--omp-home') { return 'omp' }
+  }
+  return 'codex'
+}
+
+function Select-InteractiveAgentHost([string[]] $Arguments, [bool] $SetupOnly) {
+  if ($SetupOnly -or $Arguments.Count -gt 0 -or $env:AUTO_TEST_AGENT_HOST) { return }
+  $choice = Read-Host '选择测试代理宿主：1=Codex CLI（默认），2=OMP / oh-my-pi'
+  if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq '1') {
+    $env:AUTO_TEST_AGENT_HOST = 'codex'
+    return
+  }
+  if ($choice -eq '2') {
+    $env:AUTO_TEST_AGENT_HOST = 'omp'
+    return
+  }
+  throw '宿主选择必须是 1 或 2。'
+}
+
 try {
   $parsedApiKey = Parse-ApiKeyOverride $AutoTestArgs
   $setupOnly = $parsedApiKey.Arguments -contains '--setup-only'
@@ -705,11 +735,23 @@ try {
     throw '--api-key 不能和 --reconfigure-api 同时使用；临时 Key 不会覆盖默认配置。'
   }
   $forwardArgs = @($parsedApiKey.Arguments | Where-Object { $_ -ne '--setup-only' -and $_ -ne '--reconfigure-api' })
+  Select-InteractiveAgentHost $forwardArgs $setupOnly
+  $requestedAgentHost = Get-RequestedAgentHost $forwardArgs
+  if ($requestedAgentHost -ne 'codex' -and $requestedAgentHost -ne 'omp') {
+    throw "--agent-host 只支持 codex 或 omp，收到：$requestedAgentHost"
+  }
+  if ($requestedAgentHost -eq 'omp' -and ($parsedApiKey.ApiKey -or $reconfigureApi)) {
+    throw '--api-key/--reconfigure-api 只适用于 Codex AgentHost；请先在 OMP 自身完成 Provider 配置。'
+  }
   Ensure-Node
-  Ensure-CodexCli
-  Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
-  Test-CodexProvider
-  Complete-BootstrapImport
+  if ($requestedAgentHost -eq 'codex') {
+    Ensure-CodexCli
+    Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
+    Test-CodexProvider
+    Complete-BootstrapImport
+  } else {
+    Write-Host '[跳过] 已选择 OMP AgentHost，不准备 Codex Provider。'
+  }
   Ensure-ProjectRuntime
 
   if ($setupOnly) {

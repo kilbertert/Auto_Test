@@ -43,7 +43,7 @@ describe('Codex delivery recovery', () => {
     })
 
     expect(recovered.result).toBeUndefined()
-    expect(recovered.problems).toContain('Codex delivery artifact cases must be an array')
+    expect(recovered.problems).toContain('Agent delivery artifact cases must be an array')
   })
 
   it('fails closed for null artifacts and invalid case entries', async () => {
@@ -53,7 +53,7 @@ describe('Codex delivery recovery', () => {
     await writeFile(artifactPath, 'null')
     await expect(recoverCodexDeliveryResult({
       artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
-    })).resolves.toEqual({ problems: ['Codex delivery artifact must be a JSON object'] })
+    })).resolves.toEqual({ problems: ['Agent delivery artifact must be a JSON object'] })
 
     await writeFile(artifactPath, JSON.stringify({
       version: '1.0', kind: 'case-results', workflowId: 'fixture-workflow', sourceSha256: 'a'.repeat(64),
@@ -62,7 +62,7 @@ describe('Codex delivery recovery', () => {
     const invalidCases = await recoverCodexDeliveryResult({
       artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
     })
-    expect(invalidCases.problems).toContain('Codex delivery artifact cases must contain objects')
+    expect(invalidCases.problems).toContain('Agent delivery artifact cases must contain objects')
   })
 
   it('accepts a complete same-run artifact after structured response transport failure', async () => {
@@ -141,7 +141,7 @@ describe('Codex delivery recovery', () => {
     const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
 
     expect(recovered.result).toBeUndefined()
-    expect(recovered.problems).toContain('Codex delivery artifact non-passed case case-2 has no explicit failure classification')
+    expect(recovered.problems).toContain('Agent delivery artifact non-passed case case-2 has no explicit failure classification')
   })
 
   it('preserves an explicit infrastructure classification from the Codex artifact', async () => {
@@ -183,6 +183,6 @@ describe('Codex delivery recovery', () => {
     const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
 
     expect(recovered.result).toBeUndefined()
-    expect(recovered.problems).toContain('Codex delivery artifact case case-1 references missing evidence ../outside.md')
+    expect(recovered.problems).toContain('Agent delivery artifact case case-1 references missing evidence ../outside.md')
   })
 })

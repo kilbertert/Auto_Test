@@ -48,6 +48,42 @@ describe('execution receipts', () => {
     await expect(recorder.observe(event({ id: 'begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'case-two' }, status: 'completed' }))).rejects.toThrow(/unknown case/i)
   })
 
+  it('records OMP xd:// MCP executions under the same case attribution contract', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-execution-receipts-omp-xdev-'))
+    directories.push(directory)
+    const path = resolve(directory, 'execution-receipts.json')
+    const recorder = await ExecutionReceiptRecorder.create(path, ['case-one'])
+
+    await recorder.observe({ type: 'agent_start' })
+    await recorder.observe({
+      type: 'tool_execution_end', toolCallId: 'begin', toolName: 'write',
+      result: { details: { xdev: {
+        tool: 'mcp__auto_test_control_case_execution_begin', mode: 'execute', args: { caseId: 'case-one' },
+        inner: { serverName: 'auto-test-control', mcpToolName: 'case_execution_begin' },
+      } } },
+    })
+    await recorder.observe({
+      type: 'tool_execution_end', toolCallId: 'click', toolName: 'write',
+      result: { details: { xdev: {
+        tool: 'mcp__playwright_browser_click', mode: 'execute', args: { secret: 'must-not-be-saved' },
+        inner: { serverName: 'playwright', mcpToolName: 'browser_click' },
+      } } },
+    })
+    await recorder.observe({
+      type: 'tool_execution_end', toolCallId: 'snapshot', toolName: 'write',
+      result: { details: { xdev: {
+        tool: 'mcp__playwright_browser_snapshot', mode: 'execute', args: {},
+        inner: { serverName: 'playwright', mcpToolName: 'browser_snapshot' },
+      } } },
+    })
+
+    expect(await readExecutionReceipts(path)).toMatchObject([
+      { id: 'single-thread:turn-0001:click', caseId: 'case-one', tool: 'browser_click', kind: 'interaction' },
+      { id: 'single-thread:turn-0001:snapshot', caseId: 'case-one', tool: 'browser_snapshot', kind: 'observation' },
+    ])
+    expect(await readFile(path, 'utf8')).not.toContain('must-not-be-saved')
+  })
+
   it('summarizes only active-window receipts and keeps one same-case pair per case', () => {
     const summary = summarizeExecutionReceipts([
       { id: 'old-click', caseId: 'old-case', tool: 'browser_click', kind: 'interaction', status: 'completed', recordedAt: '2026-01-01T00:00:00Z' },
