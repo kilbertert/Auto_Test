@@ -470,6 +470,10 @@ function ConvertTo-NativeArgument([string] $Value) {
   return '"' + $Value.Replace('"', '\"') + '"'
 }
 
+function ConvertTo-PowerShellLiteral([string] $Value) {
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Start-CodexProbeProcess([string] $Executable) {
   $arguments = @(
     'exec',
@@ -483,46 +487,73 @@ function Start-CodexProbeProcess([string] $Executable) {
     '-C',
     $RepositoryRoot
   )
-  $argumentLine = (($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
-  $processExecutable = $Executable
-  $processArguments = $argumentLine
-  if ([IO.Path]::GetExtension($Executable) -match '(?i)^\.(cmd|bat)$') {
-    $processExecutable = $env:ComSpec
-    $processArguments = "/d /s /c `"`"$Executable`" $argumentLine`""
-  }
-  # Native Process APIs preserve the real exit code on Windows PowerShell 5.1.
-  # Read both streams asynchronously so neither pipe can block the probe process.
+  $argumentLiterals = (($arguments | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ', ')
+  $captureRoot = Join-Path ([IO.Path]::GetTempPath()) 'auto-test-codex-probes'
+  New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
+  Get-ChildItem -Directory $captureRoot -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1) } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  $captureDirectory = Join-Path $captureRoot ([Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $captureDirectory | Out-Null
+  $standardOutputPath = Join-Path $captureDirectory 'stdout.log'
+  $standardErrorPath = Join-Path $captureDirectory 'stderr.log'
+  $wrapperPath = Join-Path $captureDirectory 'probe.ps1'
+  $wrapper = @"
+`$ErrorActionPreference = 'Continue'
+`$probeArguments = @($argumentLiterals)
+& $(ConvertTo-PowerShellLiteral $Executable) @probeArguments 1> $(ConvertTo-PowerShellLiteral $standardOutputPath) 2> $(ConvertTo-PowerShellLiteral $standardErrorPath)
+exit `$LASTEXITCODE
+"@
+  # Windows PowerShell 5.1 requires a BOM to decode non-ASCII script paths and literals as UTF-8.
+  [IO.File]::WriteAllText($wrapperPath, $wrapper, [Text.UTF8Encoding]::new($true))
+
+  # Capture to files instead of redirected pipes. Detached descendants may
+  # inherit file handles, but they cannot keep the launcher waiting for EOF.
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $processExecutable
-  $startInfo.Arguments = $processArguments
+  $startInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+  $startInfo.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $(ConvertTo-NativeArgument $wrapperPath)"
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
+  $startInfo.RedirectStandardOutput = $false
+  $startInfo.RedirectStandardError = $false
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   try {
     $process.Start() | Out-Null
     return [pscustomobject]@{
       Process = $process
-      StandardOutput = $process.StandardOutput.ReadToEndAsync()
-      StandardError = $process.StandardError.ReadToEndAsync()
+      CaptureDirectory = $captureDirectory
+      StandardOutputPath = $standardOutputPath
+      StandardErrorPath = $standardErrorPath
     }
   } catch {
     $process.Dispose()
+    Remove-Item -Recurse -Force $captureDirectory -ErrorAction SilentlyContinue
     throw
   }
 }
 
-function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSeconds) {
+function Get-CodexProbeCaptureBytes($Invocation) {
+  [long] $total = 0
+  foreach ($path in @($Invocation.StandardOutputPath, $Invocation.StandardErrorPath)) {
+    $item = Get-Item $path -ErrorAction SilentlyContinue
+    if ($item) { $total += $item.Length }
+  }
+  return $total
+}
+
+function Wait-CodexProbeInvocation($Invocation, [int] $TimeoutSeconds) {
+  $process = $Invocation.Process
+  [long] $captureLimitBytes = 4MB
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   $nextHeartbeatSeconds = 20
   while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+    if ((Get-CodexProbeCaptureBytes $Invocation) -gt $captureLimitBytes) { return 'output_limit' }
     $remainingMilliseconds = [int] [Math]::Ceiling(($TimeoutSeconds - $stopwatch.Elapsed.TotalSeconds) * 1000)
     $waitMilliseconds = [Math]::Max(1, [Math]::Min(1000, $remainingMilliseconds))
-    if ($Process.WaitForExit($waitMilliseconds)) {
-      $Process.WaitForExit()
-      return $true
+    if ($process.WaitForExit($waitMilliseconds)) {
+      if ((Get-CodexProbeCaptureBytes $Invocation) -gt $captureLimitBytes) { return 'output_limit' }
+      return 'completed'
     }
     if ($stopwatch.Elapsed.TotalSeconds -ge $nextHeartbeatSeconds) {
       $elapsedSeconds = [int] [Math]::Floor($stopwatch.Elapsed.TotalSeconds)
@@ -530,23 +561,32 @@ function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSe
       $nextHeartbeatSeconds += 20
     }
   }
-  return $Process.HasExited
+  return $(if ($process.HasExited) { 'completed' } else { 'timeout' })
 }
 
 function Stop-CodexProbeProcess([Diagnostics.Process] $Process) {
-  if ($Process.HasExited) { return }
-  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-  if (Test-Path $taskkill) {
-    try { & $taskkill /PID $Process.Id /T /F *> $null } catch {}
-  }
   if (-not $Process.HasExited) {
-    try { $Process.Kill() } catch {}
+    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    if (Test-Path $taskkill) {
+      try { & $taskkill /PID $Process.Id /T /F *> $null } catch {}
+    }
+    if (-not $Process.HasExited) {
+      try { $Process.Kill() } catch {}
+    }
+    try { $Process.WaitForExit(5000) | Out-Null } catch {}
   }
-  try { $Process.WaitForExit(5000) | Out-Null } catch {}
-  # Detached descendants can keep inherited pipe handles open after the probe
-  # process exits. Close our readers so timeout cleanup never waits for EOF.
-  try { $Process.StandardOutput.Close() } catch {}
-  try { $Process.StandardError.Close() } catch {}
+}
+
+function Read-CodexProbeCapture([string] $Path) {
+  if (-not (Test-Path $Path)) { return '' }
+  $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+  $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+  try {
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally {
+    $stream.Dispose()
+  }
 }
 
 function Test-CodexProvider {
@@ -565,13 +605,18 @@ function Test-CodexProvider {
       } catch {
         throw "无法启动模型 API 探针：$($_.Exception.Message)"
       }
-      if (-not (Wait-CodexProbeProcess $probeProcess $timeoutSeconds)) {
+      $probeStatus = Wait-CodexProbeInvocation $probeInvocation $timeoutSeconds
+      if ($probeStatus -eq 'output_limit') {
+        Stop-CodexProbeProcess $probeProcess
+        throw '模型 API 探针 stdout/stderr 总量超过 4 MiB，已终止异常输出并清理探针进程。'
+      }
+      if ($probeStatus -eq 'timeout') {
         Stop-CodexProbeProcess $probeProcess
         throw "模型 API 探针在 $timeoutSeconds 秒内未完成，已终止卡住的 Codex 进程。请检查模型服务、Windows 网络、代理或流式响应稳定性；仅在网关确实较慢时调整 AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS。"
       }
       $probeExitCode = $probeProcess.ExitCode
-      $standardOutput = $probeInvocation.StandardOutput.GetAwaiter().GetResult()
-      $standardError = $probeInvocation.StandardError.GetAwaiter().GetResult()
+      $standardOutput = Read-CodexProbeCapture $probeInvocation.StandardOutputPath
+      $standardError = Read-CodexProbeCapture $probeInvocation.StandardErrorPath
       $probe = @($standardOutput, $standardError) -join [Environment]::NewLine
       if ($probeExitCode -ne 0) {
         $hint = Get-CodexProbeFailureHint $probe $probeExitCode
@@ -587,6 +632,7 @@ function Test-CodexProvider {
     }
   } finally {
     if ($probeProcess) { $probeProcess.Dispose() }
+    if ($probeInvocation) { Remove-Item -Recurse -Force $probeInvocation.CaptureDirectory -ErrorAction SilentlyContinue }
   }
 }
 
