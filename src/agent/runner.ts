@@ -4,14 +4,14 @@ import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { redactAgentTextArtifact, redactAgentTextArtifacts } from './artifact-redaction.js'
+import { redactAgentTextArtifact, redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from './artifact-redaction.js'
 import { readAgentBuildInfo } from './build-info.js'
 import { createLegacyCodexAgentHost } from './codex-host.js'
 import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
-import { recoverAgentDeliveryResult } from './delivery-recovery.js'
+import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { AgentHostError } from './host.js'
 import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostSession, AgentInputPart } from './host.js'
@@ -19,7 +19,7 @@ import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { agentTestResultSchema, enforceMutationLedger, parseAgentTestResult } from './result.js'
+import { agentTestResultSchema, enforceMutationLedger, parseAgentTestCandidate } from './result.js'
 import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
 import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareAgentWorkspace, type AgentWorkspace } from './workspace.js'
@@ -622,8 +622,10 @@ export async function runAgentTest(
     environmentRequirementsPath = workspace.environmentRequirementsPath
     executionReceiptsPath = workspace.executionReceiptsPath
     const checkpointDirectory = resolve(workspace.privateDirectory, 'checkpoints')
+    const resultDirectory = caseResultDirectory(outputDirectory)
     const scrubGeneratedArtifacts = async (): Promise<void> => {
       await redactAgentTextArtifact(eventsPath, redactionSecrets)
+      await sanitizeAgentDeliveryEvidencePaths(workspace.workspaceDirectory, redactionSecrets)
       await redactAgentTextArtifacts(workspace.workspaceDirectory, redactionSecrets, {
         excludedDirectories: [workspace.inputDirectory],
         excludedFiles: [workspace.manifestPath],
@@ -635,12 +637,20 @@ export async function runAgentTest(
     if (options.resume) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
       if (!ledger.some((entry) => entry.status === 'pending')) {
-        const recovered = await recoverAgentDeliveryResult({
-          artifactPath: workspace.caseResultsPath,
-          manifest: options.manifest,
-          startedAt: state.startedAt,
-        })
-        if (recovered.result) {
+        const recoveryCandidates = [
+          await recoverAgentEpochDeliveryResult({
+            workspaceDirectory: workspace.workspaceDirectory,
+            manifest: options.manifest,
+            startedAt: state.startedAt,
+          }),
+          await recoverAgentDeliveryResult({
+            artifactPath: workspace.caseResultsPath,
+            manifest: options.manifest,
+            startedAt: state.startedAt,
+          }),
+        ]
+        for (const recovered of recoveryCandidates) {
+          if (!recovered.result) continue
           const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
             workspace.environmentRequirementsPath,
             recovered.result.cases,
@@ -657,14 +667,19 @@ export async function runAgentTest(
               enforceEnvironmentRequirements(recovered.result, environmentRequirements),
               ledger,
             ), redactionSecrets)
+            await writeCaseResultRecords(resultDirectory, options.manifest, 'recovered-delivery', result.cases)
+            await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
             await writePrivateJson(resultPath, result)
             progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 AgentHost：${result.outcome}`)
-            state = updateCodexTestState(state, {
+            const completedState = { ...state }
+            delete completedState.activeEpoch
+            state = updateCodexTestState(completedState, {
               status: 'completed',
               stage: 'completed',
               outcome: result.outcome,
               resultPath,
               finishedAt: new Date().toISOString(),
+              completedCaseIds: options.manifest.phases.map((phase) => phase.id),
             })
             await writePrivateJson(statePath, state)
             return { state, result }
@@ -714,7 +729,6 @@ export async function runAgentTest(
     await writePrivateJson(statePath, state)
     progress.report('stage', `隔离测试工作区已准备，正在启动 ${host.displayName} 测试线程`)
     const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
-    const resultDirectory = caseResultDirectory(outputDirectory)
     const existingRecords = await readCaseResultRecords(resultDirectory, options.manifest)
     const completedCaseIds = new Set([
       ...state.completedCaseIds,
@@ -875,7 +889,7 @@ export async function runAgentTest(
             recordUsage,
             scrubEpochArtifacts,
           )
-          const candidate = parseAgentTestResult(finalResponse)
+          const candidate = parseAgentTestCandidate(finalResponse)
           const requirements = await reconcileEnvironmentRequirementCaseLinks(workspace.environmentRequirementsPath, candidate.cases)
           const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
           const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)

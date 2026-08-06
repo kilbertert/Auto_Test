@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexTestResultSchema, enforceMutationLedger, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
+import { codexTestResultSchema, enforceMutationLedger, parseAgentTestCandidate, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 
 function result(): CodexTestAgentResult {
@@ -55,6 +55,21 @@ describe('Codex test result contract', () => {
   it('recovers a valid result from a later Markdown fence', () => {
     const value = `Here is a selector example:\n\n\`\`\`json\n{"not":"a test result"}\n\`\`\`\n\nFinal delivery:\n\n\`\`\`json\n${JSON.stringify(result())}\n\`\`\``
     expect(parseAgentTestResult(value)).toMatchObject({ workflowId: 'catalog-check', outcome: 'passed' })
+  })
+
+  it('lets the Runner replace duplicate Core-owned collections without weakening case validation', () => {
+    const candidate = {
+      ...result(),
+      mutations: [{ id: 'write-1', caseId: 'filter-catalog', status: 'accepted' }],
+      environmentRequirements: [{ id: 'incomplete' }],
+    }
+
+    const parsed = parseAgentTestCandidate(JSON.stringify(candidate))
+    expect(parsed.mutations).toEqual([])
+    expect(parsed.environmentRequirements).toEqual([])
+
+    const missingEvidence = { ...candidate, cases: [{ ...candidate.cases[0], evidence: undefined }] }
+    expect(() => parseAgentTestCandidate(JSON.stringify(missingEvidence))).toThrow(/schema validation.*evidence/i)
   })
 
   it('forces a blocked outcome when the authoritative ledger still contains a pending mutation', () => {

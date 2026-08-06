@@ -352,6 +352,92 @@ describe('adaptive Codex epochs', () => {
     }
   })
 
+  it('recovers complete epoch delivery without restarting the AgentHost', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-resume-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const secret = 'fixture-phone-7890'
+    const commonOptions = {
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: { 'test.phone': secret },
+      environmentContext: '', imagePaths: [], headed: false,
+      codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+    }
+    const initial = await runCodexTestAgent(commonOptions, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-epoch-recovery',
+        runStreamed: async (_input, options) => options?.outputSchema
+          ? eventStream(resultFor(workflow, ['case-one']), 'thread-epoch-recovery')
+          : eventStream('execution complete', 'thread-epoch-recovery'),
+      }),
+    })
+    expect(initial.result?.outcome).toBe('passed')
+
+    const workspaceDirectory = resolve(outputDirectory, 'agent-workspace')
+    const evidenceDirectory = resolve(workspaceDirectory, 'evidence')
+    await mkdir(evidenceDirectory, { recursive: true })
+    await writeFile(resolve(evidenceDirectory, `round-${secret}.png`), 'png')
+    await writeFile(resolve(workspaceDirectory, 'case-results.epoch-0001.json'), JSON.stringify({
+      version: '1.0',
+      kind: 'case-results',
+      workflowId: workflow.workflowId,
+      sourceSha256: workflow.source.sha256,
+      generatedAt: '2026-08-05T00:01:00.000Z',
+      cases: [{
+        caseId: 'case-one', outcome: 'passed', summary: 'Recovered from observed evidence',
+        evidencePaths: ['evidence/round-<redacted-secret>.png'],
+      }],
+      mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }))
+    const statePath = resolve(outputDirectory, 'codex-agent.state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+    await writeFile(statePath, JSON.stringify({
+      ...state,
+      status: 'completed',
+      stage: 'completed',
+      outcome: 'blocked',
+      activeEpoch: {
+        id: 'epoch-0001', index: 0, total: 1, caseIds: ['case-one'],
+        threadId: 'thread-epoch-recovery', stage: 'finalizing',
+      },
+    }))
+
+    const resumed = await runCodexTestAgent({ ...commonOptions, resume: true }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => { throw new Error('resume recovery must not start an AgentHost') },
+      resumeThread: () => { throw new Error('resume recovery must not resume an AgentHost') },
+    })
+
+    expect(resumed.result?.outcome).toBe('passed')
+    expect(resumed.result?.cases.map((item) => item.caseId)).toEqual(['case-one'])
+    expect(resumed.state.completedCaseIds).toEqual(['case-one'])
+    expect(resumed.state.activeEpoch).toBeUndefined()
+    const aggregate = JSON.parse(await readFile(resolve(workspaceDirectory, 'case-results.json'), 'utf8')) as {
+      cases: Array<{ caseId: string; outcome: string }>
+    }
+    expect(aggregate.cases).toEqual([expect.objectContaining({ caseId: 'case-one', outcome: 'passed' })])
+    const storedResultPath = resolve(
+      outputDirectory,
+      '.agent-private',
+      'case-results',
+      (await readdir(resolve(outputDirectory, '.agent-private', 'case-results')))[0]!,
+    )
+    const stored = JSON.parse(await readFile(storedResultPath, 'utf8')) as { epochId: string; result: { outcome: string } }
+    expect(stored).toMatchObject({ epochId: 'recovered-delivery', result: { outcome: 'passed' } })
+    const epochArtifact = JSON.parse(await readFile(resolve(workspaceDirectory, 'case-results.epoch-0001.json'), 'utf8')) as {
+      cases: Array<{ evidencePaths: string[] }>
+    }
+    const evidenceReference = epochArtifact.cases[0]!.evidencePaths[0]!
+    expect(evidenceReference).toBe('evidence/round-redacted-secret.png')
+    expect(await readFile(resolve(workspaceDirectory, evidenceReference), 'utf8')).toBe('png')
+  })
+
   it('fails closed instead of interpreting legacy execution state', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-legacy-state-'))
     directories.push(directory)

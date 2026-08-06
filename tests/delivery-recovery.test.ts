@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { recoverCodexDeliveryResult } from '../src/agent/delivery-recovery.js'
+import { recoverAgentEpochDeliveryResult, recoverCodexDeliveryResult } from '../src/agent/delivery-recovery.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 const directories: string[] = []
@@ -94,6 +94,41 @@ describe('Codex delivery recovery', () => {
     expect(recovered.result?.cases[1]).toMatchObject({ caseId: 'case-2', outcome: 'blocked', failureSource: 'input', failureKind: 'validation' })
     expect(recovered.result?.cases[1]?.evidence).not.toHaveLength(0)
     expect(recovered.result?.cases[0]?.evidence.map((item) => item.path)).toContain('test-manifest.json')
+  })
+
+  it('recovers the full suite only when per-epoch artifacts cover every case exactly once', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-recovery-'))
+    directories.push(directory)
+    await mkdir(resolve(directory, 'evidence'))
+    await writeFile(resolve(directory, 'evidence', 'case-1.md'), 'one')
+    await writeFile(resolve(directory, 'evidence', 'case-2.md'), 'two')
+    const common = {
+      version: '1.0', kind: 'case-results', workflowId: 'fixture-workflow', sourceSha256: 'a'.repeat(64),
+      generatedAt: '2026-08-03T00:01:00.000Z', mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+    }
+    await writeFile(resolve(directory, 'case-results.epoch-0001.json'), JSON.stringify({
+      ...common, cases: [{ caseId: 'case-1', outcome: 'passed', summary: 'Observed one', evidencePaths: ['evidence/case-1.md'] }],
+    }))
+    await writeFile(resolve(directory, 'case-results.epoch-0002.json'), JSON.stringify({
+      ...common, cases: [{ caseId: 'case-2', outcome: 'passed', summary: 'Observed two', evidencePaths: ['evidence/case-2.md'] }],
+    }))
+
+    const recovered = await recoverAgentEpochDeliveryResult({
+      workspaceDirectory: directory, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
+    })
+
+    expect(recovered.problems).toEqual([])
+    expect(recovered.result).toMatchObject({ outcome: 'passed' })
+    expect(recovered.result?.cases.map((item) => item.caseId)).toEqual(['case-1', 'case-2'])
+
+    await writeFile(resolve(directory, 'case-results.epoch-0002.json'), JSON.stringify({
+      ...common, cases: [{ caseId: 'case-1', outcome: 'passed', summary: 'Duplicate', evidencePaths: ['evidence/case-1.md'] }],
+    }))
+    const duplicate = await recoverAgentEpochDeliveryResult({
+      workspaceDirectory: directory, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
+    })
+    expect(duplicate.result).toBeUndefined()
+    expect(duplicate.problems.join(' ')).toMatch(/duplicated|missing case-2/i)
   })
 
   it('rejects stale or incomplete artifacts instead of guessing a result', async () => {

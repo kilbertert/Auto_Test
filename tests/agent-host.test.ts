@@ -153,6 +153,21 @@ describe('AgentHost contract', () => {
       type: 'error', message: 'OMP provider disconnected',
     })
     expect(normalizeAgentEvent({
+      type: 'item.completed',
+      item: {
+        id: 'metadata-warning',
+        type: 'error',
+        message: 'Model metadata for `deepseek-v4-flash` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.',
+      },
+    })).toMatchObject({
+      type: 'other',
+      message: expect.stringContaining('Defaulting to fallback metadata'),
+    })
+    expect(normalizeAgentEvent({
+      type: 'error',
+      message: 'Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.',
+    })).toMatchObject({ type: 'other' })
+    expect(normalizeAgentEvent({
       type: 'message_update',
       message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
     })).toMatchObject({ type: 'other' })

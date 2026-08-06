@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { redactAgentTextArtifacts } from '../src/agent/artifact-redaction.js'
+import { redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from '../src/agent/artifact-redaction.js'
 
 describe('agent artifact redaction', () => {
   it('redacts registered secrets and common authentication material in nested evidence text', async () => {
@@ -152,6 +153,115 @@ describe('agent artifact redaction', () => {
       await redactAgentTextArtifacts(directory, ['fixture-password'])
       const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, string>
       expect(value).toEqual({ '<redacted-secret>': '<redacted-secret>' })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('renames secret-bearing evidence files and keeps delivery references resolvable', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-path-redaction-'))
+    try {
+      const evidenceDirectory = resolve(directory, 'evidence')
+      await mkdir(evidenceDirectory)
+      const secret = 'fixture-phone-1234'
+      const sourcePath = resolve(evidenceDirectory, `round-${secret}.png`)
+      const artifactPath = resolve(directory, 'case-results.epoch-0001.json')
+      await writeFile(sourcePath, 'png')
+      await writeFile(artifactPath, JSON.stringify({
+        version: '1.0', kind: 'case-results', cases: [{ evidencePaths: [`evidence/round-${secret}.png`] }],
+      }))
+
+      const summary = await sanitizeAgentDeliveryEvidencePaths(directory, [secret])
+      const artifact = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases: Array<{ evidencePaths: string[] }> }
+      const reference = artifact.cases[0]!.evidencePaths[0]!
+
+      expect(summary).toEqual({ scannedArtifacts: 1, rewrittenArtifacts: 1, renamedFiles: 1 })
+      expect(reference).not.toContain(secret)
+      expect(reference).not.toMatch(/[<>]/)
+      expect(await readFile(resolve(directory, reference), 'utf8')).toBe('png')
+      await expect(readFile(sourcePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('reconciles a previously redacted reference with one unique unsanitized file', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-path-reconcile-'))
+    try {
+      const evidenceDirectory = resolve(directory, 'evidence')
+      await mkdir(evidenceDirectory)
+      const secret = 'fixture-phone-5678'
+      await writeFile(resolve(evidenceDirectory, `round-${secret}.png`), 'png')
+      const artifactPath = resolve(directory, 'case-results.epoch-0001.json')
+      await writeFile(artifactPath, JSON.stringify({
+        version: '1.0', kind: 'case-results', cases: [{ evidencePaths: ['evidence/round-<redacted-secret>.png'] }],
+      }))
+
+      const summary = await sanitizeAgentDeliveryEvidencePaths(directory, [secret])
+      const artifact = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases: Array<{ evidencePaths: string[] }> }
+      const reference = artifact.cases[0]!.evidencePaths[0]!
+
+      expect(summary.renamedFiles).toBe(1)
+      expect(reference).toBe('evidence/round-redacted-secret.png')
+      expect(await readFile(resolve(directory, reference), 'utf8')).toBe('png')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('never renames immutable input-package files', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-input-preservation-'))
+    try {
+      const inputDirectory = resolve(directory, 'input')
+      await mkdir(inputDirectory)
+      const secret = 'fixture-phone-9012'
+      const inputPath = resolve(inputDirectory, `source-${secret}.png`)
+      const artifactPath = resolve(directory, 'case-results.epoch-0001.json')
+      await writeFile(inputPath, 'immutable')
+      await writeFile(artifactPath, JSON.stringify({
+        version: '1.0', kind: 'case-results', cases: [{ evidencePaths: [`input/source-${secret}.png`] }],
+      }))
+
+      const summary = await sanitizeAgentDeliveryEvidencePaths(directory, [secret])
+
+      expect(summary.renamedFiles).toBe(0)
+      expect(await readFile(inputPath, 'utf8')).toBe('immutable')
+      const artifact = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases: Array<{ evidencePaths: string[] }> }
+      expect(artifact.cases[0]!.evidencePaths).toEqual([`input/source-${secret}.png`])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses a deterministic free suffix without overwriting path collisions', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-path-collision-'))
+    try {
+      const evidenceDirectory = resolve(directory, 'evidence')
+      await mkdir(evidenceDirectory)
+      const secret = 'fixture-phone-3456'
+      const sourceReference = `evidence/round-${secret}.png`
+      const sourcePath = resolve(directory, sourceReference)
+      const baseCollision = resolve(evidenceDirectory, 'round-redacted-secret.png')
+      const firstSuffix = createHash('sha256').update(sourceReference).digest('hex').slice(0, 8)
+      const suffixCollision = resolve(evidenceDirectory, `round-redacted-secret-${firstSuffix}.png`)
+      const artifactPath = resolve(directory, 'case-results.epoch-0001.json')
+      await writeFile(sourcePath, 'source')
+      await writeFile(baseCollision, 'base-collision')
+      await writeFile(suffixCollision, 'suffix-collision')
+      await writeFile(artifactPath, JSON.stringify({
+        version: '1.0', kind: 'case-results', cases: [{ evidencePaths: [sourceReference] }],
+      }))
+
+      await sanitizeAgentDeliveryEvidencePaths(directory, [secret])
+      const artifact = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases: Array<{ evidencePaths: string[] }> }
+      const reference = artifact.cases[0]!.evidencePaths[0]!
+
+      expect(reference).not.toContain(secret)
+      expect(resolve(directory, reference)).not.toBe(baseCollision)
+      expect(resolve(directory, reference)).not.toBe(suffixCollision)
+      expect(await readFile(resolve(directory, reference), 'utf8')).toBe('source')
+      expect(await readFile(baseCollision, 'utf8')).toBe('base-collision')
+      expect(await readFile(suffixCollision, 'utf8')).toBe('suffix-collision')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

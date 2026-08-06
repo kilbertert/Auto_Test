@@ -150,6 +150,16 @@ function usageFrom(value: unknown): AgentUsage | undefined {
   return { inputTokens: inputTokens as number, cachedInputTokens: cachedInputTokens as number, outputTokens: outputTokens as number }
 }
 
+/**
+ * Codex can emit this advisory item when a third-party provider has no local
+ * model catalog entry. The following turn still runs normally, so treating
+ * it as a transport failure would make a usable AgentHost look unavailable.
+ */
+function isAdvisoryModelMetadataMessage(message: string): boolean {
+  return /^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata\b/i.test(message) ||
+    /^Heads up: Long threads and multiple compactions can cause the model to be less accurate\./i.test(message)
+}
+
 function normalizeItemEvent(raw: Record<string, unknown>, item: Record<string, unknown>): AgentEvent {
   const itemType = stringValue(item.type)
   const itemId = stringValue(item.id)
@@ -191,7 +201,12 @@ function normalizeItemEvent(raw: Record<string, unknown>, item: Record<string, u
   if (itemType === 'todo_list') return eventWithRaw({ type: 'todo_started', id: itemId }, raw)
   if (itemType === 'web_search') return eventWithRaw({ type: 'tool_completed', id: itemId, tool: 'web_search', status }, raw)
   if (itemType === 'agent_message') return eventWithRaw({ type: 'agent_message', id: itemId, text: stringValue(item.text) ?? '' }, raw)
-  if (itemType === 'error') return eventWithRaw({ type: 'error', id: itemId, message: stringValue(item.message) ?? 'agent item failed' }, raw)
+  if (itemType === 'error') {
+    const message = stringValue(item.message) ?? 'agent item failed'
+    return isAdvisoryModelMetadataMessage(message)
+      ? eventWithRaw({ type: 'other', id: itemId, message }, raw)
+      : eventWithRaw({ type: 'error', id: itemId, message }, raw)
+  }
   return eventWithRaw({ type: 'other', id: itemId }, raw)
 }
 
@@ -286,7 +301,10 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
     return eventWithRaw({ type: 'turn_failed', message: stringValue(error?.message) ?? stringValue(raw.message) ?? 'agent turn failed' }, raw)
   }
   if (raw.type === 'error' || raw.type === 'extension_error') {
-    return eventWithRaw({ type: 'error', message: stringValue(raw.message) ?? stringValue(raw.error) ?? 'agent host error' }, raw)
+    const message = stringValue(raw.message) ?? stringValue(raw.error) ?? 'agent host error'
+    return isAdvisoryModelMetadataMessage(message)
+      ? eventWithRaw({ type: 'other', message }, raw)
+      : eventWithRaw({ type: 'error', message }, raw)
   }
   if (raw.type === 'notice') {
     return eventWithRaw({ type: 'other', message: stringValue(raw.message) }, raw)
