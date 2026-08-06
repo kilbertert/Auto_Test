@@ -152,7 +152,7 @@ export async function sanitizeAgentDeliveryEvidencePaths(
           destinationReference = await availableStablePath(
             root,
             destinationReference,
-            relative(root, sourcePath),
+            relative(root, sourcePath).split('\\').join('/'),
             sourcePath,
           )
           destinationPath = resolve(root, destinationReference)
@@ -164,7 +164,9 @@ export async function sanitizeAgentDeliveryEvidencePaths(
           workspaceFileSet.delete(sourcePath)
           workspaceFileSet.add(destinationPath)
           const sourceReference = relative(root, sourcePath).split('\\').join('/')
-          sanitizedCandidates.set(sanitizeEvidenceReference(sourceReference, secrets), [destinationPath])
+          const sourceKey = sanitizeEvidenceReference(sourceReference, secrets)
+          const remaining = (sanitizedCandidates.get(sourceKey) ?? []).filter((path) => path !== sourcePath)
+          sanitizedCandidates.set(sourceKey, [...remaining, destinationPath])
         }
         renamedReferences.set(originalReference, destinationReference)
         rewritten.push(destinationReference)

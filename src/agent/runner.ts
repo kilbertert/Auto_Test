@@ -625,7 +625,10 @@ export async function runAgentTest(
     const resultDirectory = caseResultDirectory(outputDirectory)
     const scrubGeneratedArtifacts = async (): Promise<void> => {
       await redactAgentTextArtifact(eventsPath, redactionSecrets)
-      await sanitizeAgentDeliveryEvidencePaths(workspace.workspaceDirectory, redactionSecrets)
+      const sanitization = await sanitizeAgentDeliveryEvidencePaths(workspace.workspaceDirectory, redactionSecrets)
+      if (sanitization.renamedFiles > 0) {
+        progress.report('stage', `已同步清理 ${sanitization.renamedFiles} 个证据文件名及其交付引用`)
+      }
       await redactAgentTextArtifacts(workspace.workspaceDirectory, redactionSecrets, {
         excludedDirectories: [workspace.inputDirectory],
         excludedFiles: [workspace.manifestPath],
@@ -637,19 +640,20 @@ export async function runAgentTest(
     if (options.resume) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
       if (!ledger.some((entry) => entry.status === 'pending')) {
-        const recoveryCandidates = [
-          await recoverAgentEpochDeliveryResult({
+        const recoveryStrategies = [
+          () => recoverAgentEpochDeliveryResult({
             workspaceDirectory: workspace.workspaceDirectory,
             manifest: options.manifest,
             startedAt: state.startedAt,
           }),
-          await recoverAgentDeliveryResult({
+          () => recoverAgentDeliveryResult({
             artifactPath: workspace.caseResultsPath,
             manifest: options.manifest,
             startedAt: state.startedAt,
           }),
         ]
-        for (const recovered of recoveryCandidates) {
+        for (const recover of recoveryStrategies) {
+          const recovered = await recover()
           if (!recovered.result) continue
           const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
             workspace.environmentRequirementsPath,
@@ -671,8 +675,7 @@ export async function runAgentTest(
             await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
             await writePrivateJson(resultPath, result)
             progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 AgentHost：${result.outcome}`)
-            const completedState = { ...state }
-            delete completedState.activeEpoch
+            const { activeEpoch: _recoveredEpoch, ...completedState } = state
             state = updateCodexTestState(completedState, {
               status: 'completed',
               stage: 'completed',

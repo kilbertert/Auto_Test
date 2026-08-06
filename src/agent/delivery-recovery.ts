@@ -1,5 +1,5 @@
 import { access, readFile, readdir } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import type { CodexTestAgentResult, CodexTestCaseResult, CodexTestFailureKind, CodexTestFailureSource } from './types.js'
 
@@ -110,6 +110,7 @@ export async function recoverCodexDeliveryResult(options: {
     }
   }
   if (problems.length > 0) return { problems }
+  const artifactReference = basename(options.artifactPath)
   const cases: CodexTestCaseResult[] = artifact.cases.map((item) => ({
     caseId: item.caseId,
     title: item.title ?? options.manifest.phases.find((phase) => phase.id === item.caseId)?.title ?? item.caseId,
@@ -120,7 +121,7 @@ export async function recoverCodexDeliveryResult(options: {
     ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
     evidence: (item.evidencePaths?.length ?? 0) > 0
       ? item.evidencePaths!.map((path) => ({ kind: 'observation' as const, path, description: `AgentHost recorded evidence for ${item.caseId}: ${path}` }))
-      : [{ kind: 'observation' as const, path: 'agent-workspace/case-results.json', description: `AgentHost recorded ${item.caseId} as ${item.outcome} in the delivery artifact.` }],
+      : [{ kind: 'observation' as const, path: artifactReference, description: `AgentHost recorded ${item.caseId} as ${item.outcome} in ${artifactReference}.` }],
   }))
   const outcome = outcomeForCases(cases)
   const productDefects = cases

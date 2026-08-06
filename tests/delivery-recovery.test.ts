@@ -107,7 +107,7 @@ describe('Codex delivery recovery', () => {
       generatedAt: '2026-08-03T00:01:00.000Z', mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
     }
     await writeFile(resolve(directory, 'case-results.epoch-0001.json'), JSON.stringify({
-      ...common, cases: [{ caseId: 'case-1', outcome: 'passed', summary: 'Observed one', evidencePaths: ['evidence/case-1.md'] }],
+      ...common, cases: [{ caseId: 'case-1', outcome: 'passed', summary: 'Observed one' }],
     }))
     await writeFile(resolve(directory, 'case-results.epoch-0002.json'), JSON.stringify({
       ...common, cases: [{ caseId: 'case-2', outcome: 'passed', summary: 'Observed two', evidencePaths: ['evidence/case-2.md'] }],
@@ -120,6 +120,30 @@ describe('Codex delivery recovery', () => {
     expect(recovered.problems).toEqual([])
     expect(recovered.result).toMatchObject({ outcome: 'passed' })
     expect(recovered.result?.cases.map((item) => item.caseId)).toEqual(['case-1', 'case-2'])
+    expect(recovered.result?.cases[0]?.evidence[0]?.path).toBe('case-results.epoch-0001.json')
+
+    await writeFile(resolve(directory, 'case-results.epoch-0001.json'), JSON.stringify({
+      ...common,
+      cases: [{
+        caseId: 'case-1', outcome: 'product_failed', summary: 'Observed product mismatch',
+        failureSource: 'product', failureKind: 'assertion', evidencePaths: ['evidence/case-1.md'],
+      }],
+    }))
+    await writeFile(resolve(directory, 'case-results.epoch-0002.json'), JSON.stringify({
+      ...common,
+      cases: [{
+        caseId: 'case-2', outcome: 'blocked', summary: 'Agent could not complete the action',
+        failureSource: 'agent_execution', failureKind: 'execution', evidencePaths: ['evidence/case-2.md'],
+      }],
+    }))
+    const nonPassed = await recoverAgentEpochDeliveryResult({
+      workspaceDirectory: directory, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
+    })
+    expect(nonPassed.result).toMatchObject({
+      outcome: 'blocked',
+      blockers: ['Agent could not complete the action'],
+      productDefects: ['Observed product mismatch'],
+    })
 
     await writeFile(resolve(directory, 'case-results.epoch-0002.json'), JSON.stringify({
       ...common, cases: [{ caseId: 'case-1', outcome: 'passed', summary: 'Duplicate', evidencePaths: ['evidence/case-1.md'] }],
@@ -128,7 +152,8 @@ describe('Codex delivery recovery', () => {
       workspaceDirectory: directory, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z',
     })
     expect(duplicate.result).toBeUndefined()
-    expect(duplicate.problems.join(' ')).toMatch(/duplicated|missing case-2/i)
+    expect(duplicate.problems.some((problem) => /duplicated/i.test(problem))).toBe(true)
+    expect(duplicate.problems.some((problem) => /missing case case-2/i.test(problem))).toBe(true)
   })
 
   it('rejects stale or incomplete artifacts instead of guessing a result', async () => {

@@ -266,4 +266,33 @@ describe('agent artifact redaction', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  it('keeps a redacted reference unresolved when multiple source files match it', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-evidence-path-ambiguous-'))
+    try {
+      const evidenceDirectory = resolve(directory, 'evidence')
+      await mkdir(evidenceDirectory)
+      const firstSecret = 'fixture-phone-first'
+      const secondSecret = 'fixture-phone-second'
+      await writeFile(resolve(evidenceDirectory, `round-${firstSecret}.png`), 'first')
+      await writeFile(resolve(evidenceDirectory, `round-${secondSecret}.png`), 'second')
+      const artifactPath = resolve(directory, 'case-results.epoch-0001.json')
+      const redactedReference = 'evidence/round-<redacted-secret>.png'
+      await writeFile(artifactPath, JSON.stringify({
+        version: '1.0', kind: 'case-results',
+        cases: [{ evidencePaths: [`evidence/round-${firstSecret}.png`, redactedReference] }],
+      }))
+
+      const summary = await sanitizeAgentDeliveryEvidencePaths(directory, [firstSecret, secondSecret])
+      const artifact = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases: Array<{ evidencePaths: string[] }> }
+
+      expect(summary.renamedFiles).toBe(1)
+      expect(artifact.cases[0]!.evidencePaths).toEqual(['evidence/round-redacted-secret.png', redactedReference])
+      expect(await readFile(resolve(evidenceDirectory, 'round-redacted-secret.png'), 'utf8')).toBe('first')
+      await expect(readFile(resolve(evidenceDirectory, `round-${firstSecret}.png`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await readFile(resolve(evidenceDirectory, `round-${secondSecret}.png`), 'utf8')).toBe('second')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })
