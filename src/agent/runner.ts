@@ -626,6 +626,7 @@ export async function runAgentTest(
       await redactAgentTextArtifact(eventsPath, redactionSecrets)
       await redactAgentTextArtifacts(workspace.workspaceDirectory, redactionSecrets, {
         excludedDirectories: [workspace.inputDirectory],
+        excludedFiles: [workspace.manifestPath],
       })
       await redactAgentTextArtifacts(checkpointDirectory, redactionSecrets)
     }

@@ -6,6 +6,7 @@ const textArtifactExtensions = new Set(['.csv', '.json', '.jsonl', '.log', '.md'
 
 export interface AgentArtifactRedactionOptions {
   excludedDirectories?: string[]
+  excludedFiles?: string[]
 }
 
 export interface AgentArtifactRedactionSummary {
@@ -20,7 +21,8 @@ export async function redactAgentTextArtifacts(
 ): Promise<AgentArtifactRedactionSummary> {
   const summary: AgentArtifactRedactionSummary = { scannedFiles: 0, redactedFiles: 0 }
   const excludedDirectories = new Set((options.excludedDirectories ?? []).map((path) => resolve(path)))
-  await redactDirectory(resolve(rootDirectory), secrets, summary, excludedDirectories)
+  const excludedFiles = new Set((options.excludedFiles ?? []).map((path) => resolve(path)))
+  await redactDirectory(resolve(rootDirectory), secrets, summary, excludedDirectories, excludedFiles)
   return summary
 }
 
@@ -78,6 +80,7 @@ async function redactDirectory(
   secrets: string[],
   summary: AgentArtifactRedactionSummary,
   excludedDirectories: Set<string>,
+  excludedFiles: Set<string>,
 ): Promise<void> {
   if (excludedDirectories.has(directory)) return
   const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -87,9 +90,10 @@ async function redactDirectory(
   for (const entry of entries) {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) {
-      await redactDirectory(path, secrets, summary, excludedDirectories)
+      await redactDirectory(path, secrets, summary, excludedDirectories, excludedFiles)
       continue
     }
+    if (excludedFiles.has(path)) continue
     if (!entry.isFile() || !textArtifactExtensions.has(extname(entry.name).toLowerCase())) continue
     summary.scannedFiles += 1
     if (await redactAgentTextArtifact(path, secrets)) summary.redactedFiles += 1
