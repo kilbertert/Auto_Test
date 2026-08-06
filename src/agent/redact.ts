@@ -11,14 +11,26 @@ export function redactAgentValue(value: string, secrets: string[]): string {
   return output
 }
 
-function mapStringLeaves(value: unknown, transform: (text: string) => string): unknown {
+function mapStringLeaves(
+  value: unknown,
+  transform: (text: string) => string,
+  seen = new WeakSet<object>(),
+  depth = 0,
+): unknown {
   if (typeof value === 'string') return transform(value)
-  if (Array.isArray(value)) return value.map((item) => mapStringLeaves(item, transform))
   if (!value || typeof value !== 'object') return value
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => [key, mapStringLeaves(item, transform)]),
-  )
+  if (depth >= 64) return '[redacted-structure-depth-limit]'
+  if (seen.has(value)) return '[redacted-circular-reference]'
+  seen.add(value)
+  try {
+    if (Array.isArray(value)) return value.map((item) => mapStringLeaves(item, transform, seen, depth + 1))
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [transform(key), mapStringLeaves(item, transform, seen, depth + 1)]),
+    )
+  } finally {
+    seen.delete(value)
+  }
 }
 
 /** Redact exact runtime secrets only from string leaves of a structured value. */

@@ -146,6 +146,13 @@ describe('AgentHost contract', () => {
       message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
     })).toMatchObject({ type: 'agent_message', text: 'done' })
     expect(normalizeAgentEvent({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'tool_call', name: 'browser_click' }] },
+    })).toMatchObject({ type: 'other' })
+    expect(normalizeAgentEvent({ type: 'error', error: 'OMP provider disconnected' })).toMatchObject({
+      type: 'error', message: 'OMP provider disconnected',
+    })
+    expect(normalizeAgentEvent({
       type: 'message_update',
       message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
     })).toMatchObject({ type: 'other' })
@@ -159,6 +166,14 @@ describe('AgentHost contract', () => {
     expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe('enforced')
     expect(createAgentHost('omp').capabilities.workspaceIsolation).toBe('prompt_only')
     expect(createAgentHost('omp').capabilities.restrictedMode).toBe(false)
+  })
+
+  it('classifies host errors so only operational transport classes are retryable', () => {
+    expect(new AgentHostError('codex', 'quota', 'quota').retryable).toBe(true)
+    expect(new AgentHostError('omp', 'transport', 'transport').retryable).toBe(true)
+    expect(new AgentHostError('omp', 'unsupported mode', 'capability').retryable).toBe(false)
+    expect(new AgentHostError('codex', 'bad executable', 'configuration').retryable).toBe(false)
+    expect(new AgentHostError('omp', 'bad protocol', 'protocol').retryable).toBe(false)
   })
 
   it('fails closed when OMP is asked to impersonate the restricted opaque mode', async () => {
@@ -175,6 +190,8 @@ describe('AgentHost contract', () => {
     directories.push(directory)
     const browserPath = resolve(directory, 'chromium')
     await writeFile(browserPath, '')
+    const ompHome = resolve(directory, 'omp-home')
+    await mkdir(ompHome)
     const host = {
       id: 'omp' as const,
       displayName: 'OMP fixture',
@@ -193,10 +210,10 @@ describe('AgentHost contract', () => {
         return { ok: true, hostId: 'omp', executable: '/fixture/omp' }
       },
       async start(): Promise<never> {
-        throw new AgentHostError('omp', 'OMP RPC emitted invalid JSON')
+        throw new AgentHostError('omp', 'OMP RPC connection lost', 'transport')
       },
       async resume(): Promise<never> {
-        throw new AgentHostError('omp', 'OMP RPC emitted invalid JSON')
+        throw new AgentHostError('omp', 'OMP RPC connection lost', 'transport')
       },
     } satisfies AgentHost
     const run = await runAgentTest({
@@ -204,6 +221,7 @@ describe('AgentHost contract', () => {
       manifest: oneCaseManifest(),
       profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      ompHome,
       agentHost: host,
     }, { browserExecutablePath: browserPath })
     expect(run.state.status).toBe('completed')
@@ -368,7 +386,7 @@ describe('AgentHost contract', () => {
       manifest,
       profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
-      codexHome: sourceHome,
+      ompHome: sourceHome,
       agentHost: host,
       agentExecutable: process.platform === 'win32' ? process.execPath : '/bin/true',
     }, { browserExecutablePath: browserPath })

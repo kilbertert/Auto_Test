@@ -247,8 +247,8 @@ function enforceEnvironmentRequirements(
 }
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
-  if (error instanceof AgentHostError) return true
-  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response|agent host|agenthost|omp (?:rpc|process|session|cli)|codex (?:cli|sdk|thread|process)|(?:rpc|process|session|thread).*agenthost|不可用/i.test(message)
+  if (error instanceof AgentHostError) return error.retryable
+  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response|不可用/i.test(message)
 }
 
 function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {

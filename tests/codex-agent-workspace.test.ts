@@ -340,6 +340,7 @@ describe('Codex agent workspace', () => {
     await writeFile(resolve(ompHome, 'models.yml'), 'providers:\n  fixture:\n    baseUrl: https://model.example.test\n', { mode: 0o600 })
     await writeFile(resolve(ompHome, 'agent.db'), 'sqlite-auth-fixture', { mode: 0o600 })
     await writeFile(resolve(ompHome, 'auth.json'), '{"fixture":"legacy-private"}', { mode: 0o600 })
+    await writeFile(resolve(ompHome, '.env'), 'OMP_API_KEY=from-dotenv\nPRIVATE_APP_SECRET=must-not-copy\n', { mode: 0o600 })
     await writeFile(resolve(ompHome, 'mcp.json'), '{"mcpServers":{"unrelated":{}}}', { mode: 0o600 })
     const profile: EnvironmentProfile = {
       id: 'workspace-omp-fixture',
@@ -369,6 +370,8 @@ describe('Codex agent workspace', () => {
     expect(await readFile(resolve(workspace.agentHome, 'models.yml'), 'utf8')).toContain('fixture')
     expect(await readFile(resolve(workspace.agentHome, 'agent.db'), 'utf8')).toBe('sqlite-auth-fixture')
     expect(await readFile(resolve(workspace.agentHome, 'auth.json'), 'utf8')).toContain('legacy-private')
+    expect(await readFile(resolve(workspace.agentHome, '.env'), 'utf8')).toBe('OMP_API_KEY=from-dotenv\n')
+    expect(await readFile(resolve(workspace.agentHome, '.env'), 'utf8')).not.toContain('PRIVATE_APP_SECRET')
     await expect(access(resolve(workspace.agentHome, 'mcp.json'))).rejects.toMatchObject({ code: 'ENOENT' })
     expect(workspace.environment).toMatchObject({ PI_CODING_AGENT_DIR: workspace.agentHome, OMP_API_KEY: 'agent-provider-secret' })
     expect(workspace.environment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-home'))

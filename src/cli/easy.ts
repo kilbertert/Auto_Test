@@ -327,8 +327,9 @@ async function chooseModelProfile(): Promise<string | undefined> {
 }
 
 function configuredAgentHost(): 'codex' | 'omp' {
-  const value = process.env.AUTO_TEST_AGENT_HOST ?? 'codex'
-  return isBuiltInAgentHostId(value) ? value : 'codex'
+  const value = process.env.AUTO_TEST_AGENT_HOST?.trim() || 'codex'
+  if (!isBuiltInAgentHostId(value)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex 或 omp，收到：${value}`)
+  return value
 }
 
 async function chooseAgentHost(): Promise<'codex' | 'omp'> {

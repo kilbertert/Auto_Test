@@ -44,21 +44,30 @@ export async function redactAgentTextArtifact(path: string, secrets: string[]): 
 
 function redactJson(content: string, secrets: string[]): string {
   try {
-    return `${JSON.stringify(redactAgentArtifactValue(JSON.parse(content), secrets), null, 2)}\n`
+    const parsed = JSON.parse(content) as unknown
+    const redacted = redactAgentArtifactValue(parsed, secrets)
+    if (JSON.stringify(redacted) === JSON.stringify(parsed)) return content
+    return `${JSON.stringify(redacted, null, 2)}\n`
   } catch {
     return redactAgentArtifactText(content, secrets)
   }
 }
 
 function redactJsonLines(content: string, secrets: string[]): string {
-  const trailingNewline = content.endsWith('\n')
-  const lines = content.split(/\r?\n/)
-  if (trailingNewline) lines.pop()
   try {
-    const redacted = lines.map((line) => line.length === 0
-      ? ''
-      : JSON.stringify(redactAgentArtifactValue(JSON.parse(line), secrets)))
-    return `${redacted.join('\n')}${trailingNewline ? '\n' : ''}`
+    const parts = content.split(/(\r\n|\n|\r)/)
+    let changed = false
+    for (let index = 0; index < parts.length; index += 2) {
+      const line = parts[index] ?? ''
+      if (line.length === 0) continue
+      const parsed = JSON.parse(line) as unknown
+      const redacted = redactAgentArtifactValue(parsed, secrets)
+      if (JSON.stringify(redacted) !== JSON.stringify(parsed)) {
+        parts[index] = JSON.stringify(redacted)
+        changed = true
+      }
+    }
+    return changed ? parts.join('') : content
   } catch {
     return redactAgentArtifactText(content, secrets)
   }

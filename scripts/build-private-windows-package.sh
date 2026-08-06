@@ -38,8 +38,9 @@ if ! command -v zip >/dev/null 2>&1; then
   exit 1
 fi
 
+commit_short="$(git rev-parse --short HEAD)"
 output_directory="$repository_root/artifacts/private-release"
-output_path="$output_directory/Auto-Test-Windows-private-$(git rev-parse --short HEAD).zip"
+output_path="$output_directory/Auto-Test-Windows-private-$commit_short.zip"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
@@ -51,7 +52,7 @@ node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ base
   "$temporary_directory/Auto-Test.private-provider.json" "$model_base_url" "$model_id"
 unset model_base_url model_id
 node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ packageVersion: require(process.argv[2]).version, commit: process.argv[3] }))' \
-  "$temporary_directory/Auto-Test.build.json" "$repository_root/package.json" "$(git rev-parse --short HEAD)"
+  "$temporary_directory/Auto-Test.build.json" "$repository_root/package.json" "$commit_short"
 zip -q -j "$output_path" \
   "$temporary_directory/Auto-Test.private-key" \
   "$temporary_directory/Auto-Test.private-provider.json" \

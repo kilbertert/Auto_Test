@@ -106,6 +106,15 @@ export interface AgentHostProbeResult {
   reason?: string
 }
 
+export type AgentHostErrorKind =
+  | 'transport'
+  | 'process'
+  | 'quota'
+  | 'capability'
+  | 'configuration'
+  | 'protocol'
+  | 'unknown'
+
 export interface AgentHost {
   readonly id: AgentHostId
   readonly displayName: string
@@ -192,7 +201,7 @@ function normalizeOmpMessage(raw: Record<string, unknown>): AgentEvent | undefin
   const role = stringValue(message.role)
   if (role !== 'assistant') return undefined
   const content = message.content
-  if (typeof content === 'string') return eventWithRaw({ type: 'agent_message', text: content }, raw)
+  if (typeof content === 'string') return content ? eventWithRaw({ type: 'agent_message', text: content }, raw) : undefined
   if (!Array.isArray(content)) return undefined
   const text = content
     .map((part) => {
@@ -200,6 +209,7 @@ function normalizeOmpMessage(raw: Record<string, unknown>): AgentEvent | undefin
       return value?.type === 'text' ? stringValue(value.text) ?? '' : ''
     })
     .join('')
+  if (!text) return undefined
   return eventWithRaw({ type: 'agent_message', text }, raw)
 }
 
@@ -263,7 +273,7 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
   if (!recordValue(value)) return { type: 'error', message: 'Agent host emitted a non-object event', raw: value }
   const raw = value as Record<string, unknown>
   if (isAgentEvent(raw) && [
-    'thread_started', 'turn_started', 'turn_completed', 'turn_failed', 'error', 'agent_message',
+    'thread_started', 'turn_started', 'turn_completed', 'turn_failed', 'agent_message',
     'tool_started', 'tool_completed', 'command_started', 'command_completed', 'file_change_started',
     'file_change_completed', 'reasoning_started', 'todo_started', 'other',
   ].includes(raw.type)) return raw as AgentEvent
@@ -354,9 +364,13 @@ export async function resolveHostExecutable(command: string, environment: NodeJS
 
 export class AgentHostError extends Error {
   readonly hostId: AgentHostId
-  constructor(hostId: AgentHostId, message: string) {
+  readonly kind: AgentHostErrorKind
+  readonly retryable: boolean
+  constructor(hostId: AgentHostId, message: string, kind: AgentHostErrorKind = 'transport') {
     super(message)
     this.name = 'AgentHostError'
     this.hostId = hostId
+    this.kind = kind
+    this.retryable = kind === 'transport' || kind === 'process' || kind === 'quota'
   }
 }

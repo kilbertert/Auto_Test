@@ -18,6 +18,7 @@ import { writePrivateJson } from './state.js'
 export interface AgentCompetitionOracleCase {
   caseId: string
   outcome: AgentTestOutcome
+  /** Omitted failure fields are wildcards and are not compared. */
   failureSource?: AgentTestFailureSource
   failureKind?: AgentTestFailureKind
 }
@@ -211,7 +212,13 @@ function manifestCaseIds(manifest: WorkflowIntakeManifest | undefined): Set<stri
 
 function manifestSha256(manifest: WorkflowIntakeManifest | undefined): string | undefined {
   if (!manifest) return undefined
-  return createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize)
+    const record = recordValue(value)
+    if (!record) return value
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonicalize(record[key])]))
+  }
+  return createHash('sha256').update(JSON.stringify(canonicalize(manifest))).digest('hex')
 }
 
 function environmentSelectionSha256(selection: EnvironmentSelectionArtifact | undefined): string | undefined {
@@ -285,8 +292,9 @@ function isSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)
 }
 
-function inputBundleProblems(bundle: InputBundleArtifact | undefined, hostId: string): string[] {
-  if (!bundle || !recordValue(bundle)) return [`${hostId} 缺少 immutable input-bundle.json`]
+function inputBundleProblems(bundle: InputBundleArtifact | undefined, hostId: string, exists: boolean): string[] {
+  if (!exists) return [`${hostId} 缺少 immutable input-bundle.json`]
+  if (!bundle || !recordValue(bundle)) return [`${hostId} 的 immutable input-bundle.json 结构无效`]
   const problems: string[] = []
   if (!isSha256(bundle.briefSha256)) problems.push(`${hostId} 的 input bundle briefSha256 无效`)
   if (!Array.isArray(bundle.imageSha256s) || bundle.imageSha256s.some((value) => !isSha256(value))) {
@@ -318,32 +326,26 @@ function outcomeForCases(cases: AgentTestCaseResult[]): AgentTestOutcome {
     : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
 }
 
-async function evidencePathEscapesRun(runDirectory: string, evidencePath: string): Promise<boolean> {
-  const lexicalPath = resolve(runDirectory, evidencePath)
-  const lexicalRelative = relative(runDirectory, lexicalPath)
+async function evidencePathEscapesBase(baseDirectory: string, evidencePath: string, allowAbsolute: boolean): Promise<boolean> {
+  if (!allowAbsolute && isAbsolute(evidencePath)) return true
+  const lexicalPath = resolve(baseDirectory, evidencePath)
+  const lexicalRelative = relative(baseDirectory, lexicalPath)
   if (lexicalRelative.startsWith('..') || isAbsolute(lexicalRelative)) return true
   try {
-    const [realRun, realEvidence] = await Promise.all([realpath(runDirectory), realpath(lexicalPath)])
-    const realRelative = relative(realRun, realEvidence)
+    const [realBase, realEvidence] = await Promise.all([realpath(baseDirectory), realpath(lexicalPath)])
+    const realRelative = relative(realBase, realEvidence)
     return realRelative.startsWith('..') || isAbsolute(realRelative)
   } catch {
     return true
   }
 }
 
+async function evidencePathEscapesRun(runDirectory: string, evidencePath: string): Promise<boolean> {
+  return evidencePathEscapesBase(runDirectory, evidencePath, true)
+}
+
 async function evidencePathEscapesWorkspace(runDirectory: string, evidencePath: string): Promise<boolean> {
-  if (isAbsolute(evidencePath)) return true
-  const workspaceDirectory = resolve(runDirectory, 'agent-workspace')
-  const lexicalPath = resolve(workspaceDirectory, evidencePath)
-  const lexicalRelative = relative(workspaceDirectory, lexicalPath)
-  if (lexicalRelative.startsWith('..') || isAbsolute(lexicalRelative)) return true
-  try {
-    const [realWorkspace, realEvidence] = await Promise.all([realpath(workspaceDirectory), realpath(lexicalPath)])
-    const realRelative = relative(realWorkspace, realEvidence)
-    return realRelative.startsWith('..') || isAbsolute(realRelative)
-  } catch {
-    return true
-  }
+  return evidencePathEscapesBase(resolve(runDirectory, 'agent-workspace'), evidencePath, false)
 }
 
 async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCaseIds: Set<string>): Promise<string[]> {
@@ -358,7 +360,7 @@ async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCa
   if (!Array.isArray(ledger)) problems.push(`${summary.hostId} 的 Mutation Ledger 不是数组`)
   if (!Array.isArray(receipts)) problems.push(`${summary.hostId} 的执行回执不是数组`)
   const selectionId = stringField(selection.id)
-  if (!selectionId) problems.push('宿主选择记录缺少 id')
+  if (!selectionId) problems.push(`${summary.hostId} 的宿主选择记录缺少 id`)
   if (selectionId !== summary.hostId) problems.push(`${summary.hostId} 的宿主选择 id 无效或与结果不一致`)
   if (!stringField(selection.platform)) problems.push(`${summary.hostId} 的宿主选择记录缺少 platform`)
   if (!stringField(selection.arch)) problems.push(`${summary.hostId} 的宿主选择记录缺少 arch`)
@@ -534,8 +536,7 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
   if (!resultArtifactFound) validationProblems.push(`${candidateLabel} 缺少 structured AgentTest result artifact`)
   else if (rawResult === undefined) validationProblems.push(`${candidateLabel} 的 structured AgentTest result artifact 无法解析`)
 
-  if (recordValue(rawResult)) result = rawResult as AgentTestResult
-  else if (rawResult !== undefined) validationProblems.push(`${candidateLabel} 的 structured AgentTest result 不是 JSON 对象`)
+  if (rawResult !== undefined && !recordValue(rawResult)) validationProblems.push(`${candidateLabel} 的 structured AgentTest result 不是 JSON 对象`)
   if (rawResult !== undefined) {
     try {
       result = parseAgentTestResult(JSON.stringify(rawResult))
@@ -614,7 +615,7 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
     ...(resultDurationMs !== undefined ? { durationMs: resultDurationMs } : {}),
     ...(matchedCases !== undefined ? { oracleMatchedCases: matchedCases } : {}),
   }
-  validationProblems.push(...inputBundleProblems(inputBundle, hostId))
+  validationProblems.push(...inputBundleProblems(inputBundle, hostId, inputBundleArtifact.exists))
   const candidate: LoadedCandidate = {
     summary,
     result,

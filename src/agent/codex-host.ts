@@ -1,5 +1,5 @@
 import { Codex, type Input, type Thread, type ThreadEvent } from '@openai/codex-sdk'
-import { delimiter, dirname, extname, resolve } from 'node:path'
+import { delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
   AgentEvent,
@@ -12,6 +12,7 @@ import type {
   AgentHostStream,
 } from './host.js'
 import { AgentHostError, normalizeAgentEvent, resolveHostExecutable } from './host.js'
+import { controlServerPath, packageFilePath } from './runtime-paths.js'
 
 interface CodexThreadLike {
   readonly id: string | null
@@ -46,18 +47,6 @@ export interface LegacyCodexThreadFactory {
   }): CodexThreadLike
 }
 
-const moduleDirectory = dirname(fileURLToPath(import.meta.url))
-
-function packageFilePath(packageName: string, fileName: string): string {
-  const packagePath = import.meta.resolve(`${packageName}/package.json`)
-  return resolve(dirname(fileURLToPath(packagePath)), fileName)
-}
-
-function controlServerPath(): string {
-  const extension = extname(fileURLToPath(import.meta.url)) === '.ts' ? '.ts' : '.js'
-  return resolve(moduleDirectory, `control-server${extension}`)
-}
-
 function toCodexInput(input: AgentInputPart[]): Input {
   return input.map((part) => part.type === 'text'
     ? { type: 'text', text: part.text }
@@ -74,10 +63,10 @@ async function resolveCodexExecutable(executable: string | undefined, environmen
   const resolved = await resolveHostExecutable(configured, filteredEnvironment)
   if (resolved) return resolved
   // Keep the old diagnostic for callers that supplied a path or relied on PATH.
-  if (executable || process.env.AUTO_TEST_CODEX_BIN) {
-    throw new AgentHostError('codex', `Configured Codex CLI executable is unavailable: ${configured}`)
+  if (executable || environment.AUTO_TEST_CODEX_BIN || process.env.AUTO_TEST_CODEX_BIN) {
+    throw new AgentHostError('codex', `Configured Codex CLI executable is unavailable: ${configured}`, 'configuration')
   }
-  throw new AgentHostError('codex', 'Current Codex CLI executable was not found. Install Codex CLI or set AUTO_TEST_CODEX_BIN.')
+  throw new AgentHostError('codex', 'Current Codex CLI executable was not found. Install Codex CLI or set AUTO_TEST_CODEX_BIN.', 'configuration')
 }
 
 function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefined {
@@ -94,7 +83,7 @@ function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefin
 }
 
 export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
-  if (!options.executable) throw new AgentHostError('codex', 'Codex executable was not resolved before starting a thread')
+  if (!options.executable) throw new AgentHostError('codex', 'Codex executable was not resolved before starting a thread', 'configuration')
   const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
   const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
   const controlServer = controlServerPath()

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { access, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
@@ -10,6 +10,7 @@ import type { CodexTestControlConfig } from './control-types.js'
 import type { CodexTestRisk } from './types.js'
 import { writePrivateJson } from './state.js'
 import type { AgentHostId } from './host.js'
+import { controlServerPath, packageFilePath } from './runtime-paths.js'
 
 interface StorageState {
   cookies?: Array<Record<string, unknown>>
@@ -147,9 +148,7 @@ function agentProcessEnvironment(
     : ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'USER', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS']
   if (providerEnvironmentName) names.push(providerEnvironmentName)
   if (includeForwardedAgentEnvironment) {
-    for (const name of (environment.AUTO_TEST_AGENT_FORWARD_ENV ?? '').split(/[,;\s]+/).filter((value) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value))) {
-      names.push(name)
-    }
+    for (const name of forwardedEnvironmentNames(environment)) names.push(name)
   }
   const result: Record<string, string> = {}
   for (const name of new Set(names)) {
@@ -157,6 +156,12 @@ function agentProcessEnvironment(
     if (value !== undefined) result[name] = value
   }
   return result
+}
+
+function forwardedEnvironmentNames(environment: NodeJS.ProcessEnv): Set<string> {
+  return new Set((environment.AUTO_TEST_AGENT_FORWARD_ENV ?? '')
+    .split(/[,;\s]+/)
+    .filter((value) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)))
 }
 
 function escapeTomlString(value: string): string {
@@ -180,21 +185,6 @@ function configTomlForModelProfile(profile: ModelProfile): string {
     'requires_openai_auth = false',
   )
   return `${lines.join('\n')}\n`
-}
-
-function packageFilePath(packageName: string, fileName: string): string {
-  try {
-    const packagePath = import.meta.resolve(`${packageName}/package.json`)
-    return resolve(dirname(fileURLToPath(packagePath)), fileName)
-  } catch {
-    const require = createRequire(import.meta.url)
-    return resolve(dirname(require.resolve(`${packageName}/package.json`)), fileName)
-  }
-}
-
-function controlServerPath(): string {
-  const extension = extname(fileURLToPath(import.meta.url)) === '.ts' ? '.ts' : '.js'
-  return resolve(dirname(fileURLToPath(import.meta.url)), `control-server${extension}`)
 }
 
 async function writeOmpMcpConfig(options: {
@@ -308,7 +298,6 @@ const ompProviderFiles = [
   'agent.db-wal',
   'agent.db-shm',
   'auth.json',
-  '.env',
   'settings.json',
 ]
 
@@ -317,12 +306,13 @@ const ompProviderFiles = [
  * provider/auth allowlist into the run-owned agent directory; project MCP is
  * generated below and sessions never come from the user's home.
  */
-async function prepareOmpAgentHome(agentHome: string, sourceHome: string): Promise<void> {
+async function prepareOmpAgentHome(agentHome: string, sourceHome: string, forwardedNames: Set<string>): Promise<void> {
   await mkdir(agentHome, { recursive: true, mode: 0o700 })
   const candidates = [resolve(sourceHome), resolve(sourceHome, 'agent')]
+  const sourceFileNames = forwardedNames.size > 0 ? [...ompProviderFiles, '.env'] : ompProviderFiles
   const source = await (async (): Promise<string | undefined> => {
     for (const candidate of candidates) {
-      for (const name of ompProviderFiles) {
+      for (const name of sourceFileNames) {
         try {
           await access(resolve(candidate, name))
           return candidate
@@ -341,6 +331,19 @@ async function prepareOmpAgentHome(agentHome: string, sourceHome: string): Promi
     await copyPrivateFile(sourcePath, destination).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error
     })
+  }
+  if (forwardedNames.size > 0) {
+    const sourceEnv = await readFile(resolve(source, '.env'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (sourceEnv !== undefined) {
+      const selected = sourceEnv.split(/\r?\n/).flatMap((line) => {
+        const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
+        return match && forwardedNames.has(match[1]!) ? [`${match[1]}=${match[2]}`] : []
+      })
+      if (selected.length > 0) await writePrivateText(resolve(agentHome, '.env'), `${selected.join('\n')}\n`)
+    }
   }
 }
 
@@ -405,7 +408,7 @@ export async function prepareAgentWorkspace(options: {
     : undefined
   if (selectedAgentHost === 'omp') {
     const ompSourceHome = options.sourceAgentHome ?? (!options.resume ? resolve(defaultHome, '.omp', 'agent') : undefined)
-    if (ompSourceHome) await prepareOmpAgentHome(agentHome, ompSourceHome)
+    if (ompSourceHome) await prepareOmpAgentHome(agentHome, ompSourceHome, forwardedEnvironmentNames(options.environment ?? process.env))
   }
   const environment = agentProcessEnvironment(options.environment ?? process.env, providerEnvironmentName)
   if (selectedAgentHost === 'omp') {
@@ -571,15 +574,17 @@ export async function prepareAgentWorkspace(options: {
     timeouts: { action: 15_000, navigation: 90_000, expect: 10_000 },
     codegen: fullAgentAccess ? 'typescript' : 'none',
   })
-  await writeOmpMcpConfig({
-    path: ompMcpConfigPath,
-    workspaceDirectory,
-    playwrightConfigPath,
-    playwrightSecretsPath,
-    controlConfigPath,
-    mcpEnvironment,
-  })
-  await writeOmpProjectConfig(ompConfigPath)
+  if (selectedAgentHost === 'omp') {
+    await writeOmpMcpConfig({
+      path: ompMcpConfigPath,
+      workspaceDirectory,
+      playwrightConfigPath,
+      playwrightSecretsPath,
+      controlConfigPath,
+      mcpEnvironment,
+    })
+    await writeOmpProjectConfig(ompConfigPath)
+  }
 
   const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
   const executionReceiptsMissing = await access(executionReceiptsPath).then(() => false, () => true)

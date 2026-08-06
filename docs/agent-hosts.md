@@ -38,7 +38,7 @@ npm run agent:test -- \
   --omp-bin /path/to/omp
 ```
 
-也可以设置 `AUTO_TEST_AGENT_HOST=omp` 和 `AUTO_TEST_OMP_BIN`。`--omp-home` 或 `AUTO_TEST_OMP_HOME` 可指定 OMP 的 agent 配置目录；Core 只复制 `config/models`、当前 `agent.db` auth store（含存在的 SQLite sidecar）、旧版 `auth.json`、`.env` 和 `settings.json` 这些 provider/auth 文件到私有 run 目录，不复制用户 MCP、插件或历史 session。首次运行省略 `--omp-home` 时读取默认 OMP agent 目录；恢复时若没有显式提供新的 `--omp-home`，会保留原 run 已复制的 Provider 文件，不会被当前用户目录静默覆盖。复制前应关闭正在写同一 auth store 的 OMP 进程，或改用显式 Provider 环境变量，避免复制活跃 SQLite 文件。`--agent-bin` 是当前宿主的通用可执行文件覆盖；`--codex-bin` 仍是兼容参数。一次 Run 选定的宿主会写入 `agent-host-selection.json` 和状态文件，`--resume` 不允许静默更换宿主；省略恢复命令中的宿主时会从原状态自动复用。
+也可以设置 `AUTO_TEST_AGENT_HOST=omp` 和 `AUTO_TEST_OMP_BIN`。`--omp-home` 或 `AUTO_TEST_OMP_HOME` 可指定 OMP 的 agent 配置目录；Core 只复制 `config/models`、当前 `agent.db` auth store（含存在的 SQLite sidecar）、旧版 `auth.json` 和 `settings.json` 这些 provider/auth 文件到私有 run 目录。`.env` 不会整文件复制；如确需使用其中的 Provider 环境变量，必须通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出键，只有这些键会进入私有 Provider 副本和宿主进程，不复制用户 MCP、插件或历史 session。首次运行省略 `--omp-home` 时读取默认 OMP agent 目录；恢复时若没有显式提供新的 `--omp-home`，会保留原 run 已复制的 Provider 文件，不会被当前用户目录静默覆盖。复制前应关闭正在写同一 auth store 的 OMP 进程，或改用显式 Provider 环境变量，避免复制活跃 SQLite 文件。`--agent-bin` 是当前宿主的通用可执行文件覆盖；`--codex-bin` 仍是兼容参数。一次 Run 选定的宿主会写入 `agent-host-selection.json` 和状态文件，`--resume` 不允许静默更换宿主；省略恢复命令中的宿主时会从原状态自动复用。
 
 Codex 的隔离 Home 会保留所选 Provider 的模型、推理强度、`model_context_window`、service tier 和 Provider 连接段，但不会复制用户 MCP 或其他项目配置。自定义模型必须在源 Codex 配置中声明真实上下文窗口，避免长套件按错误的兜底容量运行。
 

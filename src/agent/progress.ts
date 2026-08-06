@@ -118,9 +118,6 @@ export function progressFromAgentEvent(value: unknown): CodexTestAgentProgress |
     if (event.status === 'failed') return { kind: 'warning', message: '本次运行工作区文件更新失败，测试代理正在恢复' }
     return { kind: 'activity', message: '本次运行的临时脚本或记录已更新' }
   }
-  if (event.tool === 'web_search') {
-    return { kind: 'activity', message: '外部资料检索已完成' }
-  }
   if (event.type === 'reasoning_started') {
     return { kind: 'activity', message: '测试代理正在分析当前证据和下一步动作' }
   }

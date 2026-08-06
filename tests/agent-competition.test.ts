@@ -228,6 +228,26 @@ describe('AgentHost competition contract', () => {
     expect(report.contractProblems.some((problem) => problem.includes('immutable input bundle 不一致'))).toBe(true)
   })
 
+  it('fails closed when a candidate result workbook is missing or escapes its run', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-workbook-'))
+    directories.push(root)
+    const expected = result()
+    const codex = await makeRun(root, 'codex', expected)
+    const omp = await makeRun(root, 'omp', expected)
+    await rm(resolve(omp, 'omp-result.xlsx'))
+    let report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('invalid')
+    expect(report.contractProblems.some((problem) => problem.includes('结果工作簿不存在或越界'))).toBe(true)
+
+    const statePath = resolve(omp, 'codex-agent.state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as CodexTestAgentState
+    state.resultWorkbookPath = '../outside.xlsx'
+    await writeFile(statePath, JSON.stringify(state))
+    report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('invalid')
+    expect(report.contractProblems.some((problem) => problem.includes('结果工作簿不存在或越界'))).toBe(true)
+  })
+
   it('returns an invalid contract instead of throwing when run metadata is missing or corrupt', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-metadata-'))
     directories.push(root)
@@ -275,5 +295,25 @@ describe('AgentHost competition contract', () => {
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
     expect(report.contractProblems.some((problem) => problem.includes('不存在或越界证据'))).toBe(true)
+  })
+
+  it('rejects absolute evidence paths and missing host isolation capabilities on every platform', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-boundaries-'))
+    directories.push(root)
+    const expected = result()
+    const codex = await makeRun(root, 'codex', expected)
+    const omp = await makeRun(root, 'omp', expected)
+    const resultPath = resolve(omp, 'codex-agent.result.json')
+    const ompResult = JSON.parse(await readFile(resultPath, 'utf8')) as CodexTestAgentResult
+    ompResult.cases[0]!.evidence = [{ kind: 'observation', path: resolve(root, 'outside.txt'), description: 'absolute evidence' }]
+    await writeFile(resultPath, JSON.stringify(ompResult))
+    const selectionPath = resolve(omp, 'agent-host-selection.json')
+    const selection = JSON.parse(await readFile(selectionPath, 'utf8')) as Record<string, unknown>
+    selection.capabilities = {}
+    await writeFile(selectionPath, JSON.stringify(selection))
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('invalid')
+    expect(report.contractProblems.some((problem) => problem.includes('不存在或越界证据'))).toBe(true)
+    expect(report.contractProblems.some((problem) => problem.includes('缺少有效 workspaceIsolation 能力'))).toBe(true)
   })
 })

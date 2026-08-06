@@ -24,8 +24,8 @@ Set-Location "D:\Auto-Test"
 .\Auto-Test.cmd doctor
 ```
 
-继续验收前，应确认 Node.js、所选 AgentHost（默认 Codex；OMP 运行时确认 `omp --version`）、对应 Provider/认证和 Chromium 均显示成功。OMP 使用 `--omp-home` 或 `AUTO_TEST_OMP_HOME` 提供 provider/auth 配置时，实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
-选择 OMP 时，Windows 启动器会跳过 Codex CLI/Provider 探针；这只证明 OMP 启动层独立于 Codex，仍需完成真实页面业务验收。
+继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 路径必须通过 Auto-Test 的 Provider 探针；OMP 路径至少通过 `omp --version`，并由 OMP 自身完成 Provider 检查，或用真实 AgentHost canary 验证 Provider 可用。OMP 使用 `--omp-home` 或 `AUTO_TEST_OMP_HOME` 提供 provider/auth 配置时，实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
+选择 OMP 时，Windows 启动器不会显示 Codex Provider 探针结果；`omp --version` 只能证明 OMP 可启动，不代表 Provider 或业务验收通过。
 
 模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。超过上限后启动器会终止卡住的默认 Codex 初始化进程、恢复上一版 Provider 配置并明确报错；这不是业务测试结果。OMP 的 Provider 探针由 OMP 自身负责，Auto-Test 只检查其启动层。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
 

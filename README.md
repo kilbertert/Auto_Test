@@ -39,7 +39,7 @@ npm run easy
 
 ```bash
 npm run agent:test -- \
-  --file /private/cases.xlsx \
+  --file <path-to-cases.xlsx> \
   --url https://app.example.test/ \
   --profile staging \
   --output-dir artifacts/runs/example
@@ -49,16 +49,16 @@ npm run agent:test -- \
 
 ```bash
 npm run agent:test -- \
-  --file /private/cases.xlsx \
+  --file <path-to-cases.xlsx> \
   --url https://app.example.test/ \
   --profile staging \
   --agent-host omp \
-  --omp-bin /path/to/omp
+  --omp-bin <path-to-omp>
 ```
 
 URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
 
-需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取结构化结果和证据索引，不会再次调用模型或重复业务写入。
+需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取两份 Run 的不可变输入合同、结构化结果、证据、回执和 Ledger，不会再次调用模型或重复业务写入。合同缺失或不一致时只返回 `invalid`。
 
 ## 核心约束
 

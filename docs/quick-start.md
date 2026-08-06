@@ -128,7 +128,7 @@ npm run easy -- run \
 
 恢复会校验 workflow/source 身份和 Ledger。已写入逐 case store 的 case 不会重跑；active epoch 会恢复原 thread，容量轮换后的新 epoch 会从 checkpoint 和原工作区继续。旧版 `version: 1.0` 状态、`activeBatch`、`completedBatchIds` 等状态不再兼容，恢复会 fail closed 并要求新建 Run。
 
-需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据和 Ledger，不启动新的 Agent，也不重复业务写入。
+需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据和 Ledger，不启动新的 Agent，也不重复业务写入。两个 Run 必须同时提供 immutable `test-manifest.json`、一致的 `workflowId`/`sourceSha256`、Excel 与同名 sidecar/image 的 `input-bundle.json`、Manifest hash、Environment selection hash、平台、架构、Auto-Test 包版本、commit 和 `agent-host-selection.json`。缺少或不一致的任一合同输入时，比较器会 fail closed，结果为 `invalid`，不会继续给出宿主等价性结论。
 
 ## 7. 结果边界
 

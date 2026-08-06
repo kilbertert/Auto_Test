@@ -236,17 +236,19 @@ export function parseAgentTestResult(value: string): CodexTestAgentResult {
   try {
     return parseCodexTestResult(value)
   } catch (originalError) {
-    const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(value)?.[1]
-    const candidate = fenced ?? (() => {
-      const start = value.indexOf('{')
-      const end = value.lastIndexOf('}')
-      return start >= 0 && end > start ? value.slice(start, end + 1) : undefined
-    })()
-    if (!candidate) throw originalError
-    try {
-      return parseCodexTestResult(candidate)
-    } catch {
-      throw originalError
+    const candidates = [...value.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)]
+      .map((match) => match[1])
+      .filter((candidate): candidate is string => Boolean(candidate))
+    const start = value.indexOf('{')
+    const end = value.lastIndexOf('}')
+    if (start >= 0 && end > start) candidates.push(value.slice(start, end + 1))
+    for (const candidate of candidates) {
+      try {
+        return parseCodexTestResult(candidate)
+      } catch {
+        // Continue through all transport wrappers before failing closed.
+      }
     }
+    throw originalError
   }
 }

@@ -242,7 +242,7 @@ async function promptPayload(input: AgentInputPart[], promptId: string, maxFrame
   const payload: Record<string, unknown> = { type: 'prompt', id: promptId, message }
   if (images.length > 0) payload.images = images
   if (Buffer.byteLength(JSON.stringify(payload), 'utf8') + 1 > maxFrameBytes) {
-    throw new AgentHostError('omp', 'OMP prompt exceeded the RPC input frame limit after image fallback')
+    throw new AgentHostError('omp', 'OMP prompt exceeded the RPC input frame limit after image fallback', 'protocol')
   }
   return payload
 }
@@ -298,7 +298,7 @@ class OmpRpcSession implements AgentHostSession {
     })
     this.readyResolve = resolveReady
     this.readyReject = rejectReady
-    const startupTimeout = setTimeout(() => this.fail(new AgentHostError('omp', 'OMP RPC startup timed out')), DEFAULT_REQUEST_TIMEOUT_MS)
+    const startupTimeout = setTimeout(() => this.fail(new AgentHostError('omp', 'OMP RPC startup timed out', 'transport')), DEFAULT_REQUEST_TIMEOUT_MS)
     void this.ready.then(
       () => clearTimeout(startupTimeout),
       () => clearTimeout(startupTimeout),
@@ -337,9 +337,10 @@ class OmpRpcSession implements AgentHostSession {
   }
 
   async run(input: AgentInputPart[]): Promise<AgentHostStream> {
-    if (this.closed) throw new AgentHostError('omp', 'OMP session is already closed')
-    if (this.activeRun) throw new AgentHostError('omp', 'OMP session already has an active prompt')
+    if (this.closed) throw new AgentHostError('omp', 'OMP session is already closed', 'process')
     await this.ready
+    if (this.closed) throw new AgentHostError('omp', 'OMP session is already closed', 'process')
+    if (this.activeRun) throw new AgentHostError('omp', 'OMP session already has an active prompt', 'process')
     const queue = new AsyncEventQueue<AgentEvent>()
     const promptId = `autotest-${randomUUID()}`
     this.activeRun = { queue, promptId }
@@ -366,11 +367,11 @@ class OmpRpcSession implements AgentHostSession {
     if (this.closed) return
     this.closing = true
     this.closed = true
-    this.failPending(new AgentHostError('omp', 'OMP session closed'))
+    this.failPending(new AgentHostError('omp', 'OMP session closed', 'process'))
     if (this.activeRun) {
       const active = this.activeRun
       this.activeRun = undefined
-      active.queue.end(new AgentHostError('omp', 'OMP session closed before the prompt completed'))
+      active.queue.end(new AgentHostError('omp', 'OMP session closed before the prompt completed', 'process'))
     }
     if (this.process.stdin.writable) this.process.stdin.end()
     if (this.process.exitCode === null) {
@@ -414,7 +415,7 @@ class OmpRpcSession implements AgentHostSession {
         void this.request({ type: 'negotiate_protocol', protocolVersion: 2 })
           .then((response) => {
             const data = response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : undefined
-            if (data?.protocolVersion !== 2) throw new AgentHostError('omp', 'OMP RPC protocol v2 negotiation returned an invalid version')
+            if (data?.protocolVersion !== 2) throw new AgentHostError('omp', 'OMP RPC protocol v2 negotiation returned an invalid version', 'protocol')
             this.readyResolve()
           })
           .catch((error) => this.fail(error instanceof Error ? error : new Error(String(error))))
@@ -431,12 +432,12 @@ class OmpRpcSession implements AgentHostSession {
         this.pending.delete(id)
         clearTimeout(pending.timeout)
         if (response.success === false) {
-          pending.reject(new AgentHostError('omp', response.error ?? `OMP RPC ${pending.command} failed`))
+          pending.reject(new AgentHostError('omp', response.error ?? `OMP RPC ${pending.command} failed`, 'transport'))
         } else {
           pending.resolve(response)
         }
       } else if (response.success === false) {
-        const error = new AgentHostError('omp', response.error ?? 'OMP RPC command failed')
+        const error = new AgentHostError('omp', response.error ?? 'OMP RPC command failed', 'transport')
         if (id && this.activeRun?.promptId === id) {
           const active = this.activeRun
           this.activeRun = undefined
@@ -457,11 +458,11 @@ class OmpRpcSession implements AgentHostSession {
     }
     if (frame.type === 'extension_ui_request') {
       if (typeof frame.method === 'string' && PASSIVE_EXTENSION_UI_METHODS.has(frame.method)) return
-      this.fail(new AgentHostError('omp', 'OMP requested interactive RPC UI input in headless Auto-Test mode'))
+      this.fail(new AgentHostError('omp', 'OMP requested interactive RPC UI input in headless Auto-Test mode', 'capability'))
       return
     }
     if (frame.type === 'host_tool_call' || frame.type === 'host_uri_request') {
-      this.fail(new AgentHostError('omp', `OMP requested an unsupported host integration frame: ${frame.type}`))
+      this.fail(new AgentHostError('omp', `OMP requested an unsupported host integration frame: ${frame.type}`, 'capability'))
       return
     }
     const active = this.activeRun
@@ -488,16 +489,16 @@ class OmpRpcSession implements AgentHostSession {
 
   private request(command: Record<string, unknown>): Promise<OmpResponse> {
     if (this.failedError) return Promise.reject(this.failedError)
-    if (this.closed || !this.process.stdin.writable) return Promise.reject(new AgentHostError('omp', 'OMP RPC stdin is unavailable'))
+    if (this.closed || !this.process.stdin.writable) return Promise.reject(new AgentHostError('omp', 'OMP RPC stdin is unavailable', 'process'))
     const id = typeof command.id === 'string' ? command.id : `request-${randomUUID()}`
     const payload = JSON.stringify({ ...command, id })
     if (Buffer.byteLength(payload, 'utf8') + 1 > this.maxFrameBytes) {
-      return Promise.reject(new AgentHostError('omp', `OMP RPC ${String(command.type ?? 'command')} exceeds the advertised input frame limit`))
+      return Promise.reject(new AgentHostError('omp', `OMP RPC ${String(command.type ?? 'command')} exceeds the advertised input frame limit`, 'protocol'))
     }
     return new Promise<OmpResponse>((resolvePromise, rejectPromise) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id)
-        rejectPromise(new AgentHostError('omp', `OMP RPC ${String(command.type ?? 'command')} timed out`))
+        rejectPromise(new AgentHostError('omp', `OMP RPC ${String(command.type ?? 'command')} timed out`, 'transport'))
       }, DEFAULT_REQUEST_TIMEOUT_MS)
       this.pending.set(id, {
         command: typeof command.type === 'string' ? command.type : 'unknown',
@@ -555,7 +556,7 @@ export interface OmpAgentHostOptions {
 async function resolveOmpExecutable(executable: string | undefined, environment: NodeJS.ProcessEnv = process.env): Promise<string> {
   const configured = executable || environment.AUTO_TEST_OMP_BIN || process.env.AUTO_TEST_OMP_BIN || 'omp'
   const resolved = await resolveHostExecutable(configured, environment)
-  if (!resolved) throw new AgentHostError('omp', `OMP executable is unavailable: ${configured}`)
+  if (!resolved) throw new AgentHostError('omp', `OMP executable is unavailable: ${configured}`, 'configuration')
   return resolved
 }
 
@@ -569,7 +570,7 @@ export class OmpAgentHost implements AgentHost {
   async probe(options: AgentHostLaunchOptions): Promise<AgentHostProbeResult> {
     try {
       if (!options.fullAgentAccess) {
-        throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only; opaque/restricted mode cannot be enforced by this adapter')
+        throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only; opaque/restricted mode cannot be enforced by this adapter', 'capability')
       }
       const executable = await resolveOmpExecutable(options.executable, options.environment)
       return { ok: true, hostId: this.id, executable }
@@ -579,7 +580,7 @@ export class OmpAgentHost implements AgentHost {
   }
 
   async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
-    if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only')
+    if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only', 'capability')
     await mkdir(resolve(options.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
     const executable = await resolveOmpExecutable(options.executable, options.environment)
     const session = new OmpRpcSession({ ...options, executable }, this.options.spawnProcess)
@@ -593,7 +594,7 @@ export class OmpAgentHost implements AgentHost {
   }
 
   async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
-    if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only')
+    if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only', 'capability')
     await mkdir(resolve(options.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
     const executable = await resolveOmpExecutable(options.executable, options.environment)
     const session = new OmpRpcSession({ ...options, executable, resumeId: options.resumeId }, this.options.spawnProcess)

@@ -88,7 +88,7 @@ function sameInputBundleIdentity(left: InputBundleIdentity, right: InputBundleId
 
 function testDataIdentitySha256(secrets: Record<string, string | string[]>): string {
   const entries = Object.entries(secrets)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([name, value]) => [name, Array.isArray(value) ? [...value] : value])
   return createHash('sha256').update(JSON.stringify(entries)).digest('hex')
 }
@@ -205,13 +205,14 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   // A resume must inherit the frozen host from the run state unless the user
   // explicitly supplies a host or host-specific executable. Ambient defaults
   // must not silently switch an OMP run back to Codex (or vice versa).
-  const explicitHost = cliHost ?? (args.includes('--resume') ? undefined : process.env.AUTO_TEST_AGENT_HOST)
+  const ambientHost = process.env.AUTO_TEST_AGENT_HOST?.trim() || undefined
+  const explicitHost = cliHost ?? (args.includes('--resume') ? undefined : ambientHost)
   const agentBin = valueAfter(args, '--agent-bin')
   const codexBin = valueAfter(args, '--codex-bin')
   const ompBin = valueAfter(args, '--omp-bin')
   const ompHome = valueAfter(args, '--omp-home')
   if (agentBin && (codexBin || ompBin)) throw new Error('--agent-bin 不能与 --codex-bin 或 --omp-bin 同时使用')
-  if (codexBin && ompHome) throw new Error('--codex-bin 不能与 --omp-home 同时使用')
+  if (codexBin && (ompBin || ompHome)) throw new Error('--codex-bin 不能与 --omp-bin 或 --omp-home 同时使用')
   let binHost: 'codex' | 'omp' | undefined
   if (ompBin || ompHome) binHost = 'omp'
   else if (codexBin) binHost = 'codex'

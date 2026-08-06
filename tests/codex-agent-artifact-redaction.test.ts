@@ -75,4 +75,35 @@ describe('agent artifact redaction', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  it('does not rewrite structured artifacts when no value changed', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-structured-artifact-unchanged-'))
+    try {
+      const jsonPath = resolve(directory, 'compact.json')
+      const jsonlPath = resolve(directory, 'windows.jsonl')
+      const json = '{"message":"visible","count":1}'
+      const jsonl = '{"message":"visible"}\r\n{"message":"also-visible"}\r\n'
+      await writeFile(jsonPath, json)
+      await writeFile(jsonlPath, jsonl)
+      const summary = await redactAgentTextArtifacts(directory, ['secret-not-present'])
+      expect(summary.redactedFiles).toBe(0)
+      expect(await readFile(jsonPath, 'utf8')).toBe(json)
+      expect(await readFile(jsonlPath, 'utf8')).toBe(jsonl)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('redacts structured object keys as well as string leaves', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-structured-artifact-keys-'))
+    try {
+      const path = resolve(directory, 'event.json')
+      await writeFile(path, JSON.stringify({ 'fixture-password': 'fixture-password' }))
+      await redactAgentTextArtifacts(directory, ['fixture-password'])
+      const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, string>
+      expect(value).toEqual({ '<redacted-secret>': '<redacted-secret>' })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mergeAgentSecrets, parseAgentTestArgs, scopeEnvironmentProfile } from '../src/cli/agent-test.js'
 
 describe('Codex agent CLI', () => {
@@ -56,11 +56,16 @@ describe('Codex agent CLI', () => {
   })
 
   it('selects OMP for OMP-specific configuration and rejects mixed host arguments', () => {
-    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--omp-home', '/private/omp-agent'])
-    expect(options.agentHostId).toBe('omp')
-    expect(options.ompHome).toMatch(/[\\/]private[\\/]omp-agent$/)
-    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
-    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
+    vi.stubEnv('AUTO_TEST_AGENT_HOST', '')
+    try {
+      const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--omp-home', '/private/omp-agent'])
+      expect(options.agentHostId).toBe('omp')
+      expect(options.ompHome).toMatch(/[\\/]private[\\/]omp-agent$/)
+      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
+      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('supports an explicit opaque test-data mode', () => {

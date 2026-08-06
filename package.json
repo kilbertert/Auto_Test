@@ -48,14 +48,14 @@
     "cross-spawn": "^7.0.6",
     "fast-xml-parser": "^5.10.1",
     "he": "^1.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "tsx": "^4.20.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/he": "^1.2.3",
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.6"
   }
