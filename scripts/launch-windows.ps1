@@ -484,32 +484,49 @@ function Start-CodexProbeProcess([string] $Executable) {
     $RepositoryRoot
   )
   $argumentLine = (($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
-  $processExecutable = $Executable
-  $processArguments = $argumentLine
+  $captureRoot = Join-Path ([IO.Path]::GetTempPath()) 'auto-test-codex-probes'
+  New-Item -ItemType Directory -Force -Path $captureRoot | Out-Null
+  Get-ChildItem -Directory $captureRoot -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1) } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  $captureDirectory = Join-Path $captureRoot ([Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $captureDirectory | Out-Null
+  $standardOutputPath = Join-Path $captureDirectory 'stdout.log'
+  $standardErrorPath = Join-Path $captureDirectory 'stderr.log'
+  $wrapperPath = Join-Path $captureDirectory 'probe.cmd'
+  $invokeExecutable = ConvertTo-NativeArgument $Executable
   if ([IO.Path]::GetExtension($Executable) -match '(?i)^\.(cmd|bat)$') {
-    $processExecutable = $env:ComSpec
-    $processArguments = "/d /s /c `"`"$Executable`" $argumentLine`""
+    $invokeExecutable = "call $invokeExecutable"
   }
-  # Native Process APIs preserve the real exit code on Windows PowerShell 5.1.
-  # Read both streams asynchronously so neither pipe can block the probe process.
+  $wrapper = @(
+    '@echo off',
+    "$invokeExecutable $argumentLine 1>$(ConvertTo-NativeArgument $standardOutputPath) 2>$(ConvertTo-NativeArgument $standardErrorPath)",
+    'exit /b %errorlevel%'
+  ) -join "`r`n"
+  [IO.File]::WriteAllText($wrapperPath, $wrapper, [Text.Encoding]::Default)
+
+  # Capture to files instead of redirected pipes. Detached descendants may
+  # inherit file handles, but they cannot keep the launcher waiting for EOF.
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $processExecutable
-  $startInfo.Arguments = $processArguments
+  $startInfo.FileName = $env:ComSpec
+  $startInfo.Arguments = "/d /s /c `"`"$wrapperPath`"`""
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
+  $startInfo.RedirectStandardOutput = $false
+  $startInfo.RedirectStandardError = $false
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   try {
     $process.Start() | Out-Null
     return [pscustomobject]@{
       Process = $process
-      StandardOutput = $process.StandardOutput.ReadToEndAsync()
-      StandardError = $process.StandardError.ReadToEndAsync()
+      CaptureDirectory = $captureDirectory
+      StandardOutputPath = $standardOutputPath
+      StandardErrorPath = $standardErrorPath
     }
   } catch {
     $process.Dispose()
+    Remove-Item -Recurse -Force $captureDirectory -ErrorAction SilentlyContinue
     throw
   }
 }
@@ -520,10 +537,7 @@ function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSe
   while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
     $remainingMilliseconds = [int] [Math]::Ceiling(($TimeoutSeconds - $stopwatch.Elapsed.TotalSeconds) * 1000)
     $waitMilliseconds = [Math]::Max(1, [Math]::Min(1000, $remainingMilliseconds))
-    if ($Process.WaitForExit($waitMilliseconds)) {
-      $Process.WaitForExit()
-      return $true
-    }
+    if ($Process.WaitForExit($waitMilliseconds)) { return $true }
     if ($stopwatch.Elapsed.TotalSeconds -ge $nextHeartbeatSeconds) {
       $elapsedSeconds = [int] [Math]::Floor($stopwatch.Elapsed.TotalSeconds)
       Write-Host "[检查] 模型 API 仍在响应中（已等待 $elapsedSeconds 秒，最多 $TimeoutSeconds 秒）……"
@@ -534,19 +548,28 @@ function Wait-CodexProbeProcess([Diagnostics.Process] $Process, [int] $TimeoutSe
 }
 
 function Stop-CodexProbeProcess([Diagnostics.Process] $Process) {
-  if ($Process.HasExited) { return }
-  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-  if (Test-Path $taskkill) {
-    try { & $taskkill /PID $Process.Id /T /F *> $null } catch {}
-  }
   if (-not $Process.HasExited) {
-    try { $Process.Kill() } catch {}
+    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    if (Test-Path $taskkill) {
+      try { & $taskkill /PID $Process.Id /T /F *> $null } catch {}
+    }
+    if (-not $Process.HasExited) {
+      try { $Process.Kill() } catch {}
+    }
+    try { $Process.WaitForExit(5000) | Out-Null } catch {}
   }
-  try { $Process.WaitForExit(5000) | Out-Null } catch {}
-  # Detached descendants can keep inherited pipe handles open after the probe
-  # process exits. Close our readers so timeout cleanup never waits for EOF.
-  try { $Process.StandardOutput.Close() } catch {}
-  try { $Process.StandardError.Close() } catch {}
+}
+
+function Read-CodexProbeCapture([string] $Path) {
+  if (-not (Test-Path $Path)) { return '' }
+  $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+  $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+  try {
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally {
+    $stream.Dispose()
+  }
 }
 
 function Test-CodexProvider {
@@ -570,8 +593,8 @@ function Test-CodexProvider {
         throw "模型 API 探针在 $timeoutSeconds 秒内未完成，已终止卡住的 Codex 进程。请检查模型服务、Windows 网络、代理或流式响应稳定性；仅在网关确实较慢时调整 AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS。"
       }
       $probeExitCode = $probeProcess.ExitCode
-      $standardOutput = $probeInvocation.StandardOutput.GetAwaiter().GetResult()
-      $standardError = $probeInvocation.StandardError.GetAwaiter().GetResult()
+      $standardOutput = Read-CodexProbeCapture $probeInvocation.StandardOutputPath
+      $standardError = Read-CodexProbeCapture $probeInvocation.StandardErrorPath
       $probe = @($standardOutput, $standardError) -join [Environment]::NewLine
       if ($probeExitCode -ne 0) {
         $hint = Get-CodexProbeFailureHint $probe $probeExitCode
@@ -587,6 +610,7 @@ function Test-CodexProvider {
     }
   } finally {
     if ($probeProcess) { $probeProcess.Dispose() }
+    if ($probeInvocation) { Remove-Item -Recurse -Force $probeInvocation.CaptureDirectory -ErrorAction SilentlyContinue }
   }
 }
 
