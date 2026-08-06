@@ -226,15 +226,12 @@ export function enforceMutationLedger(
 /** Host-neutral result contract exports. */
 export const agentTestResultSchema = codexTestResultSchema
 
-/**
- * Some non-schema transports wrap an otherwise valid JSON delivery in a
- * Markdown fence or a short leading/trailing sentence. Normalize only those
- * transport wrappers; business fields still go through the same strict AJV
- * contract and deterministic Runner checks.
- */
-export function parseAgentTestResult(value: string): CodexTestAgentResult {
+function parseWrappedAgentResult(
+  value: string,
+  parser: (candidate: string) => CodexTestAgentResult,
+): CodexTestAgentResult {
   try {
-    return parseCodexTestResult(value)
+    return parser(value)
   } catch (originalError) {
     const candidates = [...value.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)]
       .map((match) => match[1])
@@ -244,11 +241,39 @@ export function parseAgentTestResult(value: string): CodexTestAgentResult {
     if (start >= 0 && end > start) candidates.push(value.slice(start, end + 1))
     for (const candidate of candidates) {
       try {
-        return parseCodexTestResult(candidate)
+        return parser(candidate)
       } catch {
         // Continue through all transport wrappers before failing closed.
       }
     }
     throw originalError
   }
+}
+
+/**
+ * Some non-schema transports wrap an otherwise valid JSON delivery in a
+ * Markdown fence or a short leading/trailing sentence. Normalize only those
+ * transport wrappers; business fields still go through the same strict AJV
+ * contract and deterministic Runner checks.
+ */
+export function parseAgentTestResult(value: string): CodexTestAgentResult {
+  return parseWrappedAgentResult(value, parseCodexTestResult)
+}
+
+/**
+ * The Runner owns the authoritative Mutation Ledger and environment
+ * requirements. Ignore the AgentHost's duplicate projection of those two
+ * collections while keeping every business-authored field under the same
+ * strict schema and deterministic validation.
+ */
+export function parseAgentTestCandidate(value: string): CodexTestAgentResult {
+  return parseWrappedAgentResult(value, (candidate) => {
+    const parsed = JSON.parse(candidate) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parseCodexTestResult(candidate)
+    return parseCodexTestResult(JSON.stringify({
+      ...(parsed as Record<string, unknown>),
+      mutations: [],
+      environmentRequirements: [],
+    }))
+  })
 }

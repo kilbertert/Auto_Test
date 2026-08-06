@@ -1,5 +1,5 @@
-import { access, readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { access, readFile, readdir } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import type { CodexTestAgentResult, CodexTestCaseResult, CodexTestFailureKind, CodexTestFailureSource } from './types.js'
 
@@ -29,6 +29,12 @@ interface AgentDeliveryArtifact {
 
 const failureSources = new Set<CodexTestFailureSource>(['product', 'agent_execution', 'environment', 'input', 'infrastructure'])
 const failureKinds = new Set<CodexTestFailureKind>(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'])
+
+function outcomeForCases(cases: CodexTestCaseResult[]): CodexTestAgentResult['outcome'] {
+  if (cases.some((item) => item.outcome === 'blocked')) return 'blocked'
+  if (cases.some((item) => item.outcome === 'product_failed')) return 'product_failed'
+  return 'passed'
+}
 
 function validateArtifact(
   artifact: AgentDeliveryArtifact,
@@ -104,6 +110,7 @@ export async function recoverCodexDeliveryResult(options: {
     }
   }
   if (problems.length > 0) return { problems }
+  const artifactReference = basename(options.artifactPath)
   const cases: CodexTestCaseResult[] = artifact.cases.map((item) => ({
     caseId: item.caseId,
     title: item.title ?? options.manifest.phases.find((phase) => phase.id === item.caseId)?.title ?? item.caseId,
@@ -113,12 +120,10 @@ export async function recoverCodexDeliveryResult(options: {
     ...(item.environmentRequirementIds?.length ? { environmentRequirementIds: item.environmentRequirementIds } : {}),
     ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
     evidence: (item.evidencePaths?.length ?? 0) > 0
-      ? item.evidencePaths!.map((path) => ({ kind: 'observation' as const, path, description: `Codex recorded evidence for ${item.caseId}: ${path}` }))
-      : [{ kind: 'observation' as const, path: 'agent-workspace/case-results.json', description: `Codex recorded ${item.caseId} as ${item.outcome} in the delivery artifact.` }],
+      ? item.evidencePaths!.map((path) => ({ kind: 'observation' as const, path, description: `AgentHost recorded evidence for ${item.caseId}: ${path}` }))
+      : [{ kind: 'observation' as const, path: artifactReference, description: `AgentHost recorded ${item.caseId} as ${item.outcome} in ${artifactReference}.` }],
   }))
-  const outcome = cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+  const outcome = outcomeForCases(cases)
   const productDefects = cases
     .filter((item) => item.outcome === 'product_failed')
     .map((item) => item.summary)
@@ -141,6 +146,101 @@ export async function recoverCodexDeliveryResult(options: {
       blockers: [...new Set(blockers)].slice(0, 50),
       productDefects: [...new Set(productDefects)].slice(0, 50),
       nextActions: outcome === 'passed' ? [] : ['Review the per-case evidence and resolve blocked or product-failed cases before declaring the business suite complete.'],
+    },
+  }
+}
+
+/**
+ * Recover a completed logical suite from its per-epoch AgentHost artifacts.
+ * This is used only when every immutable case is covered exactly once; a
+ * partial or conflicting set fails closed and cannot override the aggregate.
+ */
+export async function recoverAgentEpochDeliveryResult(options: {
+  workspaceDirectory: string
+  manifest: WorkflowIntakeManifest
+  startedAt: string
+}): Promise<{ result?: CodexTestAgentResult; problems: string[] }> {
+  const entries = await readdir(options.workspaceDirectory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return []
+    throw error
+  })
+  const artifactPaths = entries
+    .filter((entry) => entry.isFile() && /^case-results\.epoch-[A-Za-z0-9._-]+\.json$/i.test(entry.name))
+    .map((entry) => resolve(options.workspaceDirectory, entry.name))
+    .sort()
+  if (artifactPaths.length === 0) return { problems: ['Per-epoch AgentHost delivery artifacts were not created'] }
+
+  const expectedIds = new Set(options.manifest.phases.map((phase) => phase.id))
+  const seenIds = new Set<string>()
+  const cases: CodexTestCaseResult[] = []
+  const problems: string[] = []
+  for (const artifactPath of artifactPaths) {
+    let caseIds: string[]
+    try {
+      const parsed = JSON.parse(await readFile(artifactPath, 'utf8')) as { cases?: unknown }
+      if (!Array.isArray(parsed.cases)) throw new Error('cases must be an array')
+      caseIds = parsed.cases.map((item) => (
+        item && typeof item === 'object' && !Array.isArray(item) && typeof (item as { caseId?: unknown }).caseId === 'string'
+          ? (item as { caseId: string }).caseId
+          : ''
+      ))
+      if (caseIds.some((id) => !id)) throw new Error('every case needs a caseId')
+      if (new Set(caseIds).size !== caseIds.length) throw new Error('case IDs must be unique')
+      if (caseIds.some((id) => !expectedIds.has(id))) throw new Error('artifact contains an unexpected case ID')
+      if (caseIds.some((id) => seenIds.has(id))) throw new Error('case is duplicated across epoch artifacts')
+    } catch (error) {
+      problems.push(`${artifactPath}: ${error instanceof Error ? error.message : String(error)}`)
+      continue
+    }
+    const activeIds = new Set(caseIds)
+    const scopedManifest = {
+      ...options.manifest,
+      phases: options.manifest.phases.filter((phase) => activeIds.has(phase.id)),
+    }
+    if (scopedManifest.phases.length !== caseIds.length) {
+      problems.push(`${artifactPath}: epoch case scope does not match the immutable manifest`)
+      continue
+    }
+    const recovered = await recoverAgentDeliveryResult({
+      artifactPath,
+      manifest: scopedManifest,
+      startedAt: options.startedAt,
+    })
+    if (!recovered.result) {
+      problems.push(...recovered.problems.map((problem) => `${artifactPath}: ${problem}`))
+      continue
+    }
+    for (const caseId of caseIds) seenIds.add(caseId)
+    cases.push(...recovered.result.cases)
+  }
+  for (const caseId of expectedIds) {
+    if (!seenIds.has(caseId)) problems.push(`Per-epoch AgentHost delivery is missing case ${caseId}`)
+  }
+  if (problems.length > 0) return { problems }
+
+  const byCaseId = new Map(cases.map((item) => [item.caseId, item]))
+  const orderedCases = options.manifest.phases.map((phase) => byCaseId.get(phase.id)!)
+  const outcome = outcomeForCases(orderedCases)
+  const blockers = orderedCases.filter((item) => item.outcome === 'blocked').map((item) => item.summary)
+  const productDefects = orderedCases.filter((item) => item.outcome === 'product_failed').map((item) => item.summary)
+  return {
+    problems: [],
+    result: {
+      version: '1.0',
+      workflowId: options.manifest.workflowId,
+      sourceSha256: options.manifest.source.sha256,
+      outcome,
+      summary: `Recovered ${artifactPaths.length} complete per-epoch AgentHost delivery artifact(s).`,
+      startedAt: options.startedAt,
+      finishedAt: new Date().toISOString(),
+      cases: orderedCases,
+      mutations: [],
+      environmentRequirements: [],
+      blockers: [...new Set(blockers)].slice(0, 50),
+      productDefects: [...new Set(productDefects)].slice(0, 50),
+      nextActions: outcome === 'passed'
+        ? []
+        : ['Review the per-case evidence and resolve blocked or product-failed cases before declaring the business suite complete.'],
     },
   }
 }

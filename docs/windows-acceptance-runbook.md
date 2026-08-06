@@ -6,6 +6,10 @@
 
 日常操作可以使用中文菜单；正式验收建议使用显式命令和固定输出目录，便于中断恢复和结果复核。
 
+## AgentHost 宿主选择边界
+
+当前默认宿主是 Codex。PR #28 后的 Linux x64 验收已证明 Codex 与 OMP 能以同一 Manifest 分别完成一次真实写入型充电 canary，并共享结果、证据、回执和 Mutation Ledger 合同；它不能替代 Windows 平台的业务复验。Windows 私有包默认携带 Codex；OMP 需要在测试机单独安装并配置 Provider，且其 workspace isolation 仍是 `prompt_only`。Provider 探针和安装检查只证明启动层，必须以 Windows 实际 Manifest、逐 case 证据、结果工作簿和 `pending=0` 的 Ledger 才能声明业务通过。
+
 ## 1. 验收前准备
 
 - 使用当前版本的内部私有 Windows ZIP，解压到本机短路径，例如 `D:\Auto-Test`；不要直接在 ZIP、OneDrive、共享盘或 `Program Files` 中运行。

@@ -11,6 +11,19 @@ Auto-Test 的测试核心不再依赖某一个代理产品。`AgentHost` 是一�
 
 宿主能力记录还包含 `workspaceIsolation`：Codex 为 `enforced`，OMP 为 `prompt_only`。这不会改变两者的业务结果合同，但会在审计和竞争报告中保留真实执行边界。
 
+## 当前验收状态
+
+PR #28 已合并到 `main`（commit `836c849`）。截至 2026-08-06，Codex 与 OMP 已在 Linux x64 分别完成同一份真实写入型充电 canary。业务执行基线为 `836c849`，OMP 的最终交付恢复使用本文所在提交的修复；包版本均为 `0.1.0`。源文件 SHA-256 为 `212edae85a34b84cd948a8e9f40d2d93112f063d18290cd858ea2a06ed820781`，两个 run 的实际 Manifest 字节一致，SHA-256 为 `6a4b035377e8dc809e117bdf53a52be1a35e0d97433a9b9e9207159b3843af02`，比较器归一化输入包 SHA-256 均为 `2aefe7acca65639d9dd68ed6151d5420ab05c139bda3d0beb512bbb305d35e74`。
+
+| 宿主 | 结果 | Ledger 终态 | 证据文件 | 被动回执 | 隔离边界 |
+| --- | --- | --- | ---: | ---: | --- |
+| Codex | `3/3 passed` | 7 `accepted`，`pending=0` | 355 | 772 | `enforced` |
+| OMP | `3/3 passed` | 7 `accepted`，`pending=0` | 138 | 220 | `prompt_only` |
+
+确定性比较器判定 `contractStatus=valid`、`verdict=equivalent`，逐 case 无差异。OMP 在本次 canary 中消耗的壁钟时间明显更多；其状态时间包含后续交付恢复验证，因此不能当作纯模型性能基准。默认宿主继续保持 Codex：它具有原生结构化输出、`enforced` workspace isolation 和受限模式；OMP 保留为同合同 challenger。一个复杂 canary 不能推出某个宿主在所有行业、页面控件或输入格式中全面胜出，Windows 写入型业务验收也仍需单独完成。
+
+Core 对 `mutations` 和 `environmentRequirements` 拥有唯一确定性权威。AgentHost 返回的同名集合只是重复投影，不能覆盖 Core 的 Ledger 或环境需求账本；逐 case 业务结论、分类和证据仍须通过完整 schema。若已阻断的 run 存在覆盖全部 immutable case、无重复且证据可解析的逐 epoch 交付，并且权威 Ledger 没有 `pending`，`--resume` 会先验证并恢复这些事实，不启动浏览器或 AgentHost，也不重做业务写入。证据文件名包含运行 Secret 时，框架会同步清理生成文件名和交付引用；`input/` 中的原始输入包保持不变。
+
 两者收到相同的原始 Excel、同名 `.auto-test` sidecar、图片、环境上下文、run 工作区和测试提示。Core 不读取页面业务语义，也不生成第二个 Planner 或 Reporter。OMP 不支持 Codex 的 `outputSchema` 参数时，仍必须返回同一 `codex-agent.result.json` 合同；Core 会用相同的 schema、case 覆盖、证据、环境需求和 Ledger 校验。
 
 `codex-agent.*` 是历史文件名，为了恢复旧 Run 保留；它不表示结果由 Codex 生成。宿主身份、平台、Node 版本、Auto-Test 包版本和可用 commit 会同时写入 `agent-host-selection.json`。

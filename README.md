@@ -308,7 +308,7 @@ npm run report:workflow -- \
 
 工作流报告分别展示“业务 canary 是否真实闭环”和“产品是否已经从原始输入自动编译执行”。两者不会合并成一个模糊的通过状态。
 
-历史充电闭环的首次真实验收结论见 [充电闭环端到端验收](docs/e2e-charge-acceptance.md)。首次业务 canary 当时仍由受控浏览器勘察驱动，因此产品门保持阻断；后续 Workflow Runtime canary 已由新工程完整自动执行并通过。
+历史充电闭环和当前 AgentHost 宿主验收的边界见 [充电闭环端到端验收](docs/e2e-charge-acceptance.md)。PR #28 后，Codex 与 OMP 已在 Linux x64 使用同一冻结 Manifest 分别完成一次真实写入型充电 canary，均为 `3/3 passed`、7 条业务写入全部核销且 `pending=0`；该结果证明的是这一输入合同和场景，不代表任意未知网站都能一次成功。
 
 ## Workflow Runtime
 
