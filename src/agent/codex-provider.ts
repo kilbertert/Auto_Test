@@ -39,7 +39,7 @@ function configTomlForProvider(
     `model_catalog_json = ${tomlString(modelCatalogPath)}`,
   ]
   if (provider.contextWindowTokens) lines.push(`model_context_window = ${provider.contextWindowTokens}`)
-  if (provider.reasoningEffort) lines.push(`model_reasoning_effort = "${provider.reasoningEffort}"`)
+  if (provider.reasoningEffort) lines.push(`model_reasoning_effort = ${tomlString(provider.reasoningEffort)}`)
   if (provider.serviceTier) lines.push(`service_tier = ${tomlString(provider.serviceTier)}`)
   lines.push(
     '',
@@ -174,19 +174,24 @@ async function copySourceAuthIfNeeded(agentHome: string, sourceHome: string, pro
 }
 
 async function sourceConfig(agentHome: string, sourceHome: string): Promise<string | undefined> {
-  const sourceConfig = await readFile(resolve(sourceHome, 'config.toml'), 'utf8').catch(() => '')
-  const assignment = (key: string) => new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, 'm').exec(sourceConfig)?.[0]
-  const providerId = /^[ \t]*model_provider[ \t]*=[ \t]*"([^"]+)"[ \t]*$/m.exec(sourceConfig)?.[1]
+  const sourceText = await readFile(resolve(sourceHome, 'config.toml'), 'utf8').catch(() => '')
+  const assignment = (key: string) => new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, 'm').exec(sourceText)?.[0]
+  const providerId = /^[ \t]*model_provider[ \t]*=[ \t]*"([^"]+)"[ \t]*$/m.exec(sourceText)?.[1]
   let providerSection = ''
   if (providerId) {
     const escaped = providerId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const start = sourceConfig.search(new RegExp(`^[ \\t]*\\[model_providers\\.${escaped}\\][ \\t]*$`, 'm'))
+    const rootHeader = new RegExp(`^[ \\t]*\\[model_providers\\.${escaped}\\][ \\t]*(?:#.*)?$`)
+    const childHeader = new RegExp(`^[ \\t]*\\[model_providers\\.${escaped}\\.[^\\]]+\\][ \\t]*(?:#.*)?$`)
+    const anyTableHeader = /^[ \t]*\[\[?[^\]]+\]\]?[ \t]*(?:#.*)?$/
+    const start = sourceText.search(new RegExp(rootHeader.source, 'm'))
     if (start >= 0) {
-      const tail = sourceConfig.slice(start)
-      const firstLineEnd = tail.indexOf('\n')
-      const following = firstLineEnd >= 0 ? tail.slice(firstLineEnd + 1) : ''
-      const nextSection = following.search(/^[ \t]*\[/m)
-      providerSection = (nextSection >= 0 ? tail.slice(0, firstLineEnd + 1 + nextSection) : tail).trim()
+      const lines = sourceText.slice(start).split(/\r?\n/)
+      const selected: string[] = []
+      for (const line of lines) {
+        if (selected.length > 0 && anyTableHeader.test(line) && !childHeader.test(line)) break
+        selected.push(line)
+      }
+      providerSection = selected.join('\n').trim()
     }
   }
   const config = [
@@ -251,7 +256,10 @@ export class CodexModelProviderAdapter implements AgentHostModelProviderAdapter 
       }
     }
 
-    const sourceHome = options.sourceAgentHome ?? options.environment.AUTO_TEST_AGENT_HOME ?? options.environment.CODEX_HOME ?? options.environment.AUTO_TEST_CODEX_HOME ?? resolve(options.environment.HOME ?? process.env.HOME ?? '.', '.codex')
+    const sourceHome = options.sourceAgentHome ?? options.environment.AUTO_TEST_AGENT_HOME ?? options.environment.CODEX_HOME ?? options.environment.AUTO_TEST_CODEX_HOME ?? resolve(
+      options.environment.HOME ?? options.environment.USERPROFILE ?? process.env.HOME ?? process.env.USERPROFILE ?? '.',
+      '.codex',
+    )
     const configurationPath = resolve(options.agentHome, 'config.toml')
     let providerEnvironmentName: string | undefined
     if (options.resume && !options.sourceAgentHome) {
