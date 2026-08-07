@@ -249,6 +249,7 @@ function usageFrom(value: unknown): AgentUsage | undefined {
 const advisoryHostMessagePatterns = [
   /^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata\b/i,
   /^Heads up: Long threads and multiple compactions can cause the model to be less accurate\./i,
+  /^Skill descriptions were shortened to fit the skills context budget\./i,
 ]
 
 const incompatibleSessionMessagePatterns = [

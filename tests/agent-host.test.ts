@@ -196,6 +196,14 @@ describe('AgentHost contract', () => {
       message: 'Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.',
     })).toMatchObject({ type: 'other' })
     expect(normalizeAgentEvent({
+      type: 'item.completed',
+      item: {
+        id: 'skill-budget-warning',
+        type: 'error',
+        message: 'Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter.',
+      },
+    })).toMatchObject({ type: 'other', message: expect.stringContaining('skills context budget') })
+    expect(normalizeAgentEvent({
       type: 'message_update',
       message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
     })).toMatchObject({ type: 'other' })
