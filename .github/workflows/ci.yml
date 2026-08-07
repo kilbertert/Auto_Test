@@ -244,6 +244,46 @@ jobs:
             Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
           }
 
+      - name: Verify Windows Codex failed probe marker is not accepted
+        shell: pwsh
+        run: |
+          $env:AUTO_TEST_CODEX_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-codex'
+          $env:AUTO_TEST_TOOLS_HOME = Join-Path $env:RUNNER_TEMP 'auto-test-tools'
+          $stubPath = Join-Path $env:RUNNER_TEMP 'auto-test-codex-failed-marker.cmd'
+          $configPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'config.toml'
+          $secretPath = Join-Path $env:AUTO_TEST_CODEX_HOME 'provider-key.dpapi'
+          $stubCodex = @'
+          @echo off
+          if not "%~1"=="--version" goto :probe
+          echo codex-cli 0.146.0
+          exit /b 0
+          :probe
+          echo AUTO_TEST_API_READY
+          exit /b 7
+          '@
+          try {
+            $configBefore = Get-Content -Raw -Encoding UTF8 $configPath
+            $secretBefore = Get-Content -Raw -Encoding UTF8 $secretPath
+            [IO.File]::WriteAllText($stubPath, $stubCodex, [Text.UTF8Encoding]::new($false))
+            $env:AUTO_TEST_CODEX_PROBE_BIN = $stubPath
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+              $output = .\Auto-Test.cmd --api-key synthetic-failed-marker-key --setup-only 2>&1 | Out-String
+              $exitCode = $LASTEXITCODE
+            } finally {
+              $ErrorActionPreference = $previousErrorActionPreference
+            }
+            if ($exitCode -ne 1) { throw "Expected failed-marker probe to exit 1, got $exitCode" }
+            if ($output -notmatch '7') { throw "Missing failed-marker exit diagnostic: $output" }
+            if ((Get-Content -Raw -Encoding UTF8 $configPath) -ne $configBefore) { throw 'Provider config was not restored after failed marker' }
+            if ((Get-Content -Raw -Encoding UTF8 $secretPath) -ne $secretBefore) { throw 'Provider secret was not restored after failed marker' }
+            $global:LASTEXITCODE = 0
+          } finally {
+            Remove-Item Env:AUTO_TEST_CODEX_PROBE_BIN -ErrorAction SilentlyContinue
+            Remove-Item -Force $stubPath -ErrorAction SilentlyContinue
+          }
+
       - name: Verify Windows temporary API key override
         shell: pwsh
         run: |
