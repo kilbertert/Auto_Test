@@ -6,7 +6,7 @@
 
 - 在 Auto-Test 仓库的 Linux/WSL 工作副本中执行。
 - 已切换到准备交付的 Git 提交。
-- 模型 API Base URL、模型 ID 和 API Key 可用。
+- 模型 API Key 可用；Base URL 和模型默认是 `https://api.deepseek.com` 与 `deepseek-v4-flash`，其他 Provider 需显式覆盖。
 - 工作树必须干净。脚本会拒绝从未提交改动构建。
 
 公开仓库和公开 Release 不含 API Key。私有 ZIP 是敏感凭据载体，只能点对点交付；不要提交 Git、上传 GitHub、网盘或公开制品库。
@@ -30,7 +30,7 @@ git rev-parse --short HEAD
 bash scripts/build-private-windows-package-quick.sh
 ~~~
 
-脚本会依次提示 Base URL、模型 ID 和隐藏输入的 API Key。完成后会输出 ZIP 绝对路径和 SHA-256。
+脚本会显示默认 DeepSeek Base URL 和模型 ID；直接按回车即可接受，也可输入其他值覆盖，然后隐藏输入 API Key。完成后会输出 ZIP 绝对路径和 SHA-256。
 
 默认输出目录：
 
@@ -48,13 +48,11 @@ artifacts/private-release/
 read -r -s -p "API Key: " key
 echo
 printf '%s' "$key" | \
-  AUTO_TEST_CODEX_BASE_URL="https://model-api.example/v1" \
-  AUTO_TEST_CODEX_MODEL="your-model-id" \
   bash scripts/build-private-windows-package.sh
 unset key
 ~~~
 
-底层脚本还会校验 zip 命令、干净工作树和必需参数。
+上例生成默认 DeepSeek 包。构建其他 Provider 时，为同一命令设置 `AUTO_TEST_MODEL_BASE_URL` 和 `AUTO_TEST_MODEL_ID`；旧的 `AUTO_TEST_CODEX_BASE_URL` / `AUTO_TEST_CODEX_MODEL` 只保留兼容。底层脚本还会校验 zip 命令、干净工作树和必需参数。
 
 ## 复制到 Windows
 
@@ -74,7 +72,7 @@ Set-Location D:\Auto-Test
 .\Auto-Test.cmd doctor
 ~~~
 
-只有 Node.js、Codex CLI、Provider/API 和 Chromium 均通过，才进入业务测试。启动层通过不代表业务用例通过。
+默认 Codex 路径只有 Node.js、Codex CLI、Windows 默认 Provider/API 和 Chromium 均通过，才进入业务测试。OMP 或显式 Model Profile 不运行无关的 Codex 默认探针，必须用对应 AgentHost 的真实 canary 验证 Provider。任何启动层通过都不代表业务用例通过。
 
 ## 业务验收
 
@@ -103,7 +101,7 @@ Excel、同名 .auto-test sidecar 和必要 URL 必须一起交付；它们共�
 |---|---|
 | 工作树存在未提交改动 | 提交当前改动，或从同一提交创建干净 worktree 后再构建；不要绕过检查。 |
 | 缺少 zip 命令 | 在 Linux/WSL 安装 zip，然后重新运行脚本。 |
-| Windows 启动时要求输入 Provider | 你拿到的是公开源码包，或私有 Provider 元数据没有随包复制；重新从本页流程构建。 |
+| `doctor` 显示默认 Profile 缺少环境变量 | 你拿到的是公开源码包，或私有 Provider 引导材料未正确导入；设置 Profile 的 `envKey`，或重新从本页流程构建。 |
 | Provider 探针失败 | 先处理 API 地址、模型、Key、网络或额度；这属于启动层问题。 |
 | 业务运行 blocked | 查看失败位置、原因类别、建议操作、Ledger 和证据路径；按验收清单恢复。 |
 

@@ -1,17 +1,19 @@
 import { Codex, type Input, type Thread, type ThreadEvent } from '@openai/codex-sdk'
-import { delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
   AgentEvent,
   AgentHost,
   AgentHostCapabilities,
+  AgentHostModelProviderAdapter,
   AgentHostLaunchOptions,
   AgentHostProbeResult,
   AgentHostSession,
   AgentInputPart,
   AgentHostStream,
 } from './host.js'
-import { AgentHostError, normalizeAgentEvent, resolveHostExecutable } from './host.js'
+import { AgentHostError, normalizeAgentEvent } from './host.js'
+import { resolveCodexExecutable } from './codex-executable.js'
+import { CodexModelProviderAdapter } from './codex-provider.js'
 import { controlServerPath, packageFilePath } from './runtime-paths.js'
 
 interface CodexThreadLike {
@@ -24,7 +26,12 @@ export interface LegacyCodexThreadFactory {
     workspaceDirectory: string
     agentHome: string
     model?: string
+    wireApi?: 'responses' | 'chat'
+    reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    modelContextWindow?: number
+    supportsWebsockets?: boolean
     codexExecutable: string
+    additionalDirectories?: string[]
     playwrightConfigPath: string
     playwrightSecretsPath: string
     controlConfigPath: string
@@ -37,7 +44,12 @@ export interface LegacyCodexThreadFactory {
     workspaceDirectory: string
     agentHome: string
     model?: string
+    wireApi?: 'responses' | 'chat'
+    reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    modelContextWindow?: number
+    supportsWebsockets?: boolean
     codexExecutable: string
+    additionalDirectories?: string[]
     playwrightConfigPath: string
     playwrightSecretsPath: string
     controlConfigPath: string
@@ -53,22 +65,6 @@ function toCodexInput(input: AgentInputPart[]): Input {
     : { type: 'local_image', path: part.path }) as Input
 }
 
-async function resolveCodexExecutable(executable: string | undefined, environment: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const configured = executable || environment.AUTO_TEST_CODEX_BIN || process.env.AUTO_TEST_CODEX_BIN || 'codex'
-  const pathKey = environment.Path !== undefined ? 'Path' : 'PATH'
-  const pathValue = environment[pathKey]
-  const filteredEnvironment = configured === 'codex' && pathValue
-    ? { ...environment, [pathKey]: pathValue.split(delimiter).filter((entry) => !/[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(entry)).join(delimiter) }
-    : environment
-  const resolved = await resolveHostExecutable(configured, filteredEnvironment)
-  if (resolved) return resolved
-  // Keep the old diagnostic for callers that supplied a path or relied on PATH.
-  if (executable || environment.AUTO_TEST_CODEX_BIN || process.env.AUTO_TEST_CODEX_BIN) {
-    throw new AgentHostError('codex', `Configured Codex CLI executable is unavailable: ${configured}`, 'configuration')
-  }
-  throw new AgentHostError('codex', 'Current Codex CLI executable was not found. Install Codex CLI or set AUTO_TEST_CODEX_BIN.', 'configuration')
-}
-
 function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefined {
   if (fullAgentAccess) return undefined
   return [
@@ -82,17 +78,25 @@ function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefin
   ]
 }
 
+export function codexWebSearchEnabled(runtime: AgentHostLaunchOptions['runtime'], fullAgentAccess: boolean): boolean {
+  const modelSupportsSearch = runtime.provider
+    ? runtime.provider.supportsSearchTool === true
+    : true
+  return fullAgentAccess && modelSupportsSearch
+}
+
 export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
   if (!options.executable) throw new AgentHostError('codex', 'Codex executable was not resolved before starting a thread', 'configuration')
   const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
   const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
   const controlServer = controlServerPath()
   const enabledTools = restrictedPlaywrightTools(options.fullAgentAccess)
+  const webSearchEnabled = codexWebSearchEnabled(options.runtime, options.fullAgentAccess)
   const playwrightServer = {
     command: process.execPath,
     args: [playwrightCli, '--config', options.playwrightConfigPath, '--secrets', options.playwrightSecretsPath],
     cwd: options.workspaceDirectory,
-    env: options.mcpEnvironment,
+    env: options.runtime.mcpEnvironment,
     required: true,
     startup_timeout_sec: 60,
     tool_timeout_sec: 180,
@@ -101,7 +105,7 @@ export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
   }
   const codex = new Codex({
     codexPathOverride: options.executable,
-    env: { ...options.environment, CODEX_HOME: options.agentHome },
+    env: { ...options.runtime.environment, CODEX_HOME: options.runtime.agentHome },
     config: {
       developer_instructions: options.fullAgentAccess
         ? 'Act as the primary test engineer. Use the raw run inputs, shell, writable workspace, network, and full Playwright MCP autonomously. Follow workspace AGENTS.md. Do not edit files outside the run workspace.'
@@ -114,14 +118,14 @@ export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
         hooks: false,
         memories: false,
       },
-      tools: { web_search: options.fullAgentAccess },
+      tools: { web_search: webSearchEnabled },
       mcp_servers: {
         playwright: playwrightServer,
         'auto-test-control': {
           command: process.execPath,
           args: [tsxCli, controlServer, options.controlConfigPath],
           cwd: options.workspaceDirectory,
-          env: options.mcpEnvironment,
+          env: options.runtime.mcpEnvironment,
           required: true,
           startup_timeout_sec: 60,
           tool_timeout_sec: 60,
@@ -130,15 +134,21 @@ export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
       },
     },
   })
+  const managedReasoningEffort = options.runtime.provider?.reasoningEffort
   const threadOptions = {
-    ...(options.model ? { model: options.model } : {}),
+    ...(options.runtime.model ? { model: options.runtime.model } : {}),
     sandboxMode: options.fullAgentAccess ? 'workspace-write' : 'read-only',
     workingDirectory: options.workspaceDirectory,
     skipGitRepoCheck: true,
-    modelReasoningEffort: 'xhigh',
+    ...(managedReasoningEffort
+      ? { modelReasoningEffort: managedReasoningEffort }
+      : options.runtime.provider ? {} : { modelReasoningEffort: 'xhigh' as const }),
     networkAccessEnabled: options.fullAgentAccess,
-    webSearchMode: options.fullAgentAccess ? 'live' : 'disabled',
+    webSearchMode: webSearchEnabled ? 'live' : 'disabled',
     approvalPolicy: 'never',
+    ...(options.additionalWritableDirectories?.length
+      ? { additionalDirectories: [...new Set(options.additionalWritableDirectories)] }
+      : {}),
   } as const
   return options.resumeId
     ? codex.resumeThread(options.resumeId, threadOptions)
@@ -178,12 +188,13 @@ export class CodexAgentHost implements AgentHost {
   readonly id = 'codex' as const
   readonly displayName = 'Codex CLI'
   readonly capabilities = capabilities
+  readonly modelProvider: AgentHostModelProviderAdapter = new CodexModelProviderAdapter()
 
   async probe(options: AgentHostLaunchOptions): Promise<AgentHostProbeResult> {
     let executable: string | undefined
     let reason: string | undefined
     try {
-      executable = await resolveCodexExecutable(options.executable, options.environment)
+      executable = await resolveCodexExecutable(options.executable, options.runtime.environment)
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error)
     }
@@ -193,52 +204,50 @@ export class CodexAgentHost implements AgentHost {
   }
 
   async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
-    const executable = await resolveCodexExecutable(options.executable, options.environment)
+    const executable = await resolveCodexExecutable(options.executable, options.runtime.environment)
     return new CodexSession(startCodexSdkThread({ ...options, executable }))
   }
 
   async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
-    const executable = await resolveCodexExecutable(options.executable, options.environment)
+    const executable = await resolveCodexExecutable(options.executable, options.runtime.environment)
     return new CodexSession(startCodexSdkThread({ ...options, executable }))
   }
 }
 
 /** Adapter used by the existing unit-test seam and third-party integrations. */
 export function createLegacyCodexAgentHost(factory: LegacyCodexThreadFactory, executable = 'codex'): AgentHost {
+  const legacyOptions = (options: AgentHostLaunchOptions) => ({
+    workspaceDirectory: options.workspaceDirectory,
+    agentHome: options.runtime.agentHome,
+    ...(options.runtime.model ? { model: options.runtime.model } : {}),
+    ...(options.runtime.provider?.api === 'openai-responses' ? { wireApi: 'responses' as const } : {}),
+    ...(options.runtime.provider?.reasoningEffort ? { reasoningEffort: options.runtime.provider.reasoningEffort } : {}),
+    ...(options.runtime.provider?.contextWindowTokens !== undefined ? { modelContextWindow: options.runtime.provider.contextWindowTokens } : {}),
+    ...(options.runtime.provider?.supportsWebsockets !== undefined ? { supportsWebsockets: options.runtime.provider.supportsWebsockets } : {}),
+    codexExecutable: options.executable ?? executable,
+    ...(options.additionalWritableDirectories ? { additionalDirectories: [...options.additionalWritableDirectories] } : {}),
+    playwrightConfigPath: options.playwrightConfigPath,
+    playwrightSecretsPath: options.playwrightSecretsPath,
+    controlConfigPath: options.controlConfigPath,
+    codexEnvironment: options.runtime.environment,
+    mcpEnvironment: options.runtime.mcpEnvironment,
+    fullAgentAccess: options.fullAgentAccess,
+  })
   return {
     id: 'codex',
     displayName: 'Codex CLI (injected)',
     capabilities,
+    modelProvider: new CodexModelProviderAdapter(),
     async probe(): Promise<AgentHostProbeResult> {
       return { ok: true, hostId: 'codex', executable }
     },
     async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
-      return new CodexSession(factory.startThread({
-        workspaceDirectory: options.workspaceDirectory,
-        agentHome: options.agentHome,
-        ...(options.model ? { model: options.model } : {}),
-        codexExecutable: options.executable ?? executable,
-        playwrightConfigPath: options.playwrightConfigPath,
-        playwrightSecretsPath: options.playwrightSecretsPath,
-        controlConfigPath: options.controlConfigPath,
-        codexEnvironment: options.environment,
-        mcpEnvironment: options.mcpEnvironment,
-        fullAgentAccess: options.fullAgentAccess,
-      }))
+      return new CodexSession(factory.startThread(legacyOptions(options)))
     },
     async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
       return new CodexSession(factory.resumeThread({
         threadId: options.resumeId,
-        workspaceDirectory: options.workspaceDirectory,
-        agentHome: options.agentHome,
-        ...(options.model ? { model: options.model } : {}),
-        codexExecutable: options.executable ?? executable,
-        playwrightConfigPath: options.playwrightConfigPath,
-        playwrightSecretsPath: options.playwrightSecretsPath,
-        controlConfigPath: options.controlConfigPath,
-        codexEnvironment: options.environment,
-        mcpEnvironment: options.mcpEnvironment,
-        fullAgentAccess: options.fullAgentAccess,
+        ...legacyOptions(options),
       }))
     },
   }

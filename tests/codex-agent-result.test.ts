@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexTestResultSchema, enforceMutationLedger, parseAgentTestCandidate, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
+import { agentTestStructuredOutputSchema, codexTestResultSchema, enforceMutationLedger, parseAgentTestCandidate, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 
 function result(): CodexTestAgentResult {
@@ -41,8 +41,25 @@ describe('Codex test result contract', () => {
       if (value.items) visit(value.items, `${path}[]`)
     }
 
-    visit(codexTestResultSchema, '$')
+    visit(agentTestStructuredOutputSchema, '$')
     expect(problems).toEqual([])
+  })
+
+  it('uses a provider-compatible structured-output schema without nullable type unions', () => {
+    const typeUnions: string[] = []
+    const visit = (schema: unknown, path: string): void => {
+      if (Array.isArray(schema)) {
+        schema.forEach((item, index) => visit(item, `${path}[${index}]`))
+        return
+      }
+      if (!schema || typeof schema !== 'object') return
+      const value = schema as Record<string, unknown>
+      if (Array.isArray(value.type)) typeUnions.push(path)
+      for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`)
+    }
+
+    visit(agentTestStructuredOutputSchema, '$')
+    expect(typeUnions).toEqual([])
   })
 
   it('deeply validates nested cases and evidence', () => {
@@ -130,6 +147,30 @@ describe('Codex test result contract', () => {
     const parsed = parseCodexTestResult(JSON.stringify(strictResult))
     expect(parsed.cases[0]).not.toHaveProperty('failureSource')
     expect(parsed.cases[0]).not.toHaveProperty('executionReceiptIds')
+    expect(parsed.cases[0]?.evidence[0]).not.toHaveProperty('path')
+    expect(parsed.environmentRequirements[0]).not.toHaveProperty('origin')
+  })
+
+  it('normalizes provider transport sentinels for optional scalar fields', () => {
+    const strictResult = {
+      ...result(),
+      cases: [{
+        ...result().cases[0],
+        failureSource: '',
+        failureKind: '',
+        environmentRequirementIds: [],
+        executionReceiptIds: [],
+        fieldGateIds: [],
+        evidence: [{ kind: 'observation', path: '', description: 'Observed.' }],
+      }],
+      environmentRequirements: [{
+        id: 'environment-test_data-fixture', caseIds: ['filter-catalog'], kind: 'test_data', origin: '',
+        condition: 'Fixture was observed.', evidence: ['evidence/fixture.md'], status: 'satisfied', requestedAt: '2026-08-01T00:00:00.000Z',
+      }],
+    }
+
+    const parsed = parseCodexTestResult(JSON.stringify(strictResult))
+    expect(parsed.cases[0]).not.toHaveProperty('failureSource')
     expect(parsed.cases[0]?.evidence[0]).not.toHaveProperty('path')
     expect(parsed.environmentRequirements[0]).not.toHaveProperty('origin')
   })

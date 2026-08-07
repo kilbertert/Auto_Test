@@ -17,7 +17,17 @@ import {
 import { friendlyRunSummary } from '../usability/result-summary.js'
 import { planEasyRegistration, preflightEasyWorkflow } from '../usability/workflow-preflight.js'
 import { defaultEnvironmentProfileRegistryPath, type EnvironmentProfile } from '../workflow/environment-profile.js'
-import { defaultModelProfileRegistryPath, loadModelProfileRegistry, selectModelProfile, type ModelProfile } from '../workflow/model-profile.js'
+import {
+  BUILT_IN_MODEL_PROFILES,
+  DEFAULT_MODEL_PROFILE_ID,
+  defaultModelProfileRegistryPath,
+  hasModelProfileEnvironment,
+  loadModelProfileRegistry,
+  modelProfileEnvironmentNames,
+  runtimeModelProfileFromEnvironment,
+  selectConfiguredModelProfile,
+  type ModelProfile,
+} from '../workflow/model-profile.js'
 import { isBuiltInAgentHostId } from '../agent/host-registry.js'
 import type { AgentHostId } from '../agent/host.js'
 
@@ -39,8 +49,7 @@ interface EasyRunOptions {
   modelProfileId?: string
   agentHostId?: AgentHostId
   agentExecutable?: string
-  ompExecutable?: string
-  ompHome?: string
+  agentSourceHome?: string
 }
 
 const rl = createInterface({ input, output })
@@ -217,7 +226,6 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   if (configuredHost && !isBuiltInAgentHostId(configuredHost)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex 或 omp，收到：${configuredHost}`)
   let effectiveAgentHostId = options.agentHostId
   if (!effectiveAgentHostId && configuredHost && !options.resume) effectiveAgentHostId = configuredHost as AgentHostId
-  if (!effectiveAgentHostId && (options.ompExecutable || options.ompHome)) effectiveAgentHostId = 'omp'
   await access(filePath)
   const suppliedUrls = normalizeTargetUrls(options.urls)
   console.log('\n正在分析测试用例中的网站范围……')
@@ -288,13 +296,11 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
       ...(options.caseLimit !== undefined ? { caseLimit: options.caseLimit } : {}),
-      ...(process.env.AUTO_TEST_CODEX_HOME ? { codexHome: process.env.AUTO_TEST_CODEX_HOME } : {}),
       ...(options.resume ? { resume: true } : {}),
       ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
       ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
       ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
-      ...(options.ompExecutable ? { ompExecutable: options.ompExecutable } : {}),
-      ...(options.ompHome ? { ompHome: options.ompHome } : {}),
+      ...(options.agentSourceHome ? { agentSourceHome: options.agentSourceHome } : {}),
       modelProfileRegistryPath: defaultModelProfileRegistryPath(),
       testDataAccess: options.testDataAccess ?? 'direct',
     })
@@ -314,16 +320,31 @@ async function chooseModelProfile(): Promise<string | undefined> {
     if (error.code === 'ENOENT') return undefined
     throw error
   })
-  if (!registry || registry.profiles.length === 0) return undefined
-  const defaultId = registry.defaultProfileId ?? registry.profiles[0]!.id
-  if (registry.profiles.length === 1) return registry.profiles[0]!.id
+  const profiles = visibleModelProfiles(registry)
+  const defaultId = selectConfiguredModelProfile(registry)?.profile.id ?? DEFAULT_MODEL_PROFILE_ID
+  if (profiles.length === 1) return profiles[0]!.id
   console.log('\n可用模型 Profile：')
-  for (const profile of registry.profiles) {
+  for (const profile of profiles) {
     const marker = profile.id === defaultId ? '（默认）' : ''
-    const ready = process.env[profile.envKey] !== undefined ? '✓' : '✗'
-    console.log(`  ${ready} ${profile.id}：${profile.model} @ ${profile.baseUrl}${marker}`)
+    const ready = hasModelProfileEnvironment(profile, process.env) ? '✓' : '✗'
+    console.log(`  ${ready} ${profile.id}：${profile.displayName ?? profile.model} @ ${profile.baseUrl}${marker}`)
   }
   return ask('请输入本次使用的模型 Profile 名称', defaultId)
+}
+
+function visibleModelProfiles(registry: Awaited<ReturnType<typeof loadModelProfileRegistry>> | undefined): ModelProfile[] {
+  const configuredProfiles = registry?.profiles ?? []
+  const configuredNames = new Set(configuredProfiles.flatMap((profile) => [profile.id, ...(profile.aliases ?? [])]))
+  const runtimeProfile = runtimeModelProfileFromEnvironment(process.env)
+  const profiles = [
+    ...configuredProfiles,
+    ...(runtimeProfile && !configuredNames.has(runtimeProfile.id) ? [runtimeProfile] : []),
+  ]
+  const visibleNames = new Set(profiles.flatMap((profile) => [profile.id, ...(profile.aliases ?? [])]))
+  return [
+    ...profiles,
+    ...BUILT_IN_MODEL_PROFILES.filter((profile) => !visibleNames.has(profile.id)),
+  ]
 }
 
 function configuredAgentHost(): 'codex' | 'omp' {
@@ -354,7 +375,7 @@ async function runInteractive(): Promise<void> {
   const agentHostId = configuredHost && isBuiltInAgentHostId(configuredHost)
     ? (console.log(`\n使用已配置的测试代理宿主：${configuredHost}`), configuredHost)
     : await chooseAgentHost()
-  const modelProfileId = agentHostId === 'codex' ? await chooseModelProfile() : undefined
+  const modelProfileId = await chooseModelProfile()
   await runEasyWorkflow({
     filePath,
     urls,
@@ -394,14 +415,28 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
 async function doctor(agentHostId: 'codex' | 'omp' = configuredAgentHost()): Promise<boolean> {
   if (agentHostId === 'omp') {
     const ompExecutable = process.env.AUTO_TEST_OMP_BIN || 'omp'
+    const modelRegistryPath = defaultModelProfileRegistryPath()
+    const modelRegistry = await loadModelProfileRegistry(modelRegistryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    const defaultModelProfile = selectConfiguredModelProfile(modelRegistry)?.profile
+    if (!defaultModelProfile) throw new Error('内置默认模型 Profile 不可用')
     const checks = [
       { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 },
       { label: 'OMP / oh-my-pi CLI 已安装', ok: await commandAvailable(ompExecutable, ['--version']) },
+      {
+        label: `默认模型 Profile 已就绪（${defaultModelProfile.id}；env ${modelProfileEnvironmentNames(defaultModelProfile).join('|')}）`,
+        ok: hasModelProfileEnvironment(defaultModelProfile, process.env),
+      },
       { label: 'Chromium 浏览器已安装', ok: await access(chromium.executablePath()).then(() => true, () => false) },
     ]
     console.log('\n环境检查（AgentHost: omp）：')
     for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
-    console.log('OMP 的模型 Provider、认证和模型选择由 OMP 自身配置负责；Auto-Test 只校验宿主可启动并向其交付同一测试合同。')
+    console.log('OMP 通过 AgentHost Provider 适配器消费 Auto-Test 的通用 Model Profile；适配器生成隔离 models.yml，并由 OMP 负责协议和请求执行。')
+    if (!hasModelProfileEnvironment(defaultModelProfile, process.env)) {
+      console.log(`  请为默认 Profile“${defaultModelProfile.id}”设置 ${modelProfileEnvironmentNames(defaultModelProfile).join(' 或 ')}。`)
+    }
     console.log(`环境配置目录：${defaultEnvironmentProfileRegistryPath()}`)
     return checks.every((check) => check.ok)
   }
@@ -423,38 +458,55 @@ async function doctor(agentHostId: 'codex' | 'omp' = configuredAgentHost()): Pro
     'AUTO_TEST_MODEL_API_KEY'
   const providerConfigured = Boolean(providerId && providerSection)
   const apiKeyAvailable = Boolean(process.env[providerEnvironmentName])
-  const nodeCheck = { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 }
-  const codexInstallCheck = { label: 'Codex CLI 已安装', ok: codexInstalled }
-  const providerCheck = { label: 'Codex 自定义 API Provider 已配置', ok: providerConfigured }
-  const apiKeyCheck = { label: `模型 API Key 已加载（${providerEnvironmentName}）`, ok: apiKeyAvailable }
-  const chromiumCheck = {
-    label: 'Chromium 浏览器已安装',
-    ok: await access(chromium.executablePath()).then(() => true, () => false),
-  }
-  const checks = [nodeCheck, codexInstallCheck, providerCheck, apiKeyCheck, chromiumCheck]
-  console.log('\n环境检查（AgentHost: codex）：')
-  for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
-  if (!providerCheck.ok || !apiKeyCheck.ok) {
-    console.log('  Windows 修复方式：关闭窗口后重新双击内部私有包中的 Auto-Test.cmd，安装器会自动恢复模型配置。')
-  }
-  if (!chromiumCheck.ok && input.isTTY && await confirm('现在安装 Chromium 浏览器', true)) {
-    chromiumCheck.ok = await spawnInherited('npx', ['playwright', 'install', 'chromium']) === 0
-  }
   const modelRegistryPath = defaultModelProfileRegistryPath()
   const modelRegistry = await loadModelProfileRegistry(modelRegistryPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return undefined
     throw error
   })
+  const visibleProfiles = visibleModelProfiles(modelRegistry)
+  const sourceProviderReady = providerConfigured && apiKeyAvailable
+  const defaultModelProfile = selectConfiguredModelProfile(modelRegistry)?.profile
+  if (!defaultModelProfile) throw new Error('内置默认模型 Profile 不可用')
+  const defaultModelProfileReady = hasModelProfileEnvironment(defaultModelProfile, process.env)
+  const nodeCheck = { label: `Node.js ${process.version}`, ok: Number(process.versions.node.split('.')[0]) >= 24 }
+  const codexInstallCheck = { label: 'Codex CLI 已安装', ok: codexInstalled }
+  const providerCheck = {
+    label: `默认模型 Profile 已就绪（${defaultModelProfile.id}；env ${modelProfileEnvironmentNames(defaultModelProfile).join('|')}）`,
+    ok: defaultModelProfileReady,
+  }
+  const chromiumCheck = {
+    label: 'Chromium 浏览器已安装',
+    ok: await access(chromium.executablePath()).then(() => true, () => false),
+  }
+  const checks = [nodeCheck, codexInstallCheck, providerCheck, chromiumCheck]
+  console.log('\n环境检查（AgentHost: codex）：')
+  for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.label}`)
+  if (!providerCheck.ok) {
+    console.log(`  请为默认 Profile“${defaultModelProfile.id}”设置 ${modelProfileEnvironmentNames(defaultModelProfile).join(' 或 ')}。`)
+  }
+  if (!chromiumCheck.ok && input.isTTY && await confirm('现在安装 Chromium 浏览器', true)) {
+    chromiumCheck.ok = await spawnInherited('npx', ['playwright', 'install', 'chromium']) === 0
+  }
   if (modelRegistry && modelRegistry.profiles.length > 0) {
     console.log(`\n模型 Profile 注册表：${modelRegistryPath}`)
     for (const profile of modelRegistry.profiles) {
-      const keyReady = process.env[profile.envKey] !== undefined
-      const marker = profile.id === modelRegistry.defaultProfileId ? '（默认）' : ''
-      console.log(`  ${keyReady ? '✓' : '✗'} ${profile.id}：${profile.model} @ ${profile.baseUrl}（env ${profile.envKey}）${marker}`)
+      const keyReady = hasModelProfileEnvironment(profile, process.env)
+      const marker = profile.id === defaultModelProfile.id ? '（默认）' : ''
+      console.log(`  ${keyReady ? '✓' : '✗'} ${profile.id}：${profile.displayName ?? profile.model} @ ${profile.baseUrl}（env ${modelProfileEnvironmentNames(profile).join('|')}）${marker}`)
     }
   } else {
     console.log(`\n模型 Profile 注册表：未配置（${modelRegistryPath}）`)
-    console.log('  未配置多模型供应商时，运行使用源 Codex 配置中的 Provider。')
+  }
+  console.log('\n运行时和内置模型 Profile：')
+  const configuredIds = new Set(modelRegistry?.profiles.map((profile) => profile.id) ?? [])
+  for (const profile of visibleProfiles.filter((profile) => !configuredIds.has(profile.id))) {
+    const keyReady = hasModelProfileEnvironment(profile, process.env)
+    const marker = profile.id === defaultModelProfile.id ? '（默认）' : ''
+    console.log(`  ${keyReady ? '✓' : '✗'} ${profile.id}：${profile.displayName ?? profile.model} @ ${profile.baseUrl}（env ${modelProfileEnvironmentNames(profile).join('|')}）${marker}`)
+  }
+  console.log(`  新 Run 未指定 Profile 时使用 ${defaultModelProfile.id}；显式 --model-profile 或注册表 defaultProfileId 可覆盖。`)
+  if (providerConfigured) {
+    console.log(`  ${sourceProviderReady ? '✓' : '✗'} 源 Codex Provider（env ${providerEnvironmentName}；仅兼容旧版无模型选择记录的恢复）`)
   }
   console.log(`\n环境配置目录：${defaultEnvironmentProfileRegistryPath()}`)
   console.log(`Codex API 配置：${codexConfigPath}`)
@@ -556,11 +608,21 @@ async function main(): Promise<void> {
     if (caseLimit !== undefined && (!Number.isInteger(caseLimit) || caseLimit < 1)) throw new Error('--case-limit 必须是正整数')
     const agentHostId = valueAfter(args, '--agent-host')
     if (agentHostId && !isBuiltInAgentHostId(agentHostId)) throw new Error('--agent-host 只支持 codex 或 omp')
+    const agentBin = valueAfter(args, '--agent-bin')
+    const agentHome = valueAfter(args, '--agent-home')
+    const codexBin = valueAfter(args, '--codex-bin')
+    const codexHome = valueAfter(args, '--codex-home')
     const ompBin = valueAfter(args, '--omp-bin')
     const ompHome = valueAfter(args, '--omp-home')
-    if ((ompBin || ompHome) && agentHostId && agentHostId !== 'omp') throw new Error('--omp-bin/--omp-home 必须与 --agent-host omp 一起使用')
+    if (agentBin && (codexBin || ompBin)) throw new Error('--agent-bin 不能与 --codex-bin 或 --omp-bin 同时使用')
+    if (agentHome && (codexHome || ompHome)) throw new Error('--agent-home 不能与 --codex-home 或 --omp-home 同时使用')
+    if ((codexBin || codexHome) && (ompBin || ompHome)) throw new Error('Codex 专用参数不能与 OMP 专用参数同时使用')
+    let legacyHost: 'codex' | 'omp' | undefined
+    if (ompBin || ompHome) legacyHost = 'omp'
+    else if (codexBin || codexHome) legacyHost = 'codex'
+    if (legacyHost && agentHostId && agentHostId !== legacyHost) throw new Error('宿主专用参数与 --agent-host 不一致')
     let effectiveAgentHostId = agentHostId
-    if (!effectiveAgentHostId && (ompBin || ompHome)) effectiveAgentHostId = 'omp'
+    if (!effectiveAgentHostId && legacyHost) effectiveAgentHostId = legacyHost
     const code = await runEasyWorkflow({
       filePath,
       urls,
@@ -572,9 +634,8 @@ async function main(): Promise<void> {
       ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
       ...(valueAfter(args, '--model-profile') ? { modelProfileId: valueAfter(args, '--model-profile')! } : {}),
       ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
-      ...(valueAfter(args, '--agent-bin') ? { agentExecutable: resolve(valueAfter(args, '--agent-bin')!) } : {}),
-      ...(ompBin ? { ompExecutable: resolve(ompBin) } : {}),
-      ...(ompHome ? { ompHome: resolve(ompHome) } : {}),
+      ...(agentBin || codexBin || ompBin ? { agentExecutable: resolve((agentBin ?? codexBin ?? ompBin)!) } : {}),
+      ...(agentHome || codexHome || ompHome ? { agentSourceHome: resolve((agentHome ?? codexHome ?? ompHome)!) } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
       legacyRuntime: args.includes('--legacy-runtime'),
@@ -592,11 +653,11 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--agent-host codex|omp] [--omp-bin path] [--omp-home path] [--headed|--headless] [--case-limit N|--one]')
+    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--agent-host codex|omp] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
     console.log('      AgentHost 会按模型容量自动规划执行 epoch，并在需要时轮换或恢复会话；无需手工切分用例')
     console.log('      Codex 和 OMP 获得相同原始材料、可写 run 工作区、shell、网络、完整 Playwright 与结果合同')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
-    console.log('      Codex 多模型供应商：--model-profile <id> 切换已注册的模型 Profile；OMP 使用自身 Provider 配置')
+    console.log('      AgentHost 通用模型供应商：默认 deepseek；--model-profile volcengine 或自定义 Profile 可切换；Codex/OMP 各自生成原生隔离配置')
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC；仅兼容旧链路时使用 --legacy-runtime')
     console.log('      npm run easy -- register --profile test --url https://example.test/')
     console.log('      npm run easy -- status')

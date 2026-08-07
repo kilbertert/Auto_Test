@@ -14,8 +14,8 @@
 
 1. 从 Node.js 官方发布包安装 Auto-Test 私有的固定版本 Node.js 24，并校验官方 SHA-256；
 2. 在 Auto-Test 私有工具目录安装与服务器一致的默认 Codex CLI 固定版本；需要 OMP 竞争时，另行安装 OMP 并确认 `omp --version` 可用；
-3. 从私有安装包读取模型 Provider 配置，或在公开源码首次使用时提示输入；
-4. 发送一次最小模型请求，验证 API 地址、Key 和模型真实可用；
+3. 从私有安装包读取一个默认模型 Provider；公开源码则使用 Model Profile 环境变量，或由用户显式执行 `--reconfigure-api`；
+4. 使用 Codex 默认 Provider 时发送一次最小模型请求；显式 Profile 和 OMP 由对应 AgentHost canary 验证；
 5. 安装项目依赖和 Chromium；
 6. 打开中文操作菜单。
 
@@ -30,20 +30,22 @@
 因此测试工程师不需要填写任何模型信息。Windows 会直接调用上述 API，不需要连接或暴露 Auto-Test 服务器，也不要求安装 CLIProxyAPI。安装器使用通用的直接 API Provider：
 
 ```toml
-model = "your-model-id"
+model = "deepseek-v4-flash"
 model_provider = "auto_test_api"
+model_reasoning_effort = "high"
 
 [model_providers.auto_test_api]
 name = "Auto-Test Model API"
-base_url = "https://model-api.example.test/v1"
+base_url = "https://api.deepseek.com"
 wire_api = "responses"
 env_key = "AUTO_TEST_MODEL_API_KEY"
 requires_openai_auth = false
+supports_websockets = false
 ```
 
-Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时只加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`，不会写入仓库、TOML 或明文用户环境变量。
+Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`。只有 Base URL 去除尾部 `/` 后等于 `https://api.deepseek.com` 且模型等于 `deepseek-v4-flash` 时，启动器才在同一进程额外设置 `DEEPSEEK_API_KEY`，让完整的内置 DeepSeek Profile 复用该 Key。其他 endpoint/model 会发布一个不含 Key 的进程级 `windows-private` Profile，Codex 和 OMP 都通过各自适配器消费它；Key 不会被映射给 DeepSeek，也不会写入仓库、TOML 或明文用户环境变量。
 
-旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。新配置通过真实 API 探针后才会替换旧配置；验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
+旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。只有本次使用 Codex 默认 Windows Provider 时才运行该探针；显式 `--model-profile` 不会被无关的旧默认 Provider 阻断，OMP 也不运行 Codex 专用探针。新默认配置通过探针后才会替换旧配置，验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
 
 只有确认私有网关正常但响应时间确实超过 120 秒时，才临时调高等待时间；取值范围为 1 到 3600 秒。这个参数不会修复额度不足、限流或断流，不应作为日常配置：
 
@@ -64,7 +66,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 如果旧安装包在下载前立即显示 `Could not determine Node.js install directory`，这不是 Chromium 网络错误，而是旧启动器调用 `npx.ps1` 时的 Node 安装目录探测失败。请改用包含便携 Playwright 调用修复的新安装包；无需清理已经导入的 API 配置。
 
-公开 GitHub 源码和公开 Release 不包含 API Key、内部 API 地址或内部模型 ID。首次使用公开源码时，需要输入这三项，或提前设置 `AUTO_TEST_CODEX_BASE_URL`、`AUTO_TEST_CODEX_MODEL` 和 `AUTO_TEST_MODEL_API_KEY`。只有服务器生成、私下交付的 `Auto-Test-Windows-private-*.zip` 才能零输入启动；该 ZIP 本身属于敏感凭据载体，分发后应从聊天工具、网盘和下载目录删除。更推荐为 Auto-Test 使用独立、限额、可随时撤销的 Key，而不是长期共享个人或服务器主 Key。
+公开 GitHub 源码和公开 Release 不包含 API Key。使用内置 DeepSeek 时，在当前受控 PowerShell 进程设置 `DEEPSEEK_API_KEY`；使用其他 Profile 时设置该 Profile 的 `envKey` 并显式传入 `--model-profile`。仍需使用 Windows 默认 DPAPI Provider 的交互配置时，显式执行 `.\Auto-Test.cmd --reconfigure-api --setup-only`。只有服务器生成、私下交付的 `Auto-Test-Windows-private-*.zip` 才能零输入启动；该 ZIP 本身属于敏感凭据载体，分发后应从聊天工具、网盘和下载目录删除。更推荐为 Auto-Test 使用独立、限额、可随时撤销的 Key，而不是长期共享个人或服务器主 Key。
 
 准备完成后会打开中文菜单：
 
@@ -146,6 +148,24 @@ Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合�
   --one
 ```
 
+### 切换 AgentHost 模型 Profile
+
+Windows 启动器的 DPAPI 引导管理一个默认 Provider；它不会把多个 API Key 自动打包或写入 `%APPDATA%`。私有包正好是 `deepseek-v4-flash @ https://api.deepseek.com` 时，新 Run 使用完整的内置 `deepseek` 元数据；其他 endpoint/model 自动成为本进程的 `windows-private` 默认 Profile。两条路径都可供 Codex 或 OMP 使用。也可以把不含 Key 的 [model-profiles.example.json](../templates/model-profiles.example.json) 复制为 `%APPDATA%\auto-test\model-profiles.json`，并用 `defaultProfileId` 或命令行切换：
+
+例如切换到火山：
+
+```powershell
+$env:ARK_API_KEY = '<secret>'
+.\Auto-Test.cmd run `
+  --file "C:/TestData/cases.xlsx" `
+  --url "https://app.example.test/" `
+  --profile staging `
+  --model-profile volcengine `
+  --one
+```
+
+切换火山时显式设置 `--model-profile volcengine`；火山 Profile 默认使用 `ARK_API_KEY`，也兼容 `VOLCENGINE_API_KEY` 和 `VOLCENGINE_ARK_API_KEY`。这些变量只应在受控 PowerShell 进程中设置；不要写进注册表、仓库、Excel、脚本或公开文档。`--model-profile` 是 AgentHost 通用选择：Codex 会从安装包锁定的 CLI 读取 bundled catalog，以其原生 agent instructions 和 schema 为模板生成隔离 `config.toml` 与 `models.json`；OMP 会生成隔离 `models.yml` 并传递 `--model provider/model`。两套配置都来自同一个无密钥 Profile；默认 DPAPI Provider 不会被覆盖。OMP 若选择 Auto-Test Profile，需在当前进程提供对应环境变量。
+
 在已安装 OMP 的 Windows 测试机上，可将宿主切换为：
 
 ```powershell
@@ -154,31 +174,33 @@ $env:AUTO_TEST_AGENT_FORWARD_ENV = "OMP_API_KEY"
   --file "C:/TestData/cases.xlsx" `
   --url "https://app.example.test/" `
   --agent-host omp `
-  --omp-bin "C:/Tools/omp.cmd" `
-  --omp-home "C:/Users/tester/.omp/agent" `
+  --agent-bin "C:/Tools/omp.cmd" `
+  --agent-home "C:/Users/tester/.omp/agent" `
   --headed
 ```
 
-OMP 的 Provider 登录和模型选择由 OMP 自身配置负责；`--omp-home` 只读取 provider/auth 配置（包括当前版本的 `agent.db` auth store）并复制到本次私有 run，用户 MCP、插件和历史会话不会进入 run。Auto-Test 还会在本次工作区写入 OMP 项目覆盖，关闭 OMP 自带 browser，确保实际使用与 Codex 相同的 Playwright MCP。复制登录态前请关闭正在写同一 OMP 配置目录的进程；恢复时省略 `--omp-home` 会保留原 run 的 Provider 副本，不会静默改用当前用户目录；也可以用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式转发 Provider 环境变量。`doctor --agent-host omp` 只检查 Node、OMP 可执行文件和 Chromium，不代表业务验收通过。
+选择 Auto-Test `--model-profile` 时，OMP 适配器会把同一通用 Profile 写入本次私有 `models.yml`，并只把选定的环境变量交给 OMP；`--agent-home` 仅用于 legacy/native Provider 副本（或提供 OMP 自身的非模型配置），用户 MCP、插件和历史会话不会进入 run。`--omp-bin/--omp-home` 仍可作为兼容别名，但新命令统一使用 `--agent-bin/--agent-home`；环境变量对应为 `AUTO_TEST_AGENT_BIN/AUTO_TEST_AGENT_HOME`。Auto-Test 还会在本次工作区写入 OMP 项目覆盖，关闭 OMP 自带 browser，确保实际使用与 Codex 相同的 Playwright MCP。复制登录态前请关闭正在写同一 OMP 配置目录的进程；恢复时省略 `--agent-home` 会保留原 run 的 Provider 副本；使用 native 配置时可通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式转发环境变量。`doctor --agent-host omp` 会检查默认 Profile 的环境变量，但不会发起真实模型请求，不能替代 Provider 或业务 canary。
 
 OMP 目前没有 Codex SDK 同等级的操作系统 workspace sandbox，因此 Windows OMP 验收应在专用测试账号和专用测试机上进行；Auto-Test 会保留 run 工作区约束、审计与结果合同，但不会把 OMP 宣称为受限 `opaque` 宿主。
 
-Windows 启动器会先识别 `--agent-host omp`（或 `AUTO_TEST_AGENT_HOST=omp`），此路径不会安装、探针或要求 Codex Provider；只要 OMP 自身已安装并配置，Codex 额度不足不会阻断 OMP 启动。
+Windows 启动器会先识别 `--agent-host omp`（或 `AUTO_TEST_AGENT_HOST=omp`），此路径不会安装 Codex CLI，也不会运行 Codex 专用 Provider 探针；它仍会把通用 Model Profile 交给 OMP 适配器，并在模型请求前校验选定环境变量。
 
-默认使用 Codex；在已安装并完成 OMP 自身 Provider 配置的测试机上，可以让 OMP 执行同一份输入：
+默认使用 Codex；在已安装 OMP 的测试机上，可以让 OMP 使用同一份输入和同一个 Model Profile：
 
 ```powershell
+$env:DEEPSEEK_API_KEY = '<secret>'
 .\Auto-Test.cmd run `
   --file "C:/TestData/cases.xlsx" `
   --url "https://app.example.test/" `
   --profile staging `
   --agent-host omp `
-  --omp-bin "C:/Tools/omp.exe" `
-  --omp-home "C:/Users/tester/.omp/agent" `
+  --agent-bin "C:/Tools/omp.exe" `
+  --agent-home "C:/Users/tester/.omp/agent" `
+  --model-profile deepseek `
   --headed
 ```
 
-OMP 的模型认证不使用 Auto-Test 的 Codex Model Profile；`easy doctor --agent-host omp` 只检查 OMP 可执行文件、Node.js 和 Chromium，Provider 健康仍以 OMP 自身配置和真实 AgentHost Run 为准。
+OMP 与 Codex 使用同一个 Auto-Test Model Profile 选择层；真正的请求协议、认证解析和模型能力仍由 OMP 适配器与 OMP 自身运行时验证。`easy doctor --agent-host omp` 会检查可执行文件、Node.js、Chromium 和默认 Profile 环境变量，但不能替代真实 Provider canary。
 
 不需要也不应提供 `--case-batch-size`。若只想做最小 canary，使用 `--one` 或 `--case-limit 1`；长套件由容量策略自动规划。
 
@@ -226,7 +248,7 @@ OMP 的模型认证不使用 Auto-Test 的 Codex Model Profile；`easy doctor --
   --headed
 ```
 
-`--api-key` 只影响当前启动的 Codex 进程，Base URL 和模型仍使用现有 Provider 配置；不带该参数时继续使用私有包内置的默认 Key。命令行参数可能出现在本机进程列表或 PowerShell 历史中，只在受控测试机使用，不要把真实 Key 写进脚本、Excel 或文档。
+`--api-key` 只覆盖当前启动的 Windows 默认 Provider，Base URL 和模型仍使用现有配置；该默认 Provider 可交给 Codex 或 OMP。它不能与 `--model-profile` 同时使用：显式 Profile 必须通过自己的 `envKey` 提供凭据。命令行参数可能出现在本机进程列表或 PowerShell 历史中，只在受控测试机使用，不要把真实 Key 写进脚本、Excel 或文档。
 
 需要永久重新配置默认 Provider（包括 Base URL、模型或默认 Key）时，才执行：
 
@@ -237,8 +259,8 @@ OMP 的模型认证不使用 Auto-Test 的 Codex Model Profile；`easy doctor --
 管理员批量部署时仍可以覆盖内置配置并静默准备：
 
 ```powershell
-$env:AUTO_TEST_CODEX_BASE_URL = "https://model-api.example/v1"
-$env:AUTO_TEST_CODEX_MODEL = "your-model-id"
+$env:AUTO_TEST_MODEL_BASE_URL = "https://model-api.example/v1"
+$env:AUTO_TEST_MODEL_ID = "your-model-id"
 $env:AUTO_TEST_MODEL_API_KEY = "deployment-secret"
 $env:AUTO_TEST_PERSIST_API_KEY = "0"
 .\Auto-Test.cmd --setup-only

@@ -1,16 +1,12 @@
 import { createHash } from 'node:crypto'
-import { access, chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
+import { access, mkdir, readFile, rm } from 'node:fs/promises'
+import { basename, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
-import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import type { CodexTestRisk } from './types.js'
 import { writePrivateJson } from './state.js'
-import type { AgentHostId } from './host.js'
-import { controlServerPath, packageFilePath } from './runtime-paths.js'
+import { agentProcessEnvironment, copyPrivateFile, writePrivateText } from './provider-runtime.js'
 
 interface StorageState {
   cookies?: Array<Record<string, unknown>>
@@ -44,8 +40,6 @@ export interface AgentWorkspace {
   playwrightConfigPath: string
   playwrightSecretsPath: string
   controlConfigPath: string
-  ompConfigPath: string
-  ompMcpConfigPath: string
   mutationLedgerPath: string
   environmentRequirementsPath: string
   executionReceiptsPath: string
@@ -127,226 +121,6 @@ function bindingPurpose(bindings: WorkflowSecretBinding[], secretRef: string): s
   return bindings.find((binding) => binding.secretRef === secretRef)?.purpose ?? secretRef
 }
 
-async function writePrivateText(path: string, value: string): Promise<void> {
-  await writeFile(path, value, { encoding: 'utf8', mode: 0o600 })
-  if (process.platform !== 'win32') await chmod(path, 0o600)
-}
-
-async function copyPrivateFile(source: string, destination: string): Promise<void> {
-  await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
-  await copyFile(source, destination)
-  if (process.platform !== 'win32') await chmod(destination, 0o600)
-}
-
-function agentProcessEnvironment(
-  environment: NodeJS.ProcessEnv,
-  providerEnvironmentName?: string,
-  includeForwardedAgentEnvironment = true,
-): Record<string, string> {
-  const names = process.platform === 'win32'
-    ? ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'ComSpec']
-    : ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'USER', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS']
-  if (providerEnvironmentName) names.push(providerEnvironmentName)
-  if (includeForwardedAgentEnvironment) {
-    for (const name of forwardedEnvironmentNames(environment)) names.push(name)
-  }
-  const result: Record<string, string> = {}
-  for (const name of new Set(names)) {
-    const value = environment[name]
-    if (value !== undefined) result[name] = value
-  }
-  return result
-}
-
-function forwardedEnvironmentNames(environment: NodeJS.ProcessEnv): Set<string> {
-  return new Set((environment.AUTO_TEST_AGENT_FORWARD_ENV ?? '')
-    .split(/[,;\s]+/)
-    .filter((value) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)))
-}
-
-function escapeTomlString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-}
-
-function configTomlForModelProfile(profile: ModelProfile): string {
-  const lines = [
-    `model = "${escapeTomlString(profile.model)}"`,
-    `model_provider = "${escapeTomlString(profile.providerId)}"`,
-  ]
-  if (profile.reasoningEffort) lines.push(`model_reasoning_effort = "${profile.reasoningEffort}"`)
-  if (profile.serviceTier) lines.push(`service_tier = "${escapeTomlString(profile.serviceTier)}"`)
-  lines.push(
-    '',
-    `[model_providers.${escapeTomlString(profile.providerId)}]`,
-    `name = "${escapeTomlString(profile.providerId)}"`,
-    `base_url = "${escapeTomlString(profile.baseUrl)}"`,
-    `wire_api = "${profile.wireApi}"`,
-    `env_key = "${escapeTomlString(profile.envKey)}"`,
-    'requires_openai_auth = false',
-  )
-  return `${lines.join('\n')}\n`
-}
-
-async function writeOmpMcpConfig(options: {
-  path: string
-  workspaceDirectory: string
-  playwrightConfigPath: string
-  playwrightSecretsPath: string
-  controlConfigPath: string
-  mcpEnvironment: Record<string, string>
-}): Promise<void> {
-  let tsxCli: string
-  try {
-    tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
-  } catch {
-    tsxCli = createRequire(import.meta.url).resolve('tsx/cli')
-  }
-  const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
-  await mkdir(dirname(options.path), { recursive: true, mode: 0o700 })
-  await writePrivateJson(options.path, {
-    mcpServers: {
-      playwright: {
-        type: 'stdio',
-        command: process.execPath,
-        args: [playwrightCli, '--config', options.playwrightConfigPath, '--secrets', options.playwrightSecretsPath],
-        cwd: options.workspaceDirectory,
-        env: options.mcpEnvironment,
-        timeout: 180_000,
-      },
-      'auto-test-control': {
-        type: 'stdio',
-        command: process.execPath,
-        args: [tsxCli, controlServerPath(), options.controlConfigPath],
-        cwd: options.workspaceDirectory,
-        env: options.mcpEnvironment,
-        timeout: 60_000,
-      },
-    },
-  })
-}
-
-async function writeOmpProjectConfig(path: string): Promise<void> {
-  await writePrivateText(path, [
-    '# Auto-Test owns this project overlay for the selected OMP process.',
-    '# The built-in browser must stay disabled so OMP loads the run-scoped',
-    '# Playwright MCP instead of silently substituting a different browser.',
-    'browser:',
-    '  enabled: false',
-    'mcp:',
-    '  enableProjectConfig: true',
-    'memory:',
-    '  backend: off',
-    'memories:',
-    '  enabled: false',
-    'autolearn:',
-    '  enabled: false',
-    'extensions: []',
-    'startup:',
-    '  checkUpdate: false',
-    '  quiet: true',
-    '',
-  ].join('\n'))
-}
-
-async function prepareAgentHome(agentHome: string, sourceHome: string, modelProfile?: ModelProfile): Promise<string | undefined> {
-  await mkdir(agentHome, { recursive: true, mode: 0o700 })
-  if (modelProfile) {
-    await writePrivateText(resolve(agentHome, 'config.toml'), configTomlForModelProfile(modelProfile))
-    return modelProfile.envKey
-  }
-  const sourceConfig = await readFile(resolve(sourceHome, 'config.toml'), 'utf8').catch(() => '')
-  const assignment = (key: string) => new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, 'm').exec(sourceConfig)?.[0]
-  const providerId = /^[ \t]*model_provider[ \t]*=[ \t]*"([^"]+)"[ \t]*$/m.exec(sourceConfig)?.[1]
-  let providerSection = ''
-  if (providerId) {
-    const escaped = providerId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const start = sourceConfig.search(new RegExp(`^[ \\t]*\\[model_providers\\.${escaped}\\][ \\t]*$`, 'm'))
-    if (start >= 0) {
-      const tail = sourceConfig.slice(start)
-      const firstLineEnd = tail.indexOf('\n')
-      const following = firstLineEnd >= 0 ? tail.slice(firstLineEnd + 1) : ''
-      const nextSection = following.search(/^[ \t]*\[/m)
-      providerSection = (nextSection >= 0 ? tail.slice(0, firstLineEnd + 1 + nextSection) : tail).trim()
-    }
-  }
-  const config = [
-    assignment('model'),
-    assignment('model_provider'),
-    assignment('model_reasoning_effort'),
-    assignment('model_context_window'),
-    assignment('service_tier'),
-    providerSection,
-  ].filter(Boolean).join('\n')
-  await writePrivateText(resolve(agentHome, 'config.toml'), `${config}\n`)
-  const providerEnvironmentName = /^[ \t]*env_key[ \t]*=[ \t]*"([^"]+)"[ \t]*$/m.exec(providerSection)?.[1]
-  if (!providerEnvironmentName) {
-    const authPath = resolve(sourceHome, 'auth.json')
-    await copyFile(authPath, resolve(agentHome, 'auth.json')).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error
-    })
-    if (process.platform !== 'win32') await chmod(resolve(agentHome, 'auth.json'), 0o600).catch(() => undefined)
-  }
-  return providerEnvironmentName
-}
-
-const ompProviderFiles = [
-  'config.yml',
-  'config.yaml',
-  'models.yml',
-  'models.yaml',
-  'agent.db',
-  'agent.db-wal',
-  'agent.db-shm',
-  'auth.json',
-  'settings.json',
-]
-
-/**
- * OMP has its own provider/config format. Copy only the small, explicit
- * provider/auth allowlist into the run-owned agent directory; project MCP is
- * generated below and sessions never come from the user's home.
- */
-async function prepareOmpAgentHome(agentHome: string, sourceHome: string, forwardedNames: Set<string>): Promise<void> {
-  await mkdir(agentHome, { recursive: true, mode: 0o700 })
-  const candidates = [resolve(sourceHome), resolve(sourceHome, 'agent')]
-  const sourceFileNames = forwardedNames.size > 0 ? [...ompProviderFiles, '.env'] : ompProviderFiles
-  const source = await (async (): Promise<string | undefined> => {
-    for (const candidate of candidates) {
-      for (const name of sourceFileNames) {
-        try {
-          await access(resolve(candidate, name))
-          return candidate
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        }
-      }
-    }
-    return undefined
-  })()
-  if (!source) return
-  for (const name of ompProviderFiles) {
-    const sourcePath = resolve(source, name)
-    const destination = resolve(agentHome, name)
-    if (sourcePath === destination) continue
-    await copyPrivateFile(sourcePath, destination).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error
-    })
-  }
-  if (forwardedNames.size > 0) {
-    const sourceEnv = await readFile(resolve(source, '.env'), 'utf8').catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return undefined
-      throw error
-    })
-    if (sourceEnv !== undefined) {
-      const selected = sourceEnv.split(/\r?\n/).flatMap((line) => {
-        const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
-        return match && forwardedNames.has(match[1]!) ? [`${match[1]}=${match[2]}`] : []
-      })
-      if (selected.length > 0) await writePrivateText(resolve(agentHome, '.env'), `${selected.join('\n')}\n`)
-    }
-  }
-}
-
 export async function prepareAgentWorkspace(options: {
   outputDirectory: string
   manifest: WorkflowIntakeManifest
@@ -358,28 +132,26 @@ export async function prepareAgentWorkspace(options: {
   headed: boolean
   browserExecutablePath: string
   slowMo?: number
-  /** Historical Codex option remains accepted for source compatibility. */
-  sourceCodexHome?: string
-  /** Generic alias for hosts that do not use Codex configuration. */
-  sourceAgentHome?: string
-  agentHostId?: AgentHostId
   environment?: NodeJS.ProcessEnv
   resume?: boolean
   testDataAccess?: 'direct' | 'opaque'
-  modelProfile?: ModelProfile
 }): Promise<AgentWorkspace> {
   const outputDirectory = resolve(options.outputDirectory)
   const workspaceDirectory = resolve(outputDirectory, 'agent-workspace')
   const inputDirectory = resolve(workspaceDirectory, 'input')
   const privateDirectory = resolve(outputDirectory, '.agent-private')
   const evidenceDirectory = resolve(workspaceDirectory, 'evidence')
-  const agentHome = resolve(privateDirectory, 'codex-home')
+  const preferredAgentHome = resolve(privateDirectory, 'agent-home')
+  const legacyAgentHome = resolve(privateDirectory, 'codex-home')
+  const agentHome = options.resume &&
+    !(await access(preferredAgentHome).then(() => true, () => false)) &&
+    await access(legacyAgentHome).then(() => true, () => false)
+    ? legacyAgentHome
+    : preferredAgentHome
   const manifestPath = resolve(workspaceDirectory, 'test-manifest.json')
   const playwrightConfigPath = resolve(privateDirectory, 'playwright-mcp.json')
   const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
-  const ompConfigPath = resolve(workspaceDirectory, '.omp', 'config.yml')
-  const ompMcpConfigPath = resolve(workspaceDirectory, '.omp', 'mcp.json')
   const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
   const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
   const executionReceiptsPath = resolve(workspaceDirectory, 'execution-receipts.json')
@@ -400,42 +172,8 @@ export async function prepareAgentWorkspace(options: {
     mkdir(privateDirectory, { recursive: true, mode: 0o700 }),
     mkdir(evidenceDirectory, { recursive: true, mode: 0o750 }),
   ])
-  const selectedAgentHost = options.agentHostId ?? 'codex'
-  const defaultHome = options.environment?.HOME ?? options.environment?.USERPROFILE ?? process.env.HOME ?? process.env.USERPROFILE ?? '.'
-  const sourceAgentHome = options.sourceAgentHome ?? options.sourceCodexHome ?? resolve(defaultHome, '.codex')
-  const providerEnvironmentName = selectedAgentHost === 'codex'
-    ? await prepareAgentHome(agentHome, sourceAgentHome, options.modelProfile)
-    : undefined
-  if (selectedAgentHost === 'omp') {
-    const ompSourceHome = options.sourceAgentHome ?? (!options.resume ? resolve(defaultHome, '.omp', 'agent') : undefined)
-    if (ompSourceHome) await prepareOmpAgentHome(agentHome, ompSourceHome, forwardedEnvironmentNames(options.environment ?? process.env))
-  }
-  const environment = agentProcessEnvironment(options.environment ?? process.env, providerEnvironmentName)
-  if (selectedAgentHost === 'omp') {
-    // OMP otherwise discovers the caller's profile and user agent directory.
-    // Keep provider credentials in the explicitly copied allowlist above while
-    // making sessions, MCP state and settings run-local and reproducible.
-    environment.PI_CODING_AGENT_DIR = agentHome
-    const isolatedHome = resolve(privateDirectory, 'omp-home')
-    await mkdir(isolatedHome, { recursive: true, mode: 0o700 })
-    environment.HOME = isolatedHome
-    environment.USERPROFILE = isolatedHome
-    delete environment.OMP_PROFILE
-    delete environment.PI_PROFILE
-  }
-  // Provider credentials forwarded for the selected AgentHost never enter the
-  // Playwright/Control MCP child processes.
+  const environment = agentProcessEnvironment(options.environment ?? process.env)
   const mcpEnvironment = agentProcessEnvironment(options.environment ?? process.env, undefined, false)
-  if (selectedAgentHost === 'omp') {
-    // MCP children are not the selected AgentHost. Keep their generic HOME
-    // separate as well, so they cannot discover the caller's OMP/Codex auth,
-    // plugins, or user-level MCP configuration through ambient paths.
-    const mcpHome = resolve(privateDirectory, 'omp-mcp-home')
-    await mkdir(mcpHome, { recursive: true, mode: 0o700 })
-    mcpEnvironment.HOME = mcpHome
-    mcpEnvironment.USERPROFILE = mcpHome
-  }
-  if (providerEnvironmentName) mcpEnvironment[providerEnvironmentName] = ''
 
   if (options.resume) {
     const existingManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WorkflowIntakeManifest
@@ -574,18 +312,6 @@ export async function prepareAgentWorkspace(options: {
     timeouts: { action: 15_000, navigation: 90_000, expect: 10_000 },
     codegen: fullAgentAccess ? 'typescript' : 'none',
   })
-  if (selectedAgentHost === 'omp') {
-    await writeOmpMcpConfig({
-      path: ompMcpConfigPath,
-      workspaceDirectory,
-      playwrightConfigPath,
-      playwrightSecretsPath,
-      controlConfigPath,
-      mcpEnvironment,
-    })
-    await writeOmpProjectConfig(ompConfigPath)
-  }
-
   const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
   const executionReceiptsMissing = await access(executionReceiptsPath).then(() => false, () => true)
   const fieldCompositionMissing = await access(fieldCompositionPath).then(() => false, () => true)
@@ -634,8 +360,6 @@ export async function prepareAgentWorkspace(options: {
     playwrightConfigPath,
     playwrightSecretsPath,
     controlConfigPath,
-    ompConfigPath,
-    ompMcpConfigPath,
     mutationLedgerPath,
     environmentRequirementsPath,
     executionReceiptsPath,

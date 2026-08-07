@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import crossSpawn from 'cross-spawn'
 import { mkdir, readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { extname, resolve } from 'node:path'
@@ -7,6 +8,7 @@ import type {
   AgentEvent,
   AgentHost,
   AgentHostCapabilities,
+  AgentHostModelProviderAdapter,
   AgentHostLaunchOptions,
   AgentHostProbeResult,
   AgentHostSession,
@@ -14,6 +16,7 @@ import type {
   AgentInputPart,
 } from './host.js'
 import { AgentHostError, normalizeAgentEvent, resolveHostExecutable } from './host.js'
+import { OmpModelProviderAdapter } from './omp-provider.js'
 
 interface OmpResponse {
   id?: string
@@ -267,20 +270,22 @@ class OmpRpcSession implements AgentHostSession {
 
   constructor(
     options: AgentHostLaunchOptions & { executable: string; resumeId?: string },
-    spawnProcess: typeof spawn = spawn,
+    spawnProcess: typeof spawn = crossSpawn as typeof spawn,
   ) {
-    const sessionDirectory = resolve(options.agentHome, 'sessions')
+    const sessionDirectory = resolve(options.runtime.agentHome, 'sessions')
     const args = [
       '--mode', 'rpc',
       '--no-title',
       '--approval-mode', 'yolo',
       '--session-dir', sessionDirectory,
-      ...(options.model ? ['--model', options.model] : []),
+      ...(options.runtime.model ? ['--model', options.runtime.model] : []),
+      ...(options.runtime.provider?.reasoningEffort ? ['--thinking', options.runtime.provider.reasoningEffort] : []),
+      ...(options.runtime.provider?.serviceTier ? ['--service-tier', options.runtime.provider.serviceTier] : []),
       ...(options.resumeId ? ['--resume', options.resumeId] : []),
     ]
     const env: NodeJS.ProcessEnv = {
-      ...options.environment,
-      PI_CODING_AGENT_DIR: options.agentHome,
+      ...options.runtime.environment,
+      PI_CODING_AGENT_DIR: options.runtime.agentHome,
       PI_CODING_AGENT_SESSION_DIR: sessionDirectory,
     }
     this.process = spawnProcess(options.executable, args, {
@@ -288,7 +293,6 @@ class OmpRpcSession implements AgentHostSession {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(options.executable),
     })
     let resolveReady!: () => void
     let rejectReady!: (error: Error) => void
@@ -554,7 +558,7 @@ export interface OmpAgentHostOptions {
 }
 
 async function resolveOmpExecutable(executable: string | undefined, environment: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const configured = executable || environment.AUTO_TEST_OMP_BIN || process.env.AUTO_TEST_OMP_BIN || 'omp'
+  const configured = executable || environment.AUTO_TEST_AGENT_BIN || environment.AUTO_TEST_OMP_BIN || process.env.AUTO_TEST_AGENT_BIN || process.env.AUTO_TEST_OMP_BIN || 'omp'
   const resolved = await resolveHostExecutable(configured, environment)
   if (!resolved) throw new AgentHostError('omp', `OMP executable is unavailable: ${configured}`, 'configuration')
   return resolved
@@ -564,6 +568,7 @@ export class OmpAgentHost implements AgentHost {
   readonly id = 'omp' as const
   readonly displayName = 'oh-my-pi RPC'
   readonly capabilities = capabilities
+  readonly modelProvider: AgentHostModelProviderAdapter = new OmpModelProviderAdapter()
 
   constructor(private readonly options: OmpAgentHostOptions = {}) {}
 
@@ -572,7 +577,7 @@ export class OmpAgentHost implements AgentHost {
       if (!options.fullAgentAccess) {
         throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only; opaque/restricted mode cannot be enforced by this adapter', 'capability')
       }
-      const executable = await resolveOmpExecutable(options.executable, options.environment)
+      const executable = await resolveOmpExecutable(options.executable, options.runtime.environment)
       return { ok: true, hostId: this.id, executable }
     } catch (error) {
       return { ok: false, hostId: this.id, reason: error instanceof Error ? error.message : String(error) }
@@ -581,8 +586,8 @@ export class OmpAgentHost implements AgentHost {
 
   async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
     if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only', 'capability')
-    await mkdir(resolve(options.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
-    const executable = await resolveOmpExecutable(options.executable, options.environment)
+    await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
+    const executable = await resolveOmpExecutable(options.executable, options.runtime.environment)
     const session = new OmpRpcSession({ ...options, executable }, this.options.spawnProcess)
     try {
       await session.initialize()
@@ -595,8 +600,8 @@ export class OmpAgentHost implements AgentHost {
 
   async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
     if (!options.fullAgentAccess) throw new AgentHostError('omp', 'OMP currently supports Auto-Test direct mode only', 'capability')
-    await mkdir(resolve(options.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
-    const executable = await resolveOmpExecutable(options.executable, options.environment)
+    await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
+    const executable = await resolveOmpExecutable(options.executable, options.runtime.environment)
     const session = new OmpRpcSession({ ...options, executable, resumeId: options.resumeId }, this.options.spawnProcess)
     try {
       await session.initialize()

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { buildCodexExecutionEpochs } from '../src/agent/execution-epochs.js'
@@ -28,10 +29,20 @@ function manifest(): WorkflowIntakeManifest {
   }
 }
 
-function eventStream(text: string, threadId: string): { events: AsyncGenerator<ThreadEvent> } {
+function eventStream(text: string, threadId: string, metadataWarning = false): { events: AsyncGenerator<ThreadEvent> } {
   return {
     events: (async function* () {
       yield { type: 'thread.started', thread_id: threadId } as ThreadEvent
+      if (metadataWarning) {
+        yield {
+          type: 'item.completed',
+          item: {
+            id: `metadata-${threadId}`,
+            type: 'error',
+            message: 'Model metadata for `fixture` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.',
+          },
+        } as ThreadEvent
+      }
       yield { type: 'item.completed', item: { id: `message-${threadId}`, type: 'agent_message', text } } as ThreadEvent
       yield { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 8 } } as ThreadEvent
     })(),
@@ -62,7 +73,8 @@ function resultFor(workflow: WorkflowIntakeManifest, caseIds: string[]): string 
 
 function profile(): ModelProfile {
   return {
-    id: 'fixture', model: 'fixture', providerId: 'fixture', baseUrl: 'https://provider.example.test', wireApi: 'responses', envKey: 'FIXTURE_KEY',
+    id: 'fixture', model: 'fixture', providerId: 'fixture', baseUrl: 'https://provider.example.test', api: 'openai-responses', envKey: 'FIXTURE_KEY', envKeyAliases: ['FIXTURE_ALIAS_KEY'],
+    reasoningEffort: 'high', supportsWebsockets: false,
     contextWindowTokens: 1_000, maxOutputTokens: 100, caseOutputTokens: 100, targetContextRatio: 0.5, targetOutputRatio: 0.5,
   }
 }
@@ -73,8 +85,8 @@ async function fixtureFiles(directory: string): Promise<{ sourceHome: string; br
   await writeFile(resolve(sourceHome, 'config.toml'), 'model = "fixture"\n', { mode: 0o600 })
   const browserPath = resolve(directory, 'chromium')
   await writeFile(browserPath, '')
-  const codexExecutable = resolve(directory, 'codex')
-  await writeFile(codexExecutable, '#!/bin/sh\n', { mode: 0o700 })
+  const codexPackage = createRequire(import.meta.url).resolve('@openai/codex/package.json')
+  const codexExecutable = resolve(dirname(codexPackage), 'bin', 'codex.js')
   return { sourceHome, browserPath, codexExecutable }
 }
 
@@ -96,13 +108,15 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const started: string[] = []
     const prompts: string[] = []
+    const launches: Array<Record<string, unknown>> = []
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, modelProfile: profile(),
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_ALIAS_KEY: 'fixture-key' },
     }, {
       browserExecutablePath: files.browserPath,
-      startThread: () => {
+      startThread: (options) => {
+        launches.push(options)
         const epochIndex = started.length
         const threadId = `thread-${epochIndex + 1}`
         started.push(threadId)
@@ -114,9 +128,9 @@ describe('adaptive Codex epochs', () => {
             prompts.push(typeof input === 'string' ? input : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
             if (options?.outputSchema) {
               const epochCases = epochIndex === 0 ? ['case-one'] : ['case-two']
-              return eventStream(resultFor(workflow, epochCases), threadId)
+              return eventStream(resultFor(workflow, epochCases), threadId, turn === 1)
             }
-            return eventStream('执行完成', threadId)
+            return eventStream('执行完成', threadId, turn === 1)
           },
         }
       },
@@ -125,6 +139,10 @@ describe('adaptive Codex epochs', () => {
     expect(run.result?.outcome).toBe('passed')
     expect(run.result?.cases.map((item) => item.caseId)).toEqual(['case-one', 'case-two'])
     expect(started).toEqual(['thread-1', 'thread-2'])
+    expect(launches[0]).toMatchObject({
+      wireApi: 'responses', reasoningEffort: 'high', modelContextWindow: 1_000, supportsWebsockets: false,
+    })
+    expect(launches[0]?.additionalDirectories).toEqual([resolve(directory, 'run', '.agent-private')])
     expect(prompts.some((prompt) => prompt.includes('checkpoint'))).toBe(true)
     expect(run.state.version).toBe('2.0')
     expect(run.state.threadGeneration).toBe(2)
@@ -144,7 +162,7 @@ describe('adaptive Codex epochs', () => {
     const interrupted = await runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, modelProfile: profile(),
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => {
@@ -175,7 +193,7 @@ describe('adaptive Codex epochs', () => {
     const resumed = await runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, modelProfile: profile(), resume: true,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => { throw new Error('completed epochs must not restart') },
@@ -206,7 +224,7 @@ describe('adaptive Codex epochs', () => {
     const run = await runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, modelProfile: profile(),
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => {
@@ -248,7 +266,7 @@ describe('adaptive Codex epochs', () => {
     const interrupted = await runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => ({
@@ -268,7 +286,7 @@ describe('adaptive Codex epochs', () => {
     const resumed = await runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, resume: true,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, resume: true,
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => { throw new Error('finalization resume must reuse the existing thread') },
@@ -300,14 +318,15 @@ describe('adaptive Codex epochs', () => {
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
-      environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+      environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'provider-runtime-secret' },
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => ({
         id: 'thread-redaction',
         runStreamed: async () => {
           await mkdir(resolve(evidencePath, '..'), { recursive: true })
-          await writeFile(evidencePath, 'username=fixture-user\npassword=fixture-password\nAuthorization: Bearer abcdefghijklmnop\n')
+          await writeFile(evidencePath, 'username=fixture-user\npassword=fixture-password\nprovider=provider-runtime-secret\nAuthorization: Bearer abcdefghijklmnop\n')
           await writeFile(helperPath, 'fixture-password')
           return failedEventStream('network connection lost', 'thread-redaction', 'Cookie: session=abcdefghijklmno')
         },
@@ -318,6 +337,7 @@ describe('adaptive Codex epochs', () => {
     const evidence = await readFile(evidencePath, 'utf8')
     expect(evidence).not.toContain('fixture-user')
     expect(evidence).not.toContain('fixture-password')
+    expect(evidence).not.toContain('provider-runtime-secret')
     expect(evidence).not.toContain('abcdefghijklmnop')
     expect(await readFile(helperPath, 'utf8')).toBe('<redacted-secret>')
     const events = await readFile(resolve(outputDirectory, 'codex-agent.events.jsonl'), 'utf8')
@@ -338,7 +358,7 @@ describe('adaptive Codex epochs', () => {
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
-      environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
+      environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
     }, { browserExecutablePath: files.browserPath, startThread: () => ({ id: 'thread-structured-redaction', runStreamed: async () => eventStream(JSON.stringify(result), 'thread-structured-redaction') }) })
 
     expect(run.result?.outcome).toBe('passed')
@@ -455,7 +475,7 @@ describe('adaptive Codex epochs', () => {
     await expect(runCodexTestAgent({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
-      secrets: {}, environmentContext: '', imagePaths: [], headed: false, codexHome: files.sourceHome, codexExecutable: files.codexExecutable, resume: true,
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, resume: true,
     }, { browserExecutablePath: files.browserPath })).rejects.toThrow(/旧版 Codex 测试状态不再支持恢复/)
   })
 })

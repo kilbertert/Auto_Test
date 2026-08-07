@@ -1,5 +1,42 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mergeAgentSecrets, parseAgentTestArgs, scopeEnvironmentProfile } from '../src/cli/agent-test.js'
+import {
+  createPreExecutionBlockedResult,
+  mergeAgentSecrets,
+  parseAgentTestArgs,
+  parseRecordedModelSelection,
+  scopeEnvironmentProfile,
+} from '../src/cli/agent-test.js'
+import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
+
+function fixtureManifest(): WorkflowIntakeManifest {
+  return {
+    version: '1.0',
+    kind: 'workflow-intake',
+    workflowId: 'provider-fixture',
+    source: {
+      format: 'xlsx',
+      fileName: 'provider-fixture.xlsx',
+      sheetName: 'Cases',
+      sha256: 'a'.repeat(64),
+    },
+    targetUrls: ['https://example.test'],
+    requiredCapabilities: [],
+    phases: [{
+      id: 'case-1',
+      title: 'Provider fixture',
+      sourceRow: 2,
+      risk: 'read',
+      steps: [],
+      resources: [],
+      secretBindings: [],
+      imageIds: [],
+      review: { status: 'draft', ambiguities: [] },
+    }],
+    embeddedImages: [],
+    supplementalImages: [],
+    review: { status: 'draft', reasons: [] },
+  }
+}
 
 describe('Codex agent CLI', () => {
   it('accepts an Excel with URLs supplied by the workbook', () => {
@@ -60,12 +97,35 @@ describe('Codex agent CLI', () => {
     try {
       const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--omp-home', '/private/omp-agent'])
       expect(options.agentHostId).toBe('omp')
-      expect(options.ompHome).toMatch(/[\\/]private[\\/]omp-agent$/)
+      expect(options.agentSourceHome).toMatch(/[\\/]private[\\/]omp-agent$/)
       expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
       expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+
+  it('normalizes generic and legacy host runtime flags before entering Core', () => {
+    const generic = parseAgentTestArgs([
+      '--file', 'cases.xlsx', '--agent-host', 'omp',
+      '--agent-bin', '/opt/agent/bin', '--agent-home', '/opt/agent/home',
+    ])
+    expect(generic).toMatchObject({
+      agentHostId: 'omp',
+      agentExecutable: expect.stringMatching(/[\\/]opt[\\/]agent[\\/]bin$/),
+      agentSourceHome: expect.stringMatching(/[\\/]opt[\\/]agent[\\/]home$/),
+    })
+
+    const legacy = parseAgentTestArgs([
+      '--file', 'cases.xlsx', '--codex-bin', '/opt/codex/bin', '--codex-home', '/opt/codex/home',
+    ])
+    expect(legacy).toMatchObject({
+      agentHostId: 'codex',
+      agentExecutable: expect.stringMatching(/[\\/]opt[\\/]codex[\\/]bin$/),
+      agentSourceHome: expect.stringMatching(/[\\/]opt[\\/]codex[\\/]home$/),
+    })
+    expect(legacy).not.toHaveProperty('codexExecutable')
+    expect(legacy).not.toHaveProperty('codexHome')
   })
 
   it('supports an explicit opaque test-data mode', () => {
@@ -82,6 +142,66 @@ describe('Codex agent CLI', () => {
     const options = parseAgentTestArgs(['--file', 'cases.xlsx'])
     expect(options.modelProfileId).toBeUndefined()
     expect(options.modelProfileRegistryPath).toMatch(/auto-test[\\/]model-profiles\.json$/)
+  })
+
+  it('classifies model-provider readiness failures as execution infrastructure', () => {
+    const result = createPreExecutionBlockedResult(
+      fixtureManifest(),
+      'model provider is unavailable',
+      { failureSource: 'infrastructure', failureKind: 'execution' },
+    )
+
+    expect(result.summary).toContain('执行基础设施')
+    expect(result.cases[0]).toMatchObject({
+      outcome: 'blocked',
+      failureSource: 'infrastructure',
+      failureKind: 'execution',
+      summary: 'model provider is unavailable',
+    })
+    expect(result.nextActions[0]).toContain('Provider')
+    expect(result.nextActions[0]).not.toContain('权限')
+  })
+
+  it('keeps intake-readiness failures distinct from target-environment failures', () => {
+    const result = createPreExecutionBlockedResult(
+      fixtureManifest(),
+      'the input contract is incomplete',
+      { failureSource: 'input', failureKind: 'validation' },
+    )
+
+    expect(result.summary).toContain('输入资料')
+    expect(result.cases[0]).toMatchObject({
+      failureSource: 'input',
+      failureKind: 'validation',
+    })
+  })
+
+  it('fails closed on malformed recorded model selection data', () => {
+    expect(parseRecordedModelSelection('{"id":"volcengine","model":"glm-5.2"}'))
+      .toEqual({ id: 'volcengine', model: 'glm-5.2' })
+    expect(() => parseRecordedModelSelection('null')).toThrow(/必须是对象/)
+    expect(() => parseRecordedModelSelection('{}')).toThrow(/缺少 id 或 model/)
+    expect(() => parseRecordedModelSelection('{"id":123}')).toThrow(/id 无效/)
+  })
+
+  it('restores a complete provider snapshot without depending on the current registry', () => {
+    expect(parseRecordedModelSelection(JSON.stringify({
+      version: '2.0',
+      id: 'volcengine',
+      model: 'glm-5.2',
+      profile: {
+        id: 'volcengine',
+        model: 'glm-5.2',
+        providerId: 'volcengine_coding',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+        api: 'openai-responses',
+        envKey: 'ARK_API_KEY',
+      },
+    }))).toMatchObject({
+      id: 'volcengine',
+      model: 'glm-5.2',
+      profile: { providerId: 'volcengine_coding', api: 'openai-responses' },
+    })
   })
 
   it('fails closed when environment and workbook secrets disagree', () => {

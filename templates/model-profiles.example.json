@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "defaultProfileId": "primary",
+  "defaultProfileId": "deepseek",
   "profiles": [
     {
       "id": "primary",
       "model": "gpt-4.1",
       "providerId": "primary_api",
       "baseUrl": "https://model-api.example.test/v1",
-      "wireApi": "responses",
+      "api": "openai-responses",
       "envKey": "AUTO_TEST_MODEL_API_KEY",
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16000,
@@ -16,13 +16,39 @@
       "targetOutputRatio": 0.55
     },
     {
-      "id": "glm",
-      "model": "glm-4.6",
-      "providerId": "glm_api",
-      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
-      "wireApi": "chat",
-      "envKey": "GLM_API_KEY",
-      "reasoningEffort": "xhigh"
+      "id": "deepseek",
+      "aliases": ["deepseek-v4-flash"],
+      "displayName": "DeepSeek V4 Flash",
+      "model": "deepseek-v4-flash",
+      "providerId": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "api": "openai-responses",
+      "envKey": "DEEPSEEK_API_KEY",
+      "reasoningEffort": "high",
+      "reasoningEfforts": ["low", "high", "xhigh"],
+      "inputModalities": ["text"],
+      "supportsParallelToolCalls": true,
+      "supportsSearchTool": true,
+      "supportsWebsockets": false,
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "id": "volcengine",
+      "aliases": ["glm-5.2", "volcengine-glm-5.2"],
+      "displayName": "火山方舟 Coding Plan (GLM-5.2)",
+      "model": "glm-5.2",
+      "providerId": "volcengine_coding",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "api": "openai-responses",
+      "envKey": "ARK_API_KEY",
+      "envKeyAliases": ["VOLCENGINE_API_KEY", "VOLCENGINE_ARK_API_KEY"],
+      "reasoningEffort": "high",
+      "reasoningEfforts": ["low", "medium", "high"],
+      "inputModalities": ["text"],
+      "supportsWebsockets": false,
+      "contextWindowTokens": 1024000,
+      "maxOutputTokens": 65536
     }
   ]
 }

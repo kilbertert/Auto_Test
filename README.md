@@ -45,7 +45,7 @@ npm run agent:test -- \
   --output-dir artifacts/runs/example
 ```
 
-选择 OMP 时只需替换宿主参数（OMP Provider 由 OMP 自身配置管理；可用 `--omp-home` 指向 provider/auth 配置目录）：
+选择 OMP 时只需替换宿主参数；同一个 Model Profile 会由 OMP 适配器写成隔离 `models.yml`。通用的 `--agent-bin` / `--agent-home` 覆盖当前宿主的可执行文件与原生 provider/auth 源目录；`--codex-*` / `--omp-*` 只保留为兼容别名：
 
 ```bash
 npm run agent:test -- \
@@ -53,7 +53,7 @@ npm run agent:test -- \
   --url https://app.example.test/ \
   --profile staging \
   --agent-host omp \
-  --omp-bin <path-to-omp>
+  --agent-bin <path-to-omp>
 ```
 
 URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
@@ -71,13 +71,19 @@ URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日
 
 ## 多模型供应商
 
-当模型供应商返回容量不足（如 `Selected model is at capacity`）或临时不可用时，可切换到另一个已注册供应商继续。注册表位于 `~/.config/auto-test/model-profiles.json`（Linux/macOS）或 `%APPDATA%\auto-test\model-profiles.json`（Windows），模板见 [model-profiles.example.json](templates/model-profiles.example.json)。每个 Profile 声明模型、Provider 段名、base URL、wire 协议（`responses` 或 `chat`）和持有 API Key 的环境变量名；Key 不写入注册表。
+当模型供应商返回容量不足（如 `Selected model is at capacity`）或临时不可用时，可切换到另一个 Profile 继续。Model Profile 是 AgentHost 无关的端点描述：`api` 使用统一模型协议名，Core 只负责选择、恢复和容量提示；每个 `AgentHost.modelProvider` 负责把同一 descriptor 翻译为自己的隔离配置、环境和模型 selector。Codex 与 OMP 是两个内置实现，注入第三方 Host 时也走同一契约，Core 不增加供应商或宿主 ID 分支。宿主不支持某个协议时，会在模型请求前 fail closed。注册表位于 `~/.config/auto-test/model-profiles.json`（Linux/macOS）或 `%APPDATA%\auto-test\model-profiles.json`（Windows），模板见 [model-profiles.example.json](templates/model-profiles.example.json)。Profile 只保存模型、公开 Base URL、协议、输入模态、推理/容量能力和 API Key 环境变量名，不保存 Key。
+
+仓库内置两个无密钥 Profile。新 Run 未显式选择时默认使用 `deepseek`，Codex 与 OMP 都消费同一选择；即使尚未创建注册表也可直接运行：
 
 ```bash
-npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profile staging --model-profile glm
+export DEEPSEEK_API_KEY='<secret>'
+npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profile staging
+
+export ARK_API_KEY='<secret>'
+npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profile staging --model-profile volcengine
 ```
 
-未配置注册表时回退到源 Codex 配置中的 Provider。容量不足会被归类为可恢复的 `infrastructure` 阻断：用 `--model-profile` 切换供应商后，以原 `--output-dir` 执行 `--resume` 继续同一个逻辑 Run；已经写入逐 case 结果库的 case 不会重跑。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
+`deepseek` 使用 `deepseek-v4-flash @ https://api.deepseek.com`；`volcengine` 使用 `glm-5.2 @ https://ark.cn-beijing.volces.com/api/coding/v3`，并同时识别 `ARK_API_KEY`、`VOLCENGINE_API_KEY` 和 `VOLCENGINE_ARK_API_KEY`。同一 Profile 可交给 `--agent-host codex` 或 `--agent-host omp`：Codex 以当前安装版 CLI 的 bundled catalog 为模板生成 `config.toml` 与完整 `models.json`，保留原生 agent instructions 并覆盖 Profile 能力；OMP 生成 `models.yml`，不会把宿主格式泄漏到 Core。两个内置模型目前都声明为文本输入；补充图片会保留在 run 工作区并在提示中给出路径，不会作为 Provider 会静默忽略的 inline image 发送。选择优先级是显式 `--model-profile`、恢复记录、自定义注册表的 `defaultProfileId`、内置 `deepseek`；注册表中的同名 `deepseek` 可覆盖内置公开元数据。模型 ID 是否已在订阅中开放仍以 Provider 的真实响应为准；必要时用自定义注册表或 `--model` 覆盖。容量不足会被归类为可恢复的 `infrastructure` 阻断：切换 Profile 后，以原 `--output-dir` 执行 `--resume`；裸恢复会复用上次有效的 Profile 和 `--model`，显式传入新值才会切换。升级前创建且没有 `model-selection.json` 的旧 Run 在裸恢复时继续使用原 AgentHost Provider，避免迁移后静默换模。已经写入逐 case 结果库的 case 不会重跑。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
 
 ## Legacy IR/Runtime
 
