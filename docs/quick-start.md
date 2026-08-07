@@ -12,7 +12,7 @@ npx playwright install chromium
 npm run check
 ```
 
-Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖和 Chromium，并验证配置的模型 API。OMP 是可选宿主，需要在测试机另行安装并配置自己的 Provider。公开源码运行时，请通过宿主配置或模型 Profile/环境变量提供 Provider，密钥不要写入仓库。
+Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖和 Chromium，并验证默认模型 API。OMP 是可选宿主，需要在测试机另行安装；模型 Provider 可由同一个 Auto-Test Model Profile 交给 OMP 适配器，legacy/native Run 也可使用 OMP 自身配置。公开源码运行时，请通过宿主适配器、宿主配置或 Model Profile/环境变量提供 Provider，密钥不要写入仓库。
 
 ## 2. 注册环境
 
@@ -22,7 +22,7 @@ Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖
 npm run easy
 ```
 
-环境 Profile 至少登记目标 URL、登录状态和最高风险：`read` 只读，`write` 允许授权测试写入，`destructive` 允许授权测试清理。实际动作仍必须受测试材料、环境授权和 Mutation Ledger 约束。
+环境 Profile 至少登记目标 URL、登录状态和最高风险：`read` 只读，`write` 允许授权测试写入，`destructive` 允许授权测试清理。实际动作仍必须受测试材料、环境授权和权威 Mutation Ledger 约束；对外部持久化写入，Agent 必须通过 `auto-test-control.mutation_begin` / `mutation_resolve` 登记和核销，工作区自建的同名文件不算登记。
 
 ## 3. 准备 Excel
 
@@ -60,15 +60,16 @@ npm run agent:test -- \
 - `--brief <path>`：不含秘密的业务说明；
 - `--model <id>`：覆盖模型名；
 - `--agent-host codex|omp`：选择宿主；默认 `codex`；
-- `--agent-bin <path>`：当前宿主可执行文件；OMP 也可使用 `--omp-bin`；
-- `--omp-home <path>`：OMP provider/auth 配置目录；仅复制允许的配置文件到私有 run；
-- `--model-profile <id>`：选择已注册 Provider；
+- `--agent-bin <path>`：当前宿主可执行文件；也可设置 `AUTO_TEST_AGENT_BIN`；
+- `--agent-home <path>`：当前宿主的原生 provider/auth 源目录；只复制宿主允许的内容到私有 run；
+- `--codex-bin/--omp-bin`、`--codex-home/--omp-home`：上述通用参数的兼容别名，并同时选择对应内置宿主；
+- `--model-profile <id>`：选择模型 Provider；内置 `deepseek` / `volcengine`，也可从注册表选择自定义 Profile；
 - `--max-iterations <N>`：列表型数据的 canary 上限，不切分 case；
 - `--case-limit <N>`：只执行前 N 条 case；
 - `--headed` / `--headless`：显示或隐藏浏览器；
 - `--resume`：继续同一 Run，必须复用原 `--output-dir`；不指定宿主时自动复用原 Run 的宿主。
 
-不存在 `--case-batch-size`。容量调度由 Model Profile 的可选字段控制：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio`、`targetOutputRatio`。未提供时使用保守默认值。
+不存在 `--case-batch-size`。容量调度由 Model Profile 的可选字段控制：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio`、`targetOutputRatio`。`inputModalities`、`reasoningEfforts` 和 `supportsParallelToolCalls` 描述模型能力。Profile 元数据由 Core 用于调度和输入选择；各 AgentHost 决定如何写入自己的目录（例如 Codex `models.json` 或 OMP `models.yml`）。协议字段使用统一 `api` 名称；宿主不支持该 API 时会在模型请求前 fail closed。旧注册表中的 `wireApi: "responses"|"chat"` 仅作为兼容输入读取。
 
 ### 使用 OMP
 
@@ -78,10 +79,10 @@ npm run easy -- run \
   --url https://app.example.test/ \
   --profile staging \
   --agent-host omp \
-  --omp-bin /path/to/omp
+  --agent-bin /path/to/omp
 ```
 
-OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工作区生成 `.omp/mcp.json`，把同一套 Playwright 与 Control MCP 注入 OMP；OMP 的 provider 配置可用 `--omp-home <dir>` 或 `AUTO_TEST_OMP_HOME` 指定，Core 只复制 provider/auth 白名单到私有 agent 目录，不复制用户 MCP 或历史 session。需要环境变量认证时，可用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出要转发的变量。`agent-host-selection.json` 会记录实际宿主，恢复时宿主身份必须保持一致。
+OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工作区生成 `.omp/mcp.json`，把同一套 Playwright 与 Control MCP 注入 OMP；native provider 配置可用通用 `--agent-home <dir>` 或 `AUTO_TEST_AGENT_HOME` 指定，`--omp-home` / `AUTO_TEST_OMP_HOME` 仍兼容。OMP 适配器只复制 provider/auth 白名单到私有 agent 目录，不复制用户 MCP 或历史 session。需要环境变量认证时，可用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出要转发的变量。`agent-host-selection.json` 会记录实际宿主与供应商绑定，恢复时宿主身份必须保持一致。
 
 ## 5. 运行机制
 
@@ -141,7 +142,7 @@ npm run easy -- run \
 
 ## 8. 多模型 Profile
 
-Profile 注册表位于 Linux/macOS 的 `~/.config/auto-test/model-profiles.json`，Windows 位于 `%APPDATA%\auto-test\model-profiles.json`。API Key 只通过 `envKey` 指向的环境变量提供：
+Profile 注册表位于 Linux/macOS 的 `~/.config/auto-test/model-profiles.json`，Windows 位于 `%APPDATA%\auto-test\model-profiles.json`。新 Run（无论 Codex 还是 OMP）没有显式选择或自定义默认项时使用内置 `deepseek`；`--model-profile` 可切换到内置 `volcengine` 或任意自定义 Profile。Core 只解析统一 `api`、模型、端点和容量；Codex/OMP 适配器分别生成隔离的 TOML/YAML。API Key 只通过 `envKey` 或 `envKeyAliases` 指向的环境变量提供。自定义 `providerId` 必须以字母或下划线开头，后续只使用字母、数字、下划线或连字符，避免破坏任意宿主的 Provider selector。下面示例通过 `defaultProfileId` 把自定义 `primary` 提升为默认，从而覆盖内置 DeepSeek：
 
 ```json
 {
@@ -153,7 +154,7 @@ Profile 注册表位于 Linux/macOS 的 `~/.config/auto-test/model-profiles.json
       "model": "your-model",
       "providerId": "primary_api",
       "baseUrl": "https://model-api.example.test/v1",
-      "wireApi": "responses",
+      "api": "openai-responses",
       "envKey": "AUTO_TEST_MODEL_API_KEY",
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16000
@@ -162,4 +163,18 @@ Profile 注册表位于 Linux/macOS 的 `~/.config/auto-test/model-profiles.json
 }
 ```
 
-额度、容量或上游网络异常会形成可恢复的 `infrastructure` 结果。修复或切换 Profile 后，用原输出目录执行 `--resume`，不要复制结果目录或手工改结果。
+内置 Profile 的公开元数据如下（示例不包含任何 Key）：
+
+| Profile | Model | Base URL | API Key 环境变量 | Context window |
+| --- | --- | --- | --- | ---: |
+| `deepseek` | `deepseek-v4-flash` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | 1,048,576 |
+| `volcengine` | `glm-5.2` | `https://ark.cn-beijing.volces.com/api/coding/v3` | `ARK_API_KEY`（兼容 `VOLCENGINE_API_KEY`） | 1,024,000 |
+
+例如：
+
+```bash
+DEEPSEEK_API_KEY='<secret>' npm run agent:test -- \
+  --file cases.xlsx --url https://app.example.test/ --profile staging
+```
+
+选择优先级是显式 `--model-profile`、恢复记录、自定义 `defaultProfileId`、Windows 私有包的 `windows-private` 运行时默认、注册表中的同名 `deepseek`、内置 `deepseek`。精确匹配内置 DeepSeek 的 Windows 包不会创建较弱的运行时副本，而是使用完整内置元数据；只有一个自定义 Profile 但未设置 `defaultProfileId` 时不会隐式取代 DeepSeek。额度、容量或上游网络异常会形成可恢复的 `infrastructure` 结果。修复或切换 Profile 后，用原输出目录执行 `--resume`；未显式传入新的 `--model-profile` / `--model` 时会复用上次有效选择。旧 Run 没有 `model-selection.json` 时，裸恢复继续使用原 AgentHost 的 Provider。不要复制结果目录或手工改结果。

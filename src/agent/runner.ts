@@ -2,7 +2,7 @@ import { chromium } from '@playwright/test'
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
-import type { ModelProfile } from '../workflow/model-profile.js'
+import { resolveModelProfileEnvironment, toAgentModelProviderDescriptor, type ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { redactAgentTextArtifact, redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from './artifact-redaction.js'
 import { readAgentBuildInfo } from './build-info.js'
@@ -14,12 +14,12 @@ import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequireme
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { AgentHostError } from './host.js'
-import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostSession, AgentInputPart } from './host.js'
+import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostRuntime, AgentHostSession, AgentInputPart } from './host.js'
 import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { agentTestResultSchema, enforceMutationLedger, parseAgentTestCandidate } from './result.js'
+import { agentTestStructuredOutputSchema, enforceMutationLedger, parseAgentTestCandidate } from './result.js'
 import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
 import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
 import { prepareAgentWorkspace, type AgentWorkspace } from './workspace.js'
@@ -37,9 +37,8 @@ export interface AgentTestOptions {
   slowMo?: number
   maxIterations?: number
   model?: string
-  codexExecutable?: string
-  codexHome?: string
-  ompHome?: string
+  /** Optional source directory for the selected host's native provider/auth state. */
+  agentSourceHome?: string
   maxFinalizationTurns?: number
   resume?: boolean
   onProgress?: AgentTestProgressSink
@@ -49,7 +48,8 @@ export interface AgentTestOptions {
   agentHost?: AgentHost
   agentHostId?: AgentHostId
   agentExecutable?: string
-  ompExecutable?: string
+  /** Process environment used to resolve the selected AgentHost runtime. */
+  environment?: NodeJS.ProcessEnv
 }
 
 export interface AgentTestRun {
@@ -89,6 +89,11 @@ async function appendEvent(
   await receiptRecorder?.observe(event)
 }
 
+function isNonFatalAgentHostError(message: string): boolean {
+  return /^Reconnecting\.\.\. \d+\/\d+/i.test(message) ||
+    /^Model metadata for .+ not found\. Defaulting to fallback metadata\b/i.test(message)
+}
+
 async function runTurn(
   thread: AgentHostSession,
   input: AgentInputPart[],
@@ -111,7 +116,7 @@ async function runTurn(
       if (event.type === 'thread_started' && event.threadId) await onThreadStarted?.(event.threadId)
       if (event.type === 'agent_message') finalResponse = event.text ?? ''
       if (event.type === 'turn_failed') throw new Error(event.message ?? 'agent turn failed')
-      if (event.type === 'error' && !/^Reconnecting\.\.\. \d+\/\d+/i.test(event.message ?? '')) throw new Error(event.message ?? 'agent host error')
+      if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) throw new Error(event.message ?? 'agent host error')
     }
     if (!finalResponse) throw new Error('Agent host returned no final response')
     return finalResponse
@@ -500,10 +505,14 @@ function imagePathsForExecutionEpoch(workspace: AgentWorkspace, manifest: Workfl
 
 function hostInput(
   host: AgentHost,
+  runtime: AgentHostRuntime,
   text: string,
   imagePaths: string[],
 ): AgentInputPart[] {
-  if (host.capabilities.localImages) {
+  const providerAcceptsImages = runtime.provider
+    ? runtime.provider.inputModalities?.includes('image') === true
+    : true
+  if (host.capabilities.localImages && providerAcceptsImages) {
     return [
       { type: 'text', text },
       ...imagePaths.map((path) => ({ type: 'local_image' as const, path })),
@@ -512,7 +521,7 @@ function hostInput(
   if (imagePaths.length === 0) return [{ type: 'text', text }]
   return [{
     type: 'text',
-    text: `${text}\n\nThe selected host cannot receive inline image parts. Inspect these staged files from the run workspace when visual evidence is needed:\n${imagePaths.map((path) => `- ${path}`).join('\n')}`,
+    text: `${text}\n\nThe selected AgentHost/model binding cannot receive inline image parts. Inspect these staged files from the run workspace when visual evidence is needed:\n${imagePaths.map((path) => `- ${path}`).join('\n')}`,
   }]
 }
 
@@ -566,16 +575,17 @@ export async function runAgentTest(
   if (injectedHost && requestedHostId && injectedHost.id !== requestedHostId) {
     throw new Error(`AgentHost selection is ambiguous: injected ${injectedHost.id} but requested ${requestedHostId}`)
   }
-  const host = injectedHost ?? (
-    selectedHostId !== 'codex'
-      ? createAgentHost(selectedHostId)
-      : dependencies.startThread || dependencies.resumeThread
-        ? createLegacyCodexAgentHost({
-            startThread: dependencies.startThread ?? (() => { throw new Error('Legacy startThread dependency is missing') }),
-            resumeThread: dependencies.resumeThread ?? (() => { throw new Error('Legacy resumeThread dependency is missing') }),
-          })
-        : createAgentHost('codex')
-  )
+  let host: AgentHost
+  if (injectedHost) {
+    host = injectedHost
+  } else if (selectedHostId === 'codex' && (dependencies.startThread || dependencies.resumeThread)) {
+    host = createLegacyCodexAgentHost({
+      startThread: dependencies.startThread ?? (() => { throw new Error('Legacy startThread dependency is missing') }),
+      resumeThread: dependencies.resumeThread ?? (() => { throw new Error('Legacy resumeThread dependency is missing') }),
+    })
+  } else {
+    host = createAgentHost(selectedHostId)
+  }
   if (options.resume && !state.agentHost && host.id !== 'codex') {
     throw new Error(`Resume agent host is unknown in the legacy state; refusing to switch to ${host.id}`)
   }
@@ -597,9 +607,7 @@ export async function runAgentTest(
         throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
       })
     }
-    const sourceAgentHome = host.id === 'omp'
-      ? options.ompHome ?? process.env.AUTO_TEST_OMP_HOME
-      : options.codexHome ?? process.env.CODEX_HOME ?? process.env.AUTO_TEST_CODEX_HOME ?? resolve(process.env.HOME ?? '.', '.codex')
+    const runtimeEnvironment = options.environment ?? process.env
     const workspace = await prepareAgentWorkspace({
       outputDirectory,
       manifest: options.manifest,
@@ -611,13 +619,30 @@ export async function runAgentTest(
       headed: options.headed,
       browserExecutablePath,
       ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
-      ...(sourceAgentHome ? { sourceAgentHome } : {}),
-      agentHostId: host.id,
-      environment: process.env,
+      environment: runtimeEnvironment,
       testDataAccess: options.testDataAccess ?? 'direct',
       ...(options.resume ? { resume: true } : {}),
-      ...(options.modelProfile ? { modelProfile: options.modelProfile } : {}),
     })
+    const runtime = await host.modelProvider.prepare({
+      workspaceDirectory: workspace.workspaceDirectory,
+      privateDirectory: workspace.privateDirectory,
+      agentHome: workspace.agentHome,
+      ...(options.agentExecutable ? { executable: options.agentExecutable } : {}),
+      ...(options.agentSourceHome ? { sourceAgentHome: options.agentSourceHome } : {}),
+      playwrightConfigPath: workspace.playwrightConfigPath,
+      playwrightSecretsPath: workspace.playwrightSecretsPath,
+      controlConfigPath: workspace.controlConfigPath,
+      environment: runtimeEnvironment,
+      mcpEnvironment: workspace.mcpEnvironment,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.modelProfile ? {
+        provider: toAgentModelProviderDescriptor(resolveModelProfileEnvironment(options.modelProfile, runtimeEnvironment)),
+      } : {}),
+      ...(options.resume ? { resume: true } : {}),
+    })
+    const providerEnvironmentName = runtime.provider?.credentialEnvironmentVariable
+    const providerCredential = providerEnvironmentName ? runtime.environment[providerEnvironmentName] : undefined
+    if (providerCredential && !redactionSecrets.includes(providerCredential)) redactionSecrets.push(providerCredential)
     mutationLedgerPath = workspace.mutationLedgerPath
     environmentRequirementsPath = workspace.environmentRequirementsPath
     executionReceiptsPath = workspace.executionReceiptsPath
@@ -693,20 +718,14 @@ export async function runAgentTest(
         throw new Error(`Chromium executable is unavailable: ${browserExecutablePath}. Run Playwright browser installation first.`)
       })
     }
-    const configuredExecutable = host.id === 'omp'
-      ? options.ompExecutable ?? options.agentExecutable
-      : options.agentExecutable ?? options.codexExecutable
     const threadOptions: AgentHostLaunchOptions = {
       workspaceDirectory: workspace.workspaceDirectory,
-      agentHome: workspace.agentHome,
-      ...(options.model ? { model: options.model } : {}),
-      ...(configuredExecutable ? { executable: configuredExecutable } : {}),
+      runtime,
+      ...(options.agentExecutable ? { executable: options.agentExecutable } : {}),
+      additionalWritableDirectories: [workspace.privateDirectory],
       playwrightConfigPath: workspace.playwrightConfigPath,
       playwrightSecretsPath: workspace.playwrightSecretsPath,
       controlConfigPath: workspace.controlConfigPath,
-      ompMcpConfigPath: workspace.ompMcpConfigPath,
-      environment: workspace.environment,
-      mcpEnvironment: workspace.mcpEnvironment,
       fullAgentAccess: (options.testDataAccess ?? 'direct') === 'direct',
     }
     const hostProbe = await host.probe(threadOptions)
@@ -725,6 +744,10 @@ export async function runAgentTest(
       capabilities: host.capabilities,
       executable: hostProbe.executable,
       hostVersion: hostProbe.version,
+      modelProvider: {
+        supportedApis: host.modelProvider.supportedApis,
+        ...(runtime.provider ? { binding: runtime.provider } : { mode: 'native' }),
+      },
       ...buildInfo,
       selectedAt: new Date().toISOString(),
     })
@@ -826,8 +849,8 @@ export async function runAgentTest(
       if (initialEpochStage === 'executing') {
         progress.report('stage', `正在执行 epoch ${epoch.index + 1}/${epoch.total}（${epoch.caseIds.length} 条，thread generation ${state.threadGeneration}）`)
         const input = resumingEpoch
-          ? hostInput(host, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
-          : hostInput(host, agentTestPrompt({
+          ? hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
+          : hostInput(host, runtime, agentTestPrompt({
                 manifest: scopedManifest,
                 environmentContext: options.environmentContext,
                 secretAliases: workspace.secretAliases,
@@ -859,7 +882,7 @@ export async function runAgentTest(
         progress.report('stage', `epoch ${epoch.id} 存在未核销业务写入，正在由同一线程恢复核对`)
         await runTurn(
           thread,
-          hostInput(host, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
           eventsPath,
           redactionSecrets,
           progress,
@@ -882,12 +905,12 @@ export async function runAgentTest(
         try {
           const finalResponse = await runTurn(
             thread,
-            hostInput(host, prompt, []),
+            hostInput(host, runtime, prompt, []),
             eventsPath,
             redactionSecrets,
             progress,
             persistThreadId,
-            host.capabilities.structuredOutput ? agentTestResultSchema : undefined,
+            host.capabilities.structuredOutput ? agentTestStructuredOutputSchema : undefined,
             receiptRecorder,
             recordUsage,
             scrubEpochArtifacts,
@@ -993,7 +1016,7 @@ export async function runAgentTest(
         })
         await writePrivateJson(statePath, state)
         progress.report('stage', `正在保存 ${epoch.id} 的 AgentHost 工作记忆 checkpoint`)
-        await runTurn(thread, hostInput(host, agentTestCheckpointPrompt(epoch, checkpointPath), []), eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
+        await runTurn(thread, hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []), eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
         const { activeEpoch: _checkpointedEpoch, ...checkpointedState } = state
         state = updateCodexTestState(checkpointedState, { stage: 'executing', checkpointPath })
         await writePrivateJson(statePath, state)

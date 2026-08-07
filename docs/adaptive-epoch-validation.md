@@ -67,7 +67,7 @@ artifacts/acceptance/adaptive-epoch-lta-one-sol-redacted-20260805
 
 这证明当前修复工作树可以在真实 LTA 登录场景中完成只读业务 canary，并在 Provider 中断后继续交付。但它不是 285 条正式 LTA 的业务准确率验收，也没有真实故障案例；用户名在截图中仍可见，运行目录只能留在受控测试环境，截图/PDF 外发前必须人工脱敏。
 
-本轮还记录了两个未纳入本修复分支的基础设施边界：提供的直连 Key 对 `https://api.psydo.top/v1/{models,responses}` 返回 401；当前 Codex CLI 拒绝 `wire_api = "chat"`，因此仓库现有 Chat Profile 不能直接启动。正式 Windows 运行必须使用已确认可用的 Responses Provider/Key，不能把这两次阻断当作业务失败。
+本轮还记录了两个未纳入当时修复分支的基础设施边界：提供的直连 Key 对 `https://api.psydo.top/v1/{models,responses}` 返回 401；当前 Codex CLI 拒绝 `wire_api = "chat"`，因此 Chat Profile 不能直接交给 Codex AgentHost。当前内置 DeepSeek/火山 Profile 均使用 Responses 配置，但正式运行仍必须用真实 Provider/Key 做 canary，不能把配置解析或启动层通过当作业务成功。
 
 ## 尚未完成
 

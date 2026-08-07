@@ -10,6 +10,44 @@ import { delimiter, extname, isAbsolute, resolve } from 'node:path'
  * normalized events below and never imports a vendor SDK.
  */
 export type AgentHostId = 'codex' | 'omp' | (string & {})
+export const AGENT_MODEL_APIS = [
+  'openai-completions',
+  'openai-responses',
+  'openai-codex-responses',
+  'azure-openai-responses',
+  'anthropic-messages',
+  'bedrock-converse-stream',
+  'google-generative-ai',
+  'google-gemini-cli',
+  'google-vertex',
+] as const
+export type AgentModelApi = typeof AGENT_MODEL_APIS[number]
+export type AgentModelReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type AgentModelInputModality = 'text' | 'image'
+
+export type AgentModelCredential =
+  | { type: 'environment'; name: string }
+  | { type: 'none' }
+
+/** Host-neutral model endpoint selected once for an Auto-Test run. */
+export interface AgentModelProviderDescriptor {
+  profileId: string
+  providerId: string
+  model: string
+  baseUrl: string
+  api: AgentModelApi
+  credential: AgentModelCredential
+  displayName?: string
+  reasoningEffort?: AgentModelReasoningEffort
+  reasoningEfforts?: AgentModelReasoningEffort[]
+  inputModalities?: AgentModelInputModality[]
+  supportsParallelToolCalls?: boolean
+  supportsSearchTool?: boolean
+  serviceTier?: string
+  supportsWebsockets?: boolean
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+}
 
 export type AgentInputPart =
   | { type: 'text'; text: string }
@@ -68,19 +106,74 @@ export interface AgentHostCapabilities {
   restrictedMode: boolean
 }
 
+/** Auditable, secret-free result of translating a provider for one host. */
+export interface AgentHostProviderBinding {
+  profileId: string
+  providerId: string
+  baseUrl: string
+  api: AgentModelApi
+  model: string
+  modelSelector: string
+  configurationPath?: string
+  modelCatalogPath?: string
+  credentialEnvironmentVariable?: string
+  displayName?: string
+  reasoningEffort?: AgentModelReasoningEffort
+  reasoningEfforts?: AgentModelReasoningEffort[]
+  inputModalities?: AgentModelInputModality[]
+  supportsParallelToolCalls?: boolean
+  supportsSearchTool?: boolean
+  serviceTier?: string
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+  supportsWebsockets?: boolean
+}
+
+export interface AgentHostRuntime {
+  agentHome: string
+  environment: Record<string, string>
+  mcpEnvironment: Record<string, string>
+  /** Host-native selector passed to the session launcher. */
+  model?: string
+  provider?: AgentHostProviderBinding
+}
+
+export interface AgentHostProviderPrepareOptions {
+  workspaceDirectory: string
+  privateDirectory: string
+  agentHome: string
+  /** Exact host executable selected by the caller, when explicitly configured. */
+  executable?: string
+  sourceAgentHome?: string
+  playwrightConfigPath: string
+  playwrightSecretsPath: string
+  controlConfigPath: string
+  environment: NodeJS.ProcessEnv
+  mcpEnvironment: Record<string, string>
+  model?: string
+  provider?: AgentModelProviderDescriptor
+  resume?: boolean
+}
+
+/**
+ * The provider adapter is the only layer allowed to translate a generic model
+ * endpoint into host-native files, selectors, arguments, or environment.
+ */
+export interface AgentHostModelProviderAdapter {
+  readonly supportedApis: readonly AgentModelApi[]
+  prepare(options: AgentHostProviderPrepareOptions): Promise<AgentHostRuntime>
+}
+
 export interface AgentHostLaunchOptions {
   workspaceDirectory: string
-  agentHome: string
-  model?: string
+  runtime: AgentHostRuntime
   executable?: string
+  /** Additional run-private directories that the host may write through its sandbox. */
+  additionalWritableDirectories?: string[]
   resumeId?: string
   playwrightConfigPath: string
   playwrightSecretsPath: string
   controlConfigPath: string
-  ompMcpConfigPath?: string
-  /** Sanitized process environment made available to the selected host. */
-  environment: Record<string, string>
-  mcpEnvironment: Record<string, string>
   fullAgentAccess: boolean
 }
 
@@ -119,6 +212,7 @@ export interface AgentHost {
   readonly id: AgentHostId
   readonly displayName: string
   readonly capabilities: AgentHostCapabilities
+  readonly modelProvider: AgentHostModelProviderAdapter
   probe(options: AgentHostLaunchOptions): Promise<AgentHostProbeResult>
   start(options: AgentHostLaunchOptions): Promise<AgentHostSession>
   resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession>

@@ -21,6 +21,11 @@ $CodexVersion = '0.146.0'
 $ProviderId = 'auto_test_api'
 $ProviderName = 'Auto-Test Model API'
 $ProviderKeyEnvironment = 'AUTO_TEST_MODEL_API_KEY'
+$DefaultModelProfileBaseUrl = 'https://api.deepseek.com'
+$DefaultModelProfileModel = 'deepseek-v4-flash'
+$DefaultModelProfileKeyEnvironment = 'DEEPSEEK_API_KEY'
+$RuntimeModelProfileId = 'windows-private'
+$RuntimeModelProfileApi = 'openai-responses'
 $LegacyProviderId = 'cliproxyapi'
 $BootstrapSecretFileName = 'Auto-Test.private-key'
 $BootstrapProviderFileName = 'Auto-Test.private-provider.json'
@@ -133,6 +138,7 @@ function Ensure-CodexCli {
     if (-not (Test-Path $codexExecutable)) { throw 'Codex CLI 缺少 Windows 原生 codex.exe。' }
     $env:Path = "$(Split-Path -Parent $codexCommand);$env:Path"
     $env:AUTO_TEST_CODEX_BIN = $codexExecutable
+    $env:AUTO_TEST_AGENT_BIN = $codexExecutable
     Write-Host "[OK] Codex CLI $installed"
     return
   }
@@ -143,6 +149,7 @@ function Ensure-CodexCli {
   if ($LASTEXITCODE -ne 0) { throw 'Codex CLI 安装失败。请检查 npm 网络或代理配置。' }
   $env:Path = "$(Split-Path -Parent $codexCommand);$env:Path"
   $env:AUTO_TEST_CODEX_BIN = $codexExecutable
+  $env:AUTO_TEST_AGENT_BIN = $codexExecutable
   $installed = Get-CodexVersion $codexCommand
   if (-not (Test-Path $codexExecutable)) { throw 'Codex CLI 安装后缺少 Windows 原生 codex.exe。' }
   if ($installed -ne $CodexVersion) { throw "Codex CLI 版本验证失败，期望 $CodexVersion，实际 $installed。" }
@@ -210,6 +217,70 @@ function Resolve-CodexHome {
   return Join-Path $env:APPDATA 'auto-test\codex-home'
 }
 
+function Get-ExplicitModelProfile([string[]] $Arguments) {
+  for ($index = 0; $index -lt $Arguments.Count; $index++) {
+    if ($Arguments[$index] -eq '--model-profile' -and ($index + 1) -lt $Arguments.Count) {
+      return [string] $Arguments[$index + 1]
+    }
+    if ($Arguments[$index] -like '--model-profile=*') {
+      return $Arguments[$index].Substring('--model-profile='.Length)
+    }
+  }
+  return ''
+}
+
+function Test-ProviderBootstrapAvailable {
+  $secretPath = Join-Path $RepositoryRoot $BootstrapSecretFileName
+  $providerPath = Join-Path $RepositoryRoot $BootstrapProviderFileName
+  $secretExists = Test-Path $secretPath
+  $providerExists = Test-Path $providerPath
+  if ($secretExists -xor $providerExists) {
+    throw '私有安装包的模型引导材料不完整，请重新解压或重新生成安装包。'
+  }
+  return ($secretExists -and $providerExists)
+}
+
+function Test-ProviderMaterialAvailable {
+  $codexHome = Resolve-CodexHome
+  $bootstrapAvailable = Test-ProviderBootstrapAvailable
+  return (
+    [Environment]::GetEnvironmentVariable($ProviderKeyEnvironment, 'Process') -or
+    $bootstrapAvailable -or
+    ((Test-Path (Join-Path $codexHome 'provider-key.dpapi')) -and
+      (Test-Path (Join-Path $codexHome 'config.toml')))
+  )
+}
+
+function Test-DefaultDeepSeekProfile([string] $BaseUrl, [string] $Model) {
+  return (($BaseUrl.TrimEnd('/') -ieq $DefaultModelProfileBaseUrl) -and ($Model -eq $DefaultModelProfileModel))
+}
+
+function Set-RuntimeModelProfileEnvironment([string] $BaseUrl, [string] $Model) {
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_PROFILE_ID', $RuntimeModelProfileId, 'Process')
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_PROVIDER_ID', $ProviderId, 'Process')
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_ID', $Model, 'Process')
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_BASE_URL', $BaseUrl, 'Process')
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_API', $RuntimeModelProfileApi, 'Process')
+  [Environment]::SetEnvironmentVariable('AUTO_TEST_MODEL_ENV_KEY', $ProviderKeyEnvironment, 'Process')
+}
+
+function Clear-LauncherRuntimeModelProfileEnvironment {
+  $profileId = [Environment]::GetEnvironmentVariable('AUTO_TEST_MODEL_PROFILE_ID', 'Process')
+  if ($profileId -and $profileId -ne $RuntimeModelProfileId) {
+    return
+  }
+  foreach ($name in @(
+    'AUTO_TEST_MODEL_PROFILE_ID',
+    'AUTO_TEST_MODEL_PROVIDER_ID',
+    'AUTO_TEST_MODEL_ID',
+    'AUTO_TEST_MODEL_BASE_URL',
+    'AUTO_TEST_MODEL_API',
+    'AUTO_TEST_MODEL_ENV_KEY'
+  )) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+  }
+}
+
 function Ensure-ApiProvider([switch] $ForcePrompt, [string] $ApiKeyOverride) {
   $hasApiKeyOverride = -not [string]::IsNullOrWhiteSpace($ApiKeyOverride)
   if ($hasApiKeyOverride -and $ApiKeyOverride -match '\s') {
@@ -254,8 +325,8 @@ function Ensure-ApiProvider([switch] $ForcePrompt, [string] $ApiKeyOverride) {
   $existingBaseUrl = if ($providerReady) { $configuredBaseUrl } else { '' }
   $existingModel = if ($providerReady) { $configuredModel } else { '' }
 
-  $baseUrl = $env:AUTO_TEST_CODEX_BASE_URL
-  $model = $env:AUTO_TEST_CODEX_MODEL
+  $baseUrl = if ($env:AUTO_TEST_MODEL_BASE_URL) { $env:AUTO_TEST_MODEL_BASE_URL } else { $env:AUTO_TEST_CODEX_BASE_URL }
+  $model = if ($env:AUTO_TEST_MODEL_ID) { $env:AUTO_TEST_MODEL_ID } else { $env:AUTO_TEST_CODEX_MODEL }
   if (-not $ForcePrompt -and (Test-Path $bootstrapProviderPath)) {
     try {
       $bootstrapProvider = Get-Content -Raw -Encoding UTF8 $bootstrapProviderPath | ConvertFrom-Json
@@ -322,8 +393,14 @@ function Ensure-ApiProvider([switch] $ForcePrompt, [string] $ApiKeyOverride) {
   if (-not $baseUrl -and $providerReady -and $existingBaseUrl) {
     $baseUrl = $existingBaseUrl
   }
+  if (-not $baseUrl -and -not $ForcePrompt) {
+    $baseUrl = $DefaultModelProfileBaseUrl
+  }
   if (-not $model -and $providerReady -and $existingModel) {
     $model = $existingModel
+  }
+  if (-not $model -and -not $ForcePrompt) {
+    $model = $DefaultModelProfileModel
   }
   if (-not $baseUrl) {
     if ([Console]::IsInputRedirected) {
@@ -363,11 +440,19 @@ function Ensure-ApiProvider([switch] $ForcePrompt, [string] $ApiKeyOverride) {
     }
   }
   [Environment]::SetEnvironmentVariable($ProviderKeyEnvironment, $apiKey, 'Process')
+  $isDefaultDeepSeekProfile = Test-DefaultDeepSeekProfile $baseUrl $model
+  if ($isDefaultDeepSeekProfile) {
+    Clear-LauncherRuntimeModelProfileEnvironment
+    [Environment]::SetEnvironmentVariable($DefaultModelProfileKeyEnvironment, $apiKey, 'Process')
+  } else {
+    Set-RuntimeModelProfileEnvironment $baseUrl $model
+  }
+  $reasoningEffort = if ($isDefaultDeepSeekProfile) { 'high' } else { 'xhigh' }
 
   $config = @"
 model = "$(Escape-TomlString $model)"
 model_provider = "$ProviderId"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "$reasoningEffort"
 
 [model_providers.$ProviderId]
 name = "$ProviderName"
@@ -375,6 +460,7 @@ base_url = "$(Escape-TomlString $baseUrl)"
 wire_api = "responses"
 env_key = "$ProviderKeyEnvironment"
 requires_openai_auth = false
+supports_websockets = false
 "@
   [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
   Write-Host "[OK] Codex API Provider：$ProviderName / $model"
@@ -750,6 +836,10 @@ function Get-RequestedAgentHost([string[]] $Arguments) {
       $explicitHost = $Arguments[$index + 1]
       break
     }
+    if ($Arguments[$index] -like '--agent-host=*') {
+      $explicitHost = $Arguments[$index].Substring('--agent-host='.Length)
+      break
+    }
   }
   if ($explicitHost) { return $explicitHost }
   if ($env:AUTO_TEST_AGENT_HOST) { return $env:AUTO_TEST_AGENT_HOST }
@@ -786,17 +876,37 @@ try {
   if ($requestedAgentHost -ne 'codex' -and $requestedAgentHost -ne 'omp') {
     throw "--agent-host 只支持 codex 或 omp，收到：$requestedAgentHost"
   }
-  if ($requestedAgentHost -eq 'omp' -and ($parsedApiKey.ApiKey -or $reconfigureApi)) {
-    throw '--api-key/--reconfigure-api 只适用于 Codex AgentHost；请先在 OMP 自身完成 Provider 配置。'
+  $explicitModelProfile = Get-ExplicitModelProfile $forwardArgs
+  # An explicit Model Profile owns its provider contract. Do not let stale or
+  # incomplete default-provider bootstrap material block that independent path.
+  $providerMaterialAvailable = if ($explicitModelProfile) { $false } else { Test-ProviderMaterialAvailable }
+  $providerPrepared = $false
+  if ($explicitModelProfile -and ($reconfigureApi -or $parsedApiKey.ApiKey)) {
+    throw '--model-profile 不能与 Windows 默认 Provider 的 --api-key/--reconfigure-api 同时使用；请通过该 Profile 的 envKey 提供密钥。'
   }
   Ensure-Node
   if ($requestedAgentHost -eq 'codex') {
     Ensure-CodexCli
-    Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
-    Test-CodexProvider
-    Complete-BootstrapImport
+    # A Model Profile owns the actual AgentHost provider contract. Only prepare
+    # the Windows default when bootstrap/DPAPI material exists or the user
+    # explicitly requested default-provider reconfiguration.
+    if ($providerMaterialAvailable -or $reconfigureApi -or $parsedApiKey.ApiKey) {
+      Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
+      $providerPrepared = $true
+    } else {
+      Write-Host '[跳过] 当前运行由 Model Profile 管理 Provider，不准备无关的 Windows 默认 Provider。'
+    }
+    if (-not $explicitModelProfile -and $providerPrepared) { Test-CodexProvider }
+    if ($providerPrepared) { Complete-BootstrapImport }
+    $env:AUTO_TEST_AGENT_HOME = Resolve-CodexHome
   } else {
-    Write-Host '[跳过] 已选择 OMP AgentHost，不准备 Codex Provider。'
+    if ($providerMaterialAvailable) {
+      Ensure-ApiProvider -ForcePrompt:$reconfigureApi -ApiKeyOverride $parsedApiKey.ApiKey
+      $providerPrepared = $true
+      Complete-BootstrapImport
+    } else {
+      Write-Host '[跳过] OMP 使用当前 Model Profile 环境变量，不准备无关的默认 Provider。'
+    }
   }
   Ensure-ProjectRuntime
 

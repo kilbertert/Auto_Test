@@ -7,8 +7,8 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 model_api_key="${AUTO_TEST_MODEL_API_KEY:-}"
-model_base_url="${AUTO_TEST_CODEX_BASE_URL:-}"
-model_id="${AUTO_TEST_CODEX_MODEL:-}"
+model_base_url="${AUTO_TEST_MODEL_BASE_URL:-${AUTO_TEST_CODEX_BASE_URL:-https://api.deepseek.com}}"
+model_id="${AUTO_TEST_MODEL_ID:-${AUTO_TEST_CODEX_MODEL:-deepseek-v4-flash}}"
 if [[ -z "$model_api_key" && ! -t 0 ]]; then
   # A pipe may end without a newline (for example printf '%s' "$key").
   # Bash read stores the value but returns 1 at EOF; do not let set -e
@@ -20,11 +20,11 @@ if [[ -z "$model_api_key" ]]; then
   exit 1
 fi
 if [[ -z "$model_base_url" || ! "$model_base_url" =~ ^https?:// ]]; then
-  echo "缺少有效的模型 API Base URL；请通过 AUTO_TEST_CODEX_BASE_URL 提供。" >&2
+  echo "缺少有效的模型 API Base URL；请通过 AUTO_TEST_MODEL_BASE_URL 提供。" >&2
   exit 1
 fi
 if [[ -z "$model_id" ]]; then
-  echo "缺少模型 ID；请通过 AUTO_TEST_CODEX_MODEL 提供。" >&2
+  echo "缺少模型 ID；请通过 AUTO_TEST_MODEL_ID 提供。" >&2
   exit 1
 fi
 

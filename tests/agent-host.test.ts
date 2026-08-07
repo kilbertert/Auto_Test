@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentHostError, normalizeAgentEvent } from '../src/agent/host.js'
-import type { AgentHost } from '../src/agent/host.js'
+import type { AgentHost, AgentHostLaunchOptions, AgentHostProviderPrepareOptions, AgentInputPart } from '../src/agent/host.js'
+import { codexWebSearchEnabled } from '../src/agent/codex-host.js'
 import { OmpAgentHost, RpcFrameDecoder } from '../src/agent/omp-host.js'
 import { availableAgentHosts, createAgentHost } from '../src/agent/host-registry.js'
 import { progressFromAgentEvent } from '../src/agent/progress.js'
@@ -79,6 +80,22 @@ function oneCaseManifest(): WorkflowIntakeManifest {
       resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
     }],
     embeddedImages: [], supplementalImages: [], review: { status: 'draft', reasons: [] },
+  }
+}
+
+function ompLaunchOptions(directory: string, workspaceDirectory: string, fullAgentAccess = true): AgentHostLaunchOptions {
+  return {
+    workspaceDirectory,
+    runtime: {
+      agentHome: resolve(directory, 'agent-home'),
+      environment: {},
+      mcpEnvironment: {},
+    },
+    executable: process.platform === 'win32' ? process.execPath : '/bin/true',
+    playwrightConfigPath: resolve(directory, 'playwright.json'),
+    playwrightSecretsPath: resolve(directory, 'secrets.env'),
+    controlConfigPath: resolve(directory, 'control.json'),
+    fullAgentAccess,
   }
 }
 
@@ -179,8 +196,28 @@ describe('AgentHost contract', () => {
     expect(createAgentHost('omp').capabilities.structuredOutput).toBe(false)
     expect(createAgentHost('omp').capabilities.mcp).toBe(true)
     expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe('enforced')
+    expect(createAgentHost('codex').modelProvider.supportedApis).toEqual(['openai-responses'])
+    expect(createAgentHost('omp').modelProvider.supportedApis).toContain('openai-completions')
     expect(createAgentHost('omp').capabilities.workspaceIsolation).toBe('prompt_only')
     expect(createAgentHost('omp').capabilities.restrictedMode).toBe(false)
+  })
+
+  it('gates Codex web search with the selected provider capability', () => {
+    const nativeRuntime = { agentHome: '/tmp/native', environment: {}, mcpEnvironment: {} }
+    const managedRuntime = {
+      ...nativeRuntime,
+      provider: {
+        profileId: 'fixture', providerId: 'fixture', baseUrl: 'https://provider.example.test',
+        api: 'openai-responses' as const, model: 'fixture', modelSelector: 'fixture',
+      },
+    }
+    expect(codexWebSearchEnabled(nativeRuntime, true)).toBe(true)
+    expect(codexWebSearchEnabled(managedRuntime, true)).toBe(false)
+    expect(codexWebSearchEnabled({
+      ...managedRuntime,
+      provider: { ...managedRuntime.provider, supportsSearchTool: true },
+    }, true)).toBe(true)
+    expect(codexWebSearchEnabled(nativeRuntime, false)).toBe(false)
   })
 
   it('classifies host errors so only operational transport classes are retryable', () => {
@@ -191,12 +228,194 @@ describe('AgentHost contract', () => {
     expect(new AgentHostError('omp', 'bad protocol', 'protocol').retryable).toBe(false)
   })
 
+  it('fails before model traffic when a profile uses a model API unsupported by the selected host', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-host-wire-'))
+    directories.push(directory)
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    let started = false
+    const host = {
+      id: 'codex' as const,
+      displayName: 'Codex fixture',
+      capabilities: {
+        streaming: true, sessionResume: true, structuredOutput: true, localImages: true, mcp: true,
+        shell: true, network: true, workspaceIsolation: 'enforced' as const, restrictedMode: true,
+      },
+      modelProvider: createAgentHost('codex').modelProvider,
+      async probe(): Promise<{ ok: true; hostId: 'codex'; executable: string }> {
+        return { ok: true, hostId: 'codex', executable: '/fixture/codex' }
+      },
+      async start(): Promise<never> {
+        started = true
+        throw new Error('must not start')
+      },
+      async resume(): Promise<never> {
+        started = true
+        throw new Error('must not resume')
+      },
+    } satisfies AgentHost
+    const run = await runAgentTest({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: oneCaseManifest(),
+      profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      modelProfile: {
+        id: 'chat-only', model: 'fixture', providerId: 'fixture', baseUrl: 'https://provider.example.test',
+        api: 'openai-completions', envKey: 'FIXTURE_KEY',
+      },
+      environment: { FIXTURE_KEY: 'fixture-key' },
+      agentHost: host,
+    }, { browserExecutablePath: browserPath })
+    expect(started).toBe(false)
+    expect(run.state.status).toBe('failed')
+    expect(run.state.error).toMatch(/does not support model API openai-completions/)
+  })
+
+  it('runs an unregistered third-party host through the generic provider runtime contract', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-host-portable-'))
+    directories.push(directory)
+    const browserPath = resolve(directory, 'chromium')
+    const sourceAgentHome = resolve(directory, 'portable-source-home')
+    const agentExecutable = resolve(directory, 'portable-agent')
+    const inputImagePath = resolve(directory, 'case-one-image.png')
+    await Promise.all([
+      writeFile(browserPath, ''),
+      mkdir(sourceAgentHome, { recursive: true }),
+      writeFile(agentExecutable, ''),
+      writeFile(inputImagePath, ''),
+    ])
+    const manifest = oneCaseManifest()
+    manifest.phases[0]!.imageIds.push('case-one-image')
+    manifest.supplementalImages.push({
+      id: 'case-one-image', sourceKind: 'supplemental', fileName: 'case-one-image.png',
+      mediaType: 'image/png', bytes: 0, sha256: 'b'.repeat(64), reviewStatus: 'required',
+    })
+    const delivered: CodexTestAgentResult = {
+      version: '1.0', workflowId: manifest.workflowId, sourceSha256: manifest.source.sha256,
+      outcome: 'passed', summary: 'Portable host completed the generic contract.',
+      startedAt: '2026-08-06T00:00:00.000Z', finishedAt: '2026-08-06T00:01:00.000Z',
+      cases: [{
+        caseId: 'case-one', title: 'Agent host contract', outcome: 'passed', summary: 'Observed the portable fixture.',
+        evidence: [{ kind: 'observation', description: 'Portable host produced host-neutral evidence.' }],
+      }],
+      mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+    }
+    let prepared: AgentHostProviderPrepareOptions | undefined
+    let launched: AgentHostLaunchOptions | undefined
+    let receivedExecutionInput: AgentInputPart[] | undefined
+    let turn = 0
+    const session = {
+      id: 'portable-session',
+      async run(input: AgentInputPart[]) {
+        if (turn === 0) receivedExecutionInput = input
+        const text = turn++ === 0 ? 'Portable execution completed.' : JSON.stringify(delivered)
+        return {
+          events: (async function* () {
+            yield { type: 'thread_started' as const, threadId: 'portable-session' }
+            yield { type: 'agent_message' as const, text }
+          })(),
+        }
+      },
+    }
+    const host = {
+      id: 'portable',
+      displayName: 'Portable fixture host',
+      capabilities: {
+        streaming: true, sessionResume: true, structuredOutput: false, localImages: true, mcp: true,
+        shell: true, network: true, workspaceIsolation: 'prompt_only' as const, restrictedMode: false,
+      },
+      modelProvider: {
+        supportedApis: ['openai-responses'] as const,
+        async prepare(options: AgentHostProviderPrepareOptions) {
+          prepared = options
+          if (!options.provider || options.provider.credential.type !== 'environment') {
+            throw new Error('portable fixture requires an environment-backed provider')
+          }
+          const model = options.model ?? options.provider.model
+          const credentialName = options.provider.credential.name
+          return {
+            agentHome: options.agentHome,
+            environment: { [credentialName]: options.environment[credentialName]! },
+            mcpEnvironment: {},
+            model: `portable/${model}`,
+            provider: {
+              profileId: options.provider.profileId,
+              providerId: options.provider.providerId,
+              baseUrl: options.provider.baseUrl,
+              api: options.provider.api,
+              model,
+              modelSelector: `portable/${model}`,
+              credentialEnvironmentVariable: credentialName,
+              ...(options.provider.inputModalities ? { inputModalities: [...options.provider.inputModalities] } : {}),
+              ...(options.provider.supportsParallelToolCalls !== undefined
+                ? { supportsParallelToolCalls: options.provider.supportsParallelToolCalls }
+                : {}),
+            },
+          }
+        },
+      },
+      async probe(options: AgentHostLaunchOptions) {
+        launched = options
+        return { ok: true, hostId: 'portable', executable: options.executable! }
+      },
+      async start(options: AgentHostLaunchOptions) {
+        launched = options
+        return session
+      },
+      async resume(options: AgentHostLaunchOptions & { resumeId: string }) {
+        launched = options
+        return session
+      },
+    } satisfies AgentHost
+    const outputDirectory = resolve(directory, 'run')
+    const run = await runAgentTest({
+      outputDirectory,
+      manifest,
+      profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [inputImagePath], headed: false,
+      model: 'deepseek-v4-flash-override',
+      modelProfile: {
+        id: 'deepseek', model: 'deepseek-v4-flash', providerId: 'deepseek', baseUrl: 'https://api.deepseek.com',
+        api: 'openai-responses', envKey: 'DEEPSEEK_API_KEY',
+        supportsParallelToolCalls: true,
+      },
+      environment: { DEEPSEEK_API_KEY: 'portable-provider-secret' },
+      agentHost: host,
+      agentSourceHome: sourceAgentHome,
+      agentExecutable,
+    }, { browserExecutablePath: browserPath })
+
+    expect(run.state.agentHost).toBe('portable')
+    expect(run.result?.outcome).toBe('passed')
+    expect(prepared).toMatchObject({ sourceAgentHome, model: 'deepseek-v4-flash-override' })
+    expect(prepared?.provider).toMatchObject({ profileId: 'deepseek', api: 'openai-responses' })
+    expect(launched).toMatchObject({ executable: agentExecutable })
+    expect(launched?.runtime).toMatchObject({
+      model: 'portable/deepseek-v4-flash-override',
+      provider: {
+        model: 'deepseek-v4-flash-override', baseUrl: 'https://api.deepseek.com',
+        supportsParallelToolCalls: true,
+      },
+    })
+    expect(receivedExecutionInput?.some((part) => part.type === 'local_image')).toBe(false)
+    expect(receivedExecutionInput?.[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('cannot receive inline image parts'),
+    })
+    const selection = await readFile(resolve(outputDirectory, 'agent-host-selection.json'), 'utf8')
+    expect(JSON.parse(selection)).toMatchObject({
+      id: 'portable',
+      modelProvider: { binding: { profileId: 'deepseek', modelSelector: 'portable/deepseek-v4-flash-override' } },
+    })
+    expect(selection).not.toContain('portable-provider-secret')
+  })
+
   it('fails closed when OMP is asked to impersonate the restricted opaque mode', async () => {
     const host = new OmpAgentHost()
     await expect(host.probe({
-      workspaceDirectory: '/tmp/workspace', agentHome: '/tmp/home', executable: '/tmp/omp',
+      workspaceDirectory: '/tmp/workspace', runtime: { agentHome: '/tmp/home', environment: {}, mcpEnvironment: {} }, executable: '/tmp/omp',
       playwrightConfigPath: '/tmp/playwright.json', playwrightSecretsPath: '/tmp/secrets.env', controlConfigPath: '/tmp/control.json',
-      environment: {}, mcpEnvironment: {}, fullAgentAccess: false,
+      fullAgentAccess: false,
     })).resolves.toMatchObject({ ok: false, hostId: 'omp' })
   })
 
@@ -221,6 +440,7 @@ describe('AgentHost contract', () => {
         workspaceIsolation: 'prompt_only' as const,
         restrictedMode: false,
       },
+      modelProvider: createAgentHost('omp').modelProvider,
       async probe(): Promise<{ ok: true; hostId: 'omp'; executable: string }> {
         return { ok: true, hostId: 'omp', executable: '/fixture/omp' }
       },
@@ -236,7 +456,7 @@ describe('AgentHost contract', () => {
       manifest: oneCaseManifest(),
       profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
-      ompHome,
+      agentSourceHome: ompHome,
       agentHost: host,
     }, { browserExecutablePath: browserPath })
     expect(run.state.status).toBe('completed')
@@ -248,12 +468,12 @@ describe('AgentHost contract', () => {
   it('drives an OMP RPC session through the same streaming host contract', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-omp-host-'))
     directories.push(directory)
-    const executable = process.platform === 'win32' ? process.execPath : '/bin/true'
-    const agentHome = resolve(directory, 'agent-home')
     const workspaceDirectory = resolve(directory, 'workspace')
-    await mkdir(agentHome, { recursive: true })
     await mkdir(workspaceDirectory, { recursive: true })
-    const processFactory = (): ChildProcessWithoutNullStreams => fakeOmpProcess(directory, (send) => {
+    let spawnedArguments: readonly string[] = []
+    const processFactory = (_command: string, args: readonly string[]): ChildProcessWithoutNullStreams => {
+      spawnedArguments = args
+      return fakeOmpProcess(directory, (send) => {
       send({ type: 'extension_ui_request', id: 'widget-1', method: 'setWidget', widgetKey: 'status', widgetLines: ['working'] })
       send({ type: 'extension_ui_request', id: 'notice-1', method: 'notify', message: 'fixture notice' })
       send({ type: 'agent_start' })
@@ -262,23 +482,27 @@ describe('AgentHost contract', () => {
       const assistant = { role: 'assistant', content: [{ type: 'text', text: 'fixture completed' }] }
       send({ type: 'message_end', message: assistant })
       send({ type: 'agent_end', messages: [assistant] })
-    })
+      })
+    }
     const spawnProcess = processFactory as unknown as typeof spawn
     const host = new OmpAgentHost({ spawnProcess })
-    const options = {
-      workspaceDirectory,
-      agentHome,
-      executable,
-      playwrightConfigPath: resolve(directory, 'playwright.json'),
-      playwrightSecretsPath: resolve(directory, 'secrets.env'),
-      controlConfigPath: resolve(directory, 'control.json'),
-      ompMcpConfigPath: resolve(workspaceDirectory, '.omp', 'mcp.json'),
-      environment: {},
-      mcpEnvironment: {},
-      fullAgentAccess: true,
+    const options = ompLaunchOptions(directory, workspaceDirectory)
+    options.runtime.model = 'volcengine_coding/glm-5.2'
+    options.runtime.provider = {
+      profileId: 'volcengine',
+      providerId: 'volcengine_coding',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+      api: 'openai-responses',
+      model: 'glm-5.2',
+      modelSelector: 'volcengine_coding/glm-5.2',
+      configurationPath: resolve(options.runtime.agentHome, 'models.yml'),
+      reasoningEffort: 'high',
     }
     await expect(host.probe(options)).resolves.toMatchObject({ ok: true, hostId: 'omp' })
     const session = await host.start(options)
+    expect(spawnedArguments).toEqual(expect.arrayContaining([
+      '--model', 'volcengine_coding/glm-5.2', '--thinking', 'high',
+    ]))
     expect(session.id).toContain('session.jsonl')
     const stream = await session.run([
       { type: 'text', text: 'run the fixture' },
@@ -313,11 +537,7 @@ describe('AgentHost contract', () => {
     const host = new OmpAgentHost({ spawnProcess: processFactory })
     const root = resolve(directory, 'workspace')
     await mkdir(root, { recursive: true })
-    const session = await host.start({
-      workspaceDirectory: root, agentHome: resolve(directory, 'home'), executable: process.platform === 'win32' ? process.execPath : '/bin/true',
-      playwrightConfigPath: resolve(directory, 'playwright.json'), playwrightSecretsPath: resolve(directory, 'secrets.env'), controlConfigPath: resolve(directory, 'control.json'),
-      environment: {}, mcpEnvironment: {}, fullAgentAccess: true,
-    })
+    const session = await host.start(ompLaunchOptions(directory, root))
     const stream = await session.run([{ type: 'text', text: 'interactive fixture' }])
     await expect(async () => {
       for await (const _event of stream.events) {
@@ -357,11 +577,7 @@ describe('AgentHost contract', () => {
     const host = new OmpAgentHost({ spawnProcess: processFactory })
     const root = resolve(directory, 'workspace')
     await mkdir(root, { recursive: true })
-    const session = await host.start({
-      workspaceDirectory: root, agentHome: resolve(directory, 'home'), executable: process.platform === 'win32' ? process.execPath : '/bin/true',
-      playwrightConfigPath: resolve(directory, 'playwright.json'), playwrightSecretsPath: resolve(directory, 'secrets.env'), controlConfigPath: resolve(directory, 'control.json'),
-      environment: {}, mcpEnvironment: {}, fullAgentAccess: true,
-    })
+    const session = await host.start(ompLaunchOptions(directory, root))
     const events = []
     for await (const event of (await session.run([{ type: 'text', text: 'multi-turn fixture' }])).events) events.push(event)
     expect(events.at(-1)?.type).toBe('turn_completed')
@@ -401,7 +617,7 @@ describe('AgentHost contract', () => {
       manifest,
       profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
-      ompHome: sourceHome,
+      agentSourceHome: sourceHome,
       agentHost: host,
       agentExecutable: process.platform === 'win32' ? process.execPath : '/bin/true',
     }, { browserExecutablePath: browserPath })

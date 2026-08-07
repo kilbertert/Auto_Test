@@ -8,7 +8,7 @@
 
 ## AgentHost 宿主选择边界
 
-当前默认宿主是 Codex。PR #28 后的 Linux x64 验收已证明 Codex 与 OMP 能以同一 Manifest 分别完成一次真实写入型充电 canary，并共享结果、证据、回执和 Mutation Ledger 合同；它不能替代 Windows 平台的业务复验。Windows 私有包默认携带 Codex；OMP 需要在测试机单独安装并配置 Provider，且其 workspace isolation 仍是 `prompt_only`。Provider 探针和安装检查只证明启动层，必须以 Windows 实际 Manifest、逐 case 证据、结果工作簿和 `pending=0` 的 Ledger 才能声明业务通过。
+当前默认宿主是 Codex。PR #28 后的 Linux x64 验收已证明 Codex 与 OMP 能以同一 Manifest 分别完成一次真实写入型充电 canary，并共享结果、证据、回执和 Mutation Ledger 合同；它不能替代 Windows 平台的业务复验。Windows 私有包自动安装 Codex；OMP 二进制需要在测试机单独安装，但可以消费同一个私有包默认 Provider 或显式 Model Profile，且其 workspace isolation 仍是 `prompt_only`。Provider 探针和安装检查只证明启动层，必须以 Windows 实际 Manifest、逐 case 证据、结果工作簿和 `pending=0` 的 Ledger 才能声明业务通过。
 
 ## 1. 验收前准备
 
@@ -28,10 +28,10 @@ Set-Location "D:\Auto-Test"
 .\Auto-Test.cmd doctor
 ```
 
-继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 路径必须通过 Auto-Test 的 Provider 探针；OMP 路径至少通过 `omp --version`，并由 OMP 自身完成 Provider 检查，或用真实 AgentHost canary 验证 Provider 可用。OMP 使用 `--omp-home` 或 `AUTO_TEST_OMP_HOME` 提供 provider/auth 配置时，实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
-选择 OMP 时，Windows 启动器不会显示 Codex Provider 探针结果；`omp --version` 只能证明 OMP 可启动，不代表 Provider 或业务验收通过。
+继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 使用 Windows 默认 Provider 时必须通过启动器探针；显式 Model Profile 不运行无关的默认探针，而由实际 Codex canary 验证。OMP 路径至少通过 `omp --version`，然后由 OMP 适配器使用同一个 Model Profile 生成隔离 `models.yml` 并在真实 canary 中验证 Provider。只有 legacy/native Run 才需要 `--agent-home` 或 `AUTO_TEST_AGENT_HOME` 提供宿主 provider/auth 源目录；`--omp-home` / `AUTO_TEST_OMP_HOME` 是兼容别名。实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
+Codex 运行时只会把本次 Run 的 `.agent-private` 作为 sandbox 的额外可写目录，以便 Control MCP 登记权威 Ledger；这不等于放开仓库或用户目录。选择 OMP 时，Windows 启动器不会显示 Codex 专用 Provider 探针结果；`omp --version` 只能证明 OMP 可启动，Model Profile 的环境变量、协议和模型能力仍要由真实 AgentHost canary 验证。
 
-模型 API 探针默认最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。stdout+stderr 总量超过 4 MiB 同样会终止进程树、回滚配置并清理捕获文件。这不是业务测试结果。OMP 的 Provider 探针由 OMP 自身负责，Auto-Test 只检查其启动层。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
+Windows 默认 Provider 的模型 API 探针最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。stdout+stderr 总量超过 4 MiB 同样会终止进程树、回滚配置并清理捕获文件。这不是业务测试结果。OMP 和显式 Model Profile 不运行该 Codex 默认探针，而是在 AgentHost 运行前准备自己的 Provider 绑定；两者都必须用真实 canary 验证协议、鉴权和模型能力。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
 
 如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
 
@@ -46,7 +46,9 @@ Set-Location "D:\Auto-Test"
   --one
 ```
 
-该参数只作用于当前运行，不会替换默认 Key；不要把真实 Key 提交到脚本或测试材料。需要永久重配默认 Provider 时，使用 `--reconfigure-api`，不要与 `--api-key` 同时使用。
+该参数只作用于当前 Windows 默认 Provider，不会替换默认 Key；不要把真实 Key 提交到脚本或测试材料。`--api-key` 和 `--reconfigure-api` 都不能与 `--model-profile` 同时使用，显式 Profile 应通过自己的 `envKey` 提供凭据。需要永久重配默认 Provider 时，使用 `--reconfigure-api`，不要与 `--api-key` 同时使用。
+
+新 Run 默认使用 AgentHost 通用的内置 `deepseek`。默认 Windows Provider 正好配置为 `deepseek-v4-flash @ https://api.deepseek.com` 时，启动器会把本轮 DPAPI Key 仅在进程内映射为 `DEEPSEEK_API_KEY`；其他 endpoint/model 会成为本进程的 `windows-private` 默认 Profile。两种默认都可供 Codex 或 OMP 使用。验收 `volcengine` 时提供 `ARK_API_KEY` 并显式加入 `--model-profile volcengine`，Codex 与 OMP 都会使用同一 Profile，分别生成自己的隔离配置。Windows 启动器不会自动把第二个供应商的 Key 导入 DPAPI；Profile 注册表和环境变量都属于当前测试机的私有配置，不得进入 ZIP、仓库或验收记录。Provider/模型探针和一条真实只读 canary 都通过后，才能扩大范围。
 
 ## 3. 一次性注册测试环境
 
@@ -162,7 +164,7 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 - 环境阻断：补充同一 Profile 的登录、权限、测试数据或物理条件后使用 `--resume`；
 - 基础设施故障：恢复所选 AgentHost、Provider、Chromium、MCP 或本地网络后使用原 `$Run` 恢复；不要在恢复时静默切换宿主。
 
-任何非通过结果如果显示 Mutation Ledger 仍有 `pending`，都必须先恢复原 run 并核对真实业务状态，不得直接新建运行重做写入。OMP 恢复时若不需要更换 Provider，省略 `--omp-home` 以复用原 run 的隔离配置；不要让当前用户目录意外改变原测试宿主的模型或认证。
+任何非通过结果如果显示 Mutation Ledger 仍有 `pending`，都必须先恢复原 run 并核对真实业务状态，不得直接新建运行重做写入。恢复时若不需要更换 native Provider，省略 `--agent-home` 以复用原 run 的隔离配置；不要让当前用户目录意外改变原测试宿主的模型或认证。
 
 ## 7. 验收交付
 

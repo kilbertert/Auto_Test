@@ -1,10 +1,15 @@
 import { access, chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
-import { prepareCodexAgentWorkspace } from '../src/agent/workspace.js'
+import { prepareCodexAgentWorkspace, type AgentWorkspace } from '../src/agent/workspace.js'
+import { CodexAgentHost } from '../src/agent/codex-host.js'
+import { OmpAgentHost } from '../src/agent/omp-host.js'
+import type { AgentHostProviderPrepareOptions } from '../src/agent/host.js'
+import { resolveModelProfileEnvironment, toAgentModelProviderDescriptor, type ModelProfile } from '../src/workflow/model-profile.js'
 
 const directories: string[] = []
 
@@ -34,6 +39,24 @@ function manifest(origins: string[]): WorkflowIntakeManifest {
     embeddedImages: [],
     supplementalImages: [],
     review: { status: 'draft', reasons: [] },
+  }
+}
+
+function providerPrepareOptions(
+  workspace: AgentWorkspace,
+  environment: NodeJS.ProcessEnv,
+  overrides: Partial<AgentHostProviderPrepareOptions> = {},
+): AgentHostProviderPrepareOptions {
+  return {
+    workspaceDirectory: workspace.workspaceDirectory,
+    privateDirectory: workspace.privateDirectory,
+    agentHome: workspace.agentHome,
+    playwrightConfigPath: workspace.playwrightConfigPath,
+    playwrightSecretsPath: workspace.playwrightSecretsPath,
+    controlConfigPath: workspace.controlConfigPath,
+    environment,
+    mcpEnvironment: workspace.mcpEnvironment,
+    ...overrides,
   }
 }
 
@@ -88,6 +111,14 @@ describe('Codex agent workspace', () => {
     await writeFile(briefFilePath, 'raw-brief')
     await writeFile(imagePath, 'raw-image')
 
+    const environment = {
+      PATH: '/usr/bin',
+      [homeKey]: homeValue,
+      FIXTURE_MODEL_KEY: 'provider-key',
+      AUTO_TEST_AGENT_FORWARD_ENV: 'FIXTURE_FORWARD',
+      FIXTURE_FORWARD: 'agent-only-secret',
+      UNRELATED_SERVER_SECRET: 'must-not-forward',
+    }
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
@@ -98,16 +129,11 @@ describe('Codex agent workspace', () => {
       inputImagePaths: [imagePath],
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: sourceHome,
-      environment: {
-        PATH: '/usr/bin',
-        [homeKey]: homeValue,
-        FIXTURE_MODEL_KEY: 'provider-key',
-        AUTO_TEST_AGENT_FORWARD_ENV: 'FIXTURE_FORWARD',
-        FIXTURE_FORWARD: 'agent-only-secret',
-        UNRELATED_SERVER_SECRET: 'must-not-forward',
-      },
+      environment,
     })
+    const runtime = await new CodexAgentHost().modelProvider.prepare(providerPrepareOptions(workspace, environment, {
+      sourceAgentHome: sourceHome,
+    }))
 
     const config = await readFile(resolve(workspace.agentHome, 'config.toml'), 'utf8')
     const playwrightConfig = JSON.parse(await readFile(workspace.playwrightConfigPath, 'utf8'))
@@ -151,11 +177,11 @@ describe('Codex agent workspace', () => {
       secretRef: 'fixture.accessCode', alias: 'AUTO_TEST_VALUE_001', value: 'sensitive-value',
     }))
     expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('primary test engineer')
-    expect(workspace.codexEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key', FIXTURE_FORWARD: 'agent-only-secret' })
-    expect(workspace.codexEnvironment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
-    expect(workspace.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
-    expect(workspace.mcpEnvironment.FIXTURE_MODEL_KEY).toBe('')
-    expect(workspace.mcpEnvironment).not.toHaveProperty('FIXTURE_FORWARD')
+    expect(runtime.environment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key', FIXTURE_FORWARD: 'agent-only-secret' })
+    expect(runtime.environment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
+    expect(runtime.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
+    expect(runtime.mcpEnvironment).not.toHaveProperty('FIXTURE_MODEL_KEY')
+    expect(runtime.mcpEnvironment).not.toHaveProperty('FIXTURE_FORWARD')
     expect(serializedWorkspace).not.toContain('sensitive-value')
     expect(await readFile(workspace.runValuesPath!, 'utf8')).not.toContain('provider-key')
     expect(workspace.runValuesPath).toBe(resolve(workspace.privateDirectory, 'run-values.json'))
@@ -185,7 +211,6 @@ describe('Codex agent workspace', () => {
       secrets: { 'fixture.accessCode': 'first-value' },
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: sourceHome,
     }
     const initial = await prepareCodexAgentWorkspace(options)
     const ledger = [{
@@ -235,7 +260,6 @@ describe('Codex agent workspace', () => {
       secrets: {},
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: sourceHome,
     }
     await prepareCodexAgentWorkspace(options)
     const resumed = await prepareCodexAgentWorkspace({
@@ -269,7 +293,6 @@ describe('Codex agent workspace', () => {
       sourceFilePath,
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: sourceHome,
       testDataAccess: 'opaque',
     })
 
@@ -302,6 +325,13 @@ describe('Codex agent workspace', () => {
       auth: [],
       policy: { allowWrite: false, allowDestructive: false },
     }
+    const environment = { VOLCENGINE_API_KEY: 'volc-secret', FIXTURE_MODEL_KEY: 'fixture-secret' }
+    const modelProfile: ModelProfile = {
+      id: 'volcengine', model: 'glm-5.2', providerId: 'volcengine_coding',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', api: 'openai-responses', envKey: 'ARK_API_KEY',
+      envKeyAliases: ['VOLCENGINE_API_KEY'], reasoningEffort: 'high', reasoningEfforts: ['low', 'medium', 'high'],
+      inputModalities: ['text'], supportsWebsockets: false, contextWindowTokens: 1_024_000, maxOutputTokens: 65_536,
+    }
 
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
@@ -310,26 +340,36 @@ describe('Codex agent workspace', () => {
       secrets: {},
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: sourceHome,
-      environment: { GLM_API_KEY: 'glm-secret', FIXTURE_MODEL_KEY: 'fixture-secret' },
-      modelProfile: {
-        id: 'glm', model: 'glm-4.6', providerId: 'glm_api',
-        baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'chat', envKey: 'GLM_API_KEY', reasoningEffort: 'xhigh',
-      },
+      environment,
     })
+    const runtime = await new CodexAgentHost().modelProvider.prepare(providerPrepareOptions(workspace, environment, {
+      executable: resolve(dirname(createRequire(import.meta.url).resolve('@openai/codex/package.json')), 'bin', 'codex.js'),
+      provider: toAgentModelProviderDescriptor(resolveModelProfileEnvironment(modelProfile, environment)),
+    }))
 
     const config = await readFile(resolve(workspace.agentHome, 'config.toml'), 'utf8')
-    expect(config).toContain('model = "glm-4.6"')
-    expect(config).toContain('model_provider = "glm_api"')
-    expect(config).toContain('[model_providers.glm_api]')
-    expect(config).toContain('base_url = "https://open.bigmodel.cn/api/paas/v4"')
-    expect(config).toContain('wire_api = "chat"')
-    expect(config).toContain('env_key = "GLM_API_KEY"')
-    expect(config).toContain('model_reasoning_effort = "xhigh"')
+    const modelCatalog = JSON.parse(await readFile(resolve(workspace.agentHome, 'models.json'), 'utf8')) as {
+      models: Array<Record<string, unknown>>
+    }
+    expect(config).toContain('model = "glm-5.2"')
+    expect(config).toContain('model_provider = "volcengine_coding"')
+    expect(config).toContain('[model_providers.volcengine_coding]')
+    expect(config).toContain('base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"')
+    expect(config).toContain('wire_api = "responses"')
+    expect(config).toContain('env_key = "VOLCENGINE_API_KEY"')
+    expect(config).toContain('model_reasoning_effort = "high"')
+    expect(config).toContain('model_context_window = 1024000')
+    expect(config).toContain('model_catalog_json = ')
+    expect(config).toContain('supports_websockets = false')
     expect(config).not.toContain('fixture-model')
     expect(config).not.toContain('FIXTURE_MODEL_KEY')
-    expect(workspace.codexEnvironment).toMatchObject({ GLM_API_KEY: 'glm-secret' })
-    expect(workspace.codexEnvironment).not.toHaveProperty('FIXTURE_MODEL_KEY')
+    expect(modelCatalog.models).toEqual([expect.objectContaining({
+      slug: 'glm-5.2', input_modalities: ['text'], context_window: 1_024_000,
+    })])
+    expect(JSON.stringify(modelCatalog)).not.toContain('volc-secret')
+    expect(runtime.environment).toMatchObject({ VOLCENGINE_API_KEY: 'volc-secret' })
+    expect(runtime.environment).not.toHaveProperty('FIXTURE_MODEL_KEY')
+    expect(runtime.mcpEnvironment).not.toHaveProperty('VOLCENGINE_API_KEY')
   })
 
   it('isolates OMP provider state and never inherits a user MCP definition', async () => {
@@ -348,6 +388,12 @@ describe('Codex agent workspace', () => {
       auth: [],
       policy: { allowWrite: false, allowDestructive: false },
     }
+    const initialEnvironment = {
+      HOME: resolve(directory, 'user-home'),
+      PATH: '/usr/bin',
+      AUTO_TEST_AGENT_FORWARD_ENV: 'OMP_API_KEY',
+      OMP_API_KEY: 'agent-provider-secret',
+    }
 
     const workspace = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
@@ -356,16 +402,12 @@ describe('Codex agent workspace', () => {
       secrets: {},
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: resolve(directory, 'unused-codex-home'),
-      sourceAgentHome: ompHome,
-      agentHostId: 'omp',
-      environment: {
-        HOME: resolve(directory, 'user-home'),
-        PATH: '/usr/bin',
-        AUTO_TEST_AGENT_FORWARD_ENV: 'OMP_API_KEY',
-        OMP_API_KEY: 'agent-provider-secret',
-      },
+      environment: initialEnvironment,
     })
+    const omp = new OmpAgentHost()
+    const runtime = await omp.modelProvider.prepare(providerPrepareOptions(workspace, initialEnvironment, {
+      sourceAgentHome: ompHome,
+    }))
 
     expect(await readFile(resolve(workspace.agentHome, 'models.yml'), 'utf8')).toContain('fixture')
     expect(await readFile(resolve(workspace.agentHome, 'agent.db'), 'utf8')).toBe('sqlite-auth-fixture')
@@ -373,18 +415,22 @@ describe('Codex agent workspace', () => {
     expect(await readFile(resolve(workspace.agentHome, '.env'), 'utf8')).toBe('OMP_API_KEY=from-dotenv\n')
     expect(await readFile(resolve(workspace.agentHome, '.env'), 'utf8')).not.toContain('PRIVATE_APP_SECRET')
     await expect(access(resolve(workspace.agentHome, 'mcp.json'))).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(workspace.environment).toMatchObject({ PI_CODING_AGENT_DIR: workspace.agentHome, OMP_API_KEY: 'agent-provider-secret' })
-    expect(workspace.environment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-home'))
-    expect(workspace.mcpEnvironment).not.toHaveProperty('OMP_API_KEY')
-    expect(workspace.mcpEnvironment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-mcp-home'))
-    expect(workspace.mcpEnvironment.HOME).not.toBe(resolve(directory, 'user-home'))
-    const mcpConfig = JSON.parse(await readFile(workspace.ompMcpConfigPath, 'utf8')) as { mcpServers: Record<string, unknown> }
+    expect(runtime.environment).toMatchObject({ PI_CODING_AGENT_DIR: workspace.agentHome, OMP_API_KEY: 'agent-provider-secret' })
+    expect(runtime.environment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-home'))
+    expect(runtime.mcpEnvironment).not.toHaveProperty('OMP_API_KEY')
+    expect(runtime.mcpEnvironment.HOME).toBe(resolve(workspace.privateDirectory, 'omp-mcp-home'))
+    expect(runtime.mcpEnvironment.HOME).not.toBe(resolve(directory, 'user-home'))
+    const mcpConfig = JSON.parse(await readFile(resolve(workspace.workspaceDirectory, '.omp', 'mcp.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
     expect(Object.keys(mcpConfig.mcpServers).sort()).toEqual(['auto-test-control', 'playwright'])
-    const ompConfig = await readFile(workspace.ompConfigPath, 'utf8')
+    const ompConfig = await readFile(resolve(workspace.workspaceDirectory, '.omp', 'config.yml'), 'utf8')
     expect(ompConfig).toContain('enabled: false')
     expect(ompConfig).toContain('backend: off')
 
     await writeFile(resolve(ompHome, 'agent.db'), 'rotated-sqlite-auth-fixture', { mode: 0o600 })
+    const resumedEnvironment = {
+      HOME: resolve(directory, 'user-home'),
+      PATH: '/usr/bin',
+    }
     const resumed = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
@@ -392,20 +438,22 @@ describe('Codex agent workspace', () => {
       secrets: {},
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      sourceCodexHome: resolve(directory, 'unused-codex-home'),
-      sourceAgentHome: ompHome,
-      agentHostId: 'omp',
-      environment: {
-        HOME: resolve(directory, 'user-home'),
-        PATH: '/usr/bin',
-      },
+      environment: resumedEnvironment,
       resume: true,
     })
+    await omp.modelProvider.prepare(providerPrepareOptions(resumed, resumedEnvironment, {
+      sourceAgentHome: ompHome,
+      resume: true,
+    }))
     expect(await readFile(resolve(resumed.agentHome, 'agent.db'), 'utf8')).toBe('rotated-sqlite-auth-fixture')
 
     const ambientHome = resolve(directory, 'ambient-home')
     await mkdir(resolve(ambientHome, '.omp', 'agent'), { recursive: true })
     await writeFile(resolve(ambientHome, '.omp', 'agent', 'agent.db'), 'ambient-must-not-replace-run-auth', { mode: 0o600 })
+    const preservedEnvironment = {
+      HOME: ambientHome,
+      PATH: '/usr/bin',
+    }
     const preserved = await prepareCodexAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
@@ -413,13 +461,10 @@ describe('Codex agent workspace', () => {
       secrets: {},
       headed: false,
       browserExecutablePath: '/verified/chromium',
-      agentHostId: 'omp',
-      environment: {
-        HOME: ambientHome,
-        PATH: '/usr/bin',
-      },
+      environment: preservedEnvironment,
       resume: true,
     })
+    await omp.modelProvider.prepare(providerPrepareOptions(preserved, preservedEnvironment, { resume: true }))
     expect(await readFile(resolve(preserved.agentHome, 'agent.db'), 'utf8')).toBe('rotated-sqlite-auth-fixture')
   })
 })

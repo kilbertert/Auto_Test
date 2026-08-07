@@ -47,25 +47,25 @@ for compatibility, audit, and future stable-regression acceleration — **not** 
 Read `docs/architecture-journey-ir-runtime-to-codex-native.md` before changing the execution model.
 It records why the project migrated off IR/Runtime and the constraints that prevent regressing.
 
-### Codex-native flow
+### AgentHost-native flow
 
 ```
 src/cli/easy.ts | src/cli/agent-test.ts
   -> intakeWorkflowXlsx (src/workflow/intake.ts): manifest + embedded/supplemental images + secret material
   -> assessAgentIntakeReadiness (src/agent/intake-readiness.ts): stable execution contract or pre-execution block
   -> selectEnvironmentProfile + scopeEnvironmentProfile + ensureEnvironmentAuthentication (src/workflow/auth-broker.ts)
-  -> runCodexTestAgent (src/agent/runner.ts)
+  -> runAgentTest (src/agent/runner.ts)
 ```
 
 `runner.ts`:
-1. `prepareCodexAgentWorkspace` (`src/agent/workspace.ts`) — per-run isolated workspace + isolated
-   Codex Home; copies raw Excel/brief/images and run-scoped test values; writes the Playwright
+1. `prepareAgentWorkspace` (`src/agent/workspace.ts`) — per-run isolated workspace + isolated
+   AgentHost home; copies raw Excel/brief/images and run-scoped test values; writes the Playwright
    config/secrets and the Control MCP config.
-2. Resolves the Codex CLI executable **outside any `node_modules/.bin`** (`resolveCodexExecutable`):
-   `AUTO_TEST_CODEX_BIN`, else a PATH search that excludes dependency bins; fails closed rather than
-   silently using the SDK-bundled CLI. (Using the SDK ≠ using the configured Codex environment.)
-3. Starts/resumes one Codex SDK `Thread` (`startSdkThread`) with two MCP servers: `playwright`
-   (`@playwright/mcp`) and `auto-test-control` (`src/agent/control-server.ts`, an optional run journal).
+2. Selects one `AgentHost`, resolves its runtime through `host.modelProvider.prepare()`, and passes only
+   generic `agentSourceHome` / `agentExecutable` overrides. `AUTO_TEST_AGENT_HOME` and
+   `AUTO_TEST_AGENT_BIN` are the generic environment equivalents; Host-specific names are compatibility
+   inputs handled at the CLI/adapter boundary.
+3. Starts/resumes one Host session with run-scoped Playwright and `auto-test-control` MCP servers.
 4. **Two-turn design**: an execution turn (no output schema, full agent access) then a delivery turn
    on the **same thread** with `codexTestResultSchema` (`src/agent/result.ts`). Splitting prevents an
    oversized first request from failing before any tool call.
@@ -91,7 +91,7 @@ failure mode the project migrated away from:
   codes, fixed table column numbers, or specific DOM/XPath in `src/agent`, `src/workflow`, or
   `src/usability`. Prove new capabilities in synthetic fixtures (`tests/fixtures/`) before any real
   canary.
-- **Codex is the only intelligence for first-time execution.** Do not add a second
+- **The selected AgentHost is the only intelligence for first-time execution.** Do not add a second
   planner/reporter/adjudicator with less context than the executing thread that can override its
   business conclusions. Deterministic validation covers only input identity, case coverage, evidence
   existence, result consistency, permissions, environment requirements, and side-effect recovery
@@ -143,19 +143,33 @@ only by the Profile, never by inferred per-case risk.
 ## Model profile (multi-provider switching)
 
 A separate `model-profiles.json` registry (same config dir as environment profiles; template at
-`templates/model-profiles.example.json`) lists model providers. Each profile carries `model`,
-`providerId`, `baseUrl`, `wireApi` (`responses`|`chat`), `envKey`, and optional `reasoningEffort`.
-`--model-profile <id>` (or the `easy` menu / `doctor`) selects one; `prepareAgentHome` writes the
-selected profile into the isolated Codex `config.toml` instead of copying the source provider. With
-no registry, runs fall back to the source Codex config. Capacity errors (`at capacity`,
-`try a different model`) are classified as a resumable `infrastructure` block with a switch-provider
-next action; switching providers on `--resume` continues the same Codex thread. The model profile is
-**not** immutable on resume (unlike the environment profile) - it is a control-plane selection, not a
-business/safety boundary. `src/workflow/model-profile.ts`.
+`templates/model-profiles.example.json`) lists host-neutral model providers. Each normalized profile
+carries `model`, `providerId`, `baseUrl`, unified `api`, `envKey`/aliases, input modalities, and
+optional reasoning/capacity metadata. Legacy `wireApi` values are accepted only while reading old registries and are normalized
+to `openai-responses`/`openai-completions`. The built-in `deepseek` and `volcengine` Profiles contain
+public metadata only. Custom `providerId` values must match `[A-Za-z_][A-Za-z0-9_-]*` because they
+are used in both Codex tables and OMP selectors.
+
+`AgentHost.modelProvider.prepare()` is the provider boundary. Core creates one
+`AgentModelProviderDescriptor`; `CodexModelProviderAdapter` writes isolated `config.toml` plus a
+complete `models.json` catalog, while
+`OmpModelProviderAdapter` writes isolated `models.yml` and passes `--model provider/model`. A Host
+rejects an unsupported `api` before model traffic. `--model-profile <id>` (or the `easy` menu /
+`doctor`) selects one; with no explicit Profile, new runs on either built-in Host use `deepseek`.
+Generic runtime overrides are `--agent-bin` / `--agent-home`; legacy Host-specific flags are normalized
+before `runAgentTest`. An injected third-party Host implements the same provider adapter and does not
+require a Runner ID branch.
+An explicit request wins first, followed by a recorded resume selection and a registry
+`defaultProfileId`; a user-defined `deepseek` overrides built-in metadata. Capacity errors (`at
+capacity`, `try a different model`) are classified as a resumable `infrastructure` block with a
+switch-provider next action. The model profile is not a business/safety boundary and may change on
+`--resume`; a bare resume reuses the last effective profile and model override. A legacy run with
+no `model-selection.json` keeps its source AgentHost provider on a bare resume. See
+`src/workflow/model-profile.ts`, `src/agent/host.ts`, and the two provider adapters.
 
 ## Resume
 
-`--resume` with the original `--output-dir` resumes the same Codex thread (id recovered from state
+`--resume` with the original `--output-dir` resumes the same AgentHost session (id recovered from state
 or events), the Mutation Ledger, and pending environment requirements. On resume the harness first
 re-reads pending mutations and re-observes real business state before continuing — it does not
 blindly replay writes. Immutable on resume: `workflowId`, `sourceSha256`, Profile identity/policy,

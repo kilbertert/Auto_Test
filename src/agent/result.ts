@@ -99,6 +99,33 @@ export const codexTestResultSchema = {
   additionalProperties: false,
 } as const
 
+/**
+ * Provider-facing structured-output schemas use a deliberately conservative
+ * JSON Schema subset. Some Responses-compatible providers accept strict
+ * object schemas but reject nullable `type: [T, "null"]` unions. Empty
+ * strings and arrays are transport sentinels only; the parser below restores
+ * the canonical optional-field semantics before validation.
+ */
+function structuredOutputSchemaValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(structuredOutputSchemaValue)
+  if (!value || typeof value !== 'object') return value
+  const source = value as Record<string, unknown>
+  const result = Object.fromEntries(
+    Object.entries(source).map(([key, child]) => [key, structuredOutputSchemaValue(child)]),
+  ) as Record<string, unknown>
+  if (Array.isArray(source.type)) {
+    const concreteTypes = source.type.filter((item) => item !== 'null')
+    if (concreteTypes.length === 1) result.type = concreteTypes[0]
+    if (Array.isArray(source.enum)) {
+      const values = source.enum.filter((item) => item !== null)
+      result.enum = concreteTypes[0] === 'string' && !values.includes('') ? [...values, ''] : values
+    }
+  }
+  return result
+}
+
+export const agentTestStructuredOutputSchema = structuredOutputSchemaValue(codexTestResultSchema)
+
 const ajv = new Ajv2020({ allErrors: true, strict: false })
 const validateResult = ajv.compile<CodexTestAgentResult>(codexTestResultSchema)
 
@@ -121,17 +148,23 @@ function prepareResultForValidation(input: unknown): unknown {
       ? value.cases.map((item) => {
           if (!item || typeof item !== 'object' || Array.isArray(item)) return item
           const caseValue = item as Record<string, unknown>
+          const failureSource = caseValue.failureSource === '' ? null : (caseValue.failureSource ?? null)
+          const failureKind = caseValue.failureKind === '' ? null : (caseValue.failureKind ?? null)
           return {
-            failureSource: null,
-            failureKind: null,
             environmentRequirementIds: null,
             executionReceiptIds: null,
             fieldGateIds: null,
             ...caseValue,
+            failureSource,
+            failureKind,
             evidence: Array.isArray(caseValue.evidence)
               ? caseValue.evidence.map((evidence) => (
                   evidence && typeof evidence === 'object' && !Array.isArray(evidence)
-                    ? { path: null, ...(evidence as Record<string, unknown>) }
+                    ? {
+                        path: null,
+                        ...(evidence as Record<string, unknown>),
+                        ...((evidence as Record<string, unknown>).path === '' ? { path: null } : {}),
+                      }
                     : evidence
                 ))
               : caseValue.evidence,
@@ -141,7 +174,11 @@ function prepareResultForValidation(input: unknown): unknown {
     environmentRequirements: Array.isArray(value.environmentRequirements)
       ? value.environmentRequirements.map((item) => (
           item && typeof item === 'object' && !Array.isArray(item)
-            ? { origin: null, ...(item as Record<string, unknown>) }
+            ? {
+                origin: null,
+                ...(item as Record<string, unknown>),
+                ...((item as Record<string, unknown>).origin === '' ? { origin: null } : {}),
+              }
             : item
         ))
       : value.environmentRequirements,
