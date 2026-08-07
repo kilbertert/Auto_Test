@@ -210,4 +210,55 @@ describe('AgentHost model provider adapters', () => {
     })
     expect(await readFile(resolve(runtime.agentHome, 'models.yml'), 'utf8')).toContain('native')
   })
+
+  it('loads native Codex provider child tables from USERPROFILE without copying unrelated config', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-provider-adapter-native-codex-'))
+    directories.push(directory)
+    const userProfile = resolve(directory, 'windows-user')
+    const sourceHome = resolve(userProfile, '.codex')
+    await mkdir(sourceHome, { recursive: true })
+    await writeFile(resolve(sourceHome, 'config.toml'), [
+      'model = "native-model"',
+      'model_provider = "native_provider"',
+      '',
+      '[model_providers.native_provider]',
+      'name = "Native Provider"',
+      'base_url = "https://native.example.test/v1"',
+      'wire_api = "responses"',
+      'env_key = "NATIVE_PROVIDER_KEY"',
+      '',
+      '[model_providers.native_provider.http_headers]',
+      'X-Static = "fixture"',
+      '',
+      '[model_providers.native_provider.env_http_headers]',
+      'X-Dynamic = "NATIVE_HEADER_KEY"',
+      '',
+      '[mcp_servers.unrelated]',
+      'command = "must-not-copy"',
+    ].join('\n'))
+    const managedOptions = await options(
+      directory,
+      {
+        PATH: process.env.PATH,
+        USERPROFILE: userProfile,
+        NATIVE_PROVIDER_KEY: 'provider-secret',
+        NATIVE_HEADER_KEY: 'header-secret',
+        AUTO_TEST_AGENT_FORWARD_ENV: 'NATIVE_HEADER_KEY',
+      },
+      descriptor(),
+    )
+    const { provider: _provider, ...nativeOptions } = managedOptions
+
+    const runtime = await new CodexModelProviderAdapter().prepare(nativeOptions)
+    const config = await readFile(resolve(runtime.agentHome, 'config.toml'), 'utf8')
+
+    expect(config).toContain('[model_providers.native_provider.http_headers]')
+    expect(config).toContain('[model_providers.native_provider.env_http_headers]')
+    expect(config).not.toContain('[mcp_servers.unrelated]')
+    expect(runtime.environment).toMatchObject({
+      NATIVE_PROVIDER_KEY: 'provider-secret',
+      NATIVE_HEADER_KEY: 'header-secret',
+    })
+    expect(runtime.mcpEnvironment).not.toHaveProperty('NATIVE_PROVIDER_KEY')
+  })
 })

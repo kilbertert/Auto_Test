@@ -181,6 +181,8 @@ $env:AUTO_TEST_AGENT_FORWARD_ENV = "OMP_API_KEY"
 
 选择 Auto-Test `--model-profile` 时，OMP 适配器会把同一通用 Profile 写入本次私有 `models.yml`，并只把选定的环境变量交给 OMP；`--agent-home` 仅用于 legacy/native Provider 副本（或提供 OMP 自身的非模型配置），用户 MCP、插件和历史会话不会进入 run。`--omp-bin/--omp-home` 仍可作为兼容别名，但新命令统一使用 `--agent-bin/--agent-home`；环境变量对应为 `AUTO_TEST_AGENT_BIN/AUTO_TEST_AGENT_HOME`。Auto-Test 还会在本次工作区写入 OMP 项目覆盖，关闭 OMP 自带 browser，确保实际使用与 Codex 相同的 Playwright MCP。复制登录态前请关闭正在写同一 OMP 配置目录的进程；恢复时省略 `--agent-home` 会保留原 run 的 Provider 副本；使用 native 配置时可通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式转发环境变量。`doctor --agent-host omp` 会检查默认 Profile 的环境变量，但不会发起真实模型请求，不能替代 Provider 或业务 canary。
 
+没有选择 Auto-Test Model Profile 的 Codex legacy/native Run 若省略 `--agent-home`，会按 `AUTO_TEST_AGENT_HOME`、`CODEX_HOME`、`AUTO_TEST_CODEX_HOME`、`HOME/USERPROFILE\.codex` 的顺序寻找源配置。复制只保留当前模型、当前 Provider 及其 `http_headers` / `env_http_headers` 子表，不会带入用户 MCP。Provider 主 `env_key` 会自动转发；header 子表引用的其他环境变量必须通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出。
+
 OMP 目前没有 Codex SDK 同等级的操作系统 workspace sandbox，因此 Windows OMP 验收应在专用测试账号和专用测试机上进行；Auto-Test 会保留 run 工作区约束、审计与结果合同，但不会把 OMP 宣称为受限 `opaque` 宿主。
 
 Windows 启动器会先识别 `--agent-host omp`（或 `AUTO_TEST_AGENT_HOST=omp`），此路径不会安装 Codex CLI，也不会运行 Codex 专用 Provider 探针；它仍会把通用 Model Profile 交给 OMP 适配器，并在模型请求前校验选定环境变量。
