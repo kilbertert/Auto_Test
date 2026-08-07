@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { createInterface } from 'node:readline'
@@ -8,7 +8,7 @@ import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentHostError, normalizeAgentEvent } from '../src/agent/host.js'
 import type { AgentHost, AgentHostLaunchOptions, AgentHostProviderPrepareOptions, AgentInputPart } from '../src/agent/host.js'
-import { codexWebSearchEnabled } from '../src/agent/codex-host.js'
+import { codexSandboxMode, codexWebSearchEnabled, codexWorkspaceIsolation, startCodexSdkThread } from '../src/agent/codex-host.js'
 import { OmpAgentHost, RpcFrameDecoder } from '../src/agent/omp-host.js'
 import { availableAgentHosts, createAgentHost } from '../src/agent/host-registry.js'
 import { progressFromAgentEvent } from '../src/agent/progress.js'
@@ -195,7 +195,9 @@ describe('AgentHost contract', () => {
     expect(createAgentHost('codex').capabilities.structuredOutput).toBe(true)
     expect(createAgentHost('omp').capabilities.structuredOutput).toBe(false)
     expect(createAgentHost('omp').capabilities.mcp).toBe(true)
-    expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe('enforced')
+    expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe(
+      process.platform === 'win32' ? 'prompt_only' : 'enforced',
+    )
     expect(createAgentHost('codex').modelProvider.supportedApis).toEqual(['openai-responses'])
     expect(createAgentHost('omp').modelProvider.supportedApis).toContain('openai-completions')
     expect(createAgentHost('omp').capabilities.workspaceIsolation).toBe('prompt_only')
@@ -218,6 +220,55 @@ describe('AgentHost contract', () => {
       provider: { ...managedRuntime.provider, supportsSearchTool: true },
     }, true)).toBe(true)
     expect(codexWebSearchEnabled(nativeRuntime, false)).toBe(false)
+  })
+
+  it('selects a host-level Windows fallback for writable MCP execution', () => {
+    expect(codexSandboxMode(false, 'win32')).toBe('read-only')
+    expect(codexSandboxMode(true, 'linux')).toBe('workspace-write')
+    expect(codexSandboxMode(true, 'win32')).toBe('danger-full-access')
+    expect(codexWorkspaceIsolation('linux')).toBe('enforced')
+    expect(codexWorkspaceIsolation('win32')).toBe('prompt_only')
+  })
+
+  it.skipIf(process.platform === 'win32')('passes the Windows fallback to the native Codex CLI invocation', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-sandbox-'))
+    directories.push(directory)
+    const capturePath = resolve(directory, 'argv.json')
+    const executable = resolve(directory, 'codex-fixture.mjs')
+    await writeFile(executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(process.env.AUTO_TEST_CAPTURE, JSON.stringify(process.argv.slice(2)))
+process.stdin.resume()
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fixture-thread' }) + '\\n')
+  process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'fixture-message', type: 'agent_message', text: 'ok' } }) + '\\n')
+  process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n')
+})
+`)
+    await chmod(executable, 0o755)
+    const thread = startCodexSdkThread({
+      workspaceDirectory: directory,
+      runtime: {
+        agentHome: resolve(directory, 'agent-home'),
+        environment: { PATH: process.env.PATH ?? '', AUTO_TEST_CAPTURE: capturePath },
+        mcpEnvironment: {},
+        model: 'fixture-model',
+      },
+      executable,
+      additionalWritableDirectories: [resolve(directory, 'private')],
+      playwrightConfigPath: resolve(directory, 'playwright.json'),
+      playwrightSecretsPath: resolve(directory, 'secrets.env'),
+      controlConfigPath: resolve(directory, 'control.json'),
+      fullAgentAccess: true,
+    }, 'win32')
+    const streamed = await thread.runStreamed('fixture prompt')
+    for await (const _event of streamed.events) {
+      // Drain the fake CLI stream so the child can exit cleanly.
+    }
+    const args = JSON.parse(await readFile(capturePath, 'utf8')) as string[]
+    const sandboxIndex = args.indexOf('--sandbox')
+    expect(sandboxIndex).toBeGreaterThanOrEqual(0)
+    expect(args[sandboxIndex + 1]).toBe('danger-full-access')
   })
 
   it('classifies host errors so only operational transport classes are retryable', () => {
