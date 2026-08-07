@@ -316,6 +316,8 @@ npm run report:workflow -- \
 
 历史充电闭环和当前 AgentHost 宿主验收的边界见 [充电闭环端到端验收](docs/e2e-charge-acceptance.md)。PR #28 后，Codex 与 OMP 已在 Linux x64 使用同一冻结 Manifest 分别完成一次真实写入型充电 canary，均为 `3/3 passed`、7 条业务写入全部核销且 `pending=0`；该结果证明的是这一输入合同和场景，不代表任意未知网站都能一次成功。
 
+Model Profile/Provider 适配层的独立验收记录见 [AgentHost：宿主无关执行](docs/agent-hosts.md)：commit `88f8e5c` 上，Codex 与 OMP 使用同一内置 DeepSeek Profile 完成了三 case 合成写入型 canary，比较合同为 `valid/equivalent`，两次 Ledger 均为 `pending=0`。该结果用于证明 Provider 适配与共同测试合同，不替代 Windows 或真实业务场景验收。
+
 ## Workflow Runtime
 
 ### AI Workflow Pipeline

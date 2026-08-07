@@ -22,6 +22,15 @@ PR #28 已合并到 `main`（commit `836c849`）。截至 2026-08-06，Codex 与
 
 确定性比较器判定 `contractStatus=valid`、`verdict=equivalent`，逐 case 无差异。OMP 在本次 canary 中消耗的壁钟时间明显更多；其状态时间包含后续交付恢复验证，因此不能当作纯模型性能基准。默认宿主继续保持 Codex：它具有原生结构化输出、`enforced` workspace isolation 和受限模式；OMP 保留为同合同 challenger。一个复杂 canary 不能推出某个宿主在所有行业、页面控件或输入格式中全面胜出，Windows 写入型业务验收也仍需单独完成。
 
+2026-08-07 又在实现 commit `88f8e5c`、包版本 `0.1.0`、Linux x64 上完成了 AgentHost 无关 Model Profile 的独立验收。Codex CLI `0.146.0` 与 OMP `17.2.9` 分别使用内置 `deepseek` Profile 和同一份三 case 合成写入型 fixture：目录筛选、详情核对、创建并删除同一条 note。源 Excel SHA-256 为 `bffbff6f31f5f321a4fa729d09f2da4b89d84150d970fddc05798429b8f188fc`；两个 run 的 immutable Manifest 文件 SHA-256 均为 `7779aa9875bba9a434185370e225d84cc55d70ce1cf8b83f13eadeaa348d3c80`，比较合同中的 canonical Manifest SHA-256 为 `4f890d908bfbb4bb64924e4d9d6a288392dc8d08b25e7146436eb81d796bfeb0`，input bundle 与 environment hash 分别为 `2b0d11e2992a03f68f84056636318565aed85fd05c3a55a3acc7e33a8ad67773` 和 `8af9ae2a0d8af5b610e92680bf261cde0ca468fb1ff7440d9ee59f1405cc7987`。
+
+| 宿主 | 结果 | case 证据引用 | 被引用回执 | Ledger 终态 | 壁钟时间 |
+| --- | --- | ---: | ---: | --- | ---: |
+| Codex | `3/3 passed` | 15 | 0 | 1 `compensated`，`pending=0` | 322,366 ms |
+| OMP | `3/3 passed` | 9 | 6 | 1 `compensated`，`pending=0` | 202,685 ms |
+
+两次运行结束后 fixture 都恢复为 `0 notes`，并生成含逐 case 结果列的回写工作簿。比较器再次得到 `contractStatus=valid`、`verdict=equivalent`、零 case difference。该 canary 使用真实 DeepSeek 模型请求和真实浏览器/Control MCP 写入补偿，但被测站点是合成 fixture；它证明两个 Provider 适配器能在同一 Core 合同下投入 Linux canary 使用，不证明 Windows 业务闭环、Volcengine 可用性、任意未知网站一次成功或两个宿主在所有场景中业务判断等价。
+
 Core 对 `mutations` 和 `environmentRequirements` 拥有唯一确定性权威。AgentHost 返回的同名集合只是重复投影，不能覆盖 Core 的 Ledger 或环境需求账本；`Mutation Ledger` 只能通过 `auto-test-control.mutation_begin` / `mutation_resolve` 写入，Agent 自己在工作区创建的同名 JSON 不能冒充账本。逐 case 业务结论、分类和证据仍须通过完整 schema。Codex 的结构化输出和 OMP 的文本回执使用同一业务合同；Provider-facing Schema 只使用跨供应商可接受的对象、数组和标量类型，空字符串/空数组作为不适用字段的传输哨兵，Core 在结果边界恢复可选字段语义。若已阻断的 run 存在覆盖全部 immutable case、无重复且证据可解析的逐 epoch 交付，并且权威 Ledger 没有 `pending`，`--resume` 会先验证并恢复这些事实，不启动浏览器或 AgentHost，也不重做业务写入。证据文件名包含运行 Secret 时，框架会同步清理生成文件名和交付引用；`input/` 中的原始输入包保持不变。
 
 两者收到相同的原始 Excel、同名 `.auto-test` sidecar、图片、环境上下文、run 工作区和测试提示。Core 不读取页面业务语义，也不生成第二个 Planner 或 Reporter。OMP 不支持 Codex 的 `outputSchema` 参数时，仍必须返回同一 `codex-agent.result.json` 合同；Core 会用相同的 schema、case 覆盖、证据、环境需求和 Ledger 校验。Provider 探针只验证模型请求能建立；如果供应商拒绝结构化输出，Runner 会把它归为基础设施/Agent 交付问题，并要求在同一线程上补交同一合同，而不会把已完成业务误报成产品失败。
