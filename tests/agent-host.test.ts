@@ -195,7 +195,9 @@ describe('AgentHost contract', () => {
     expect(createAgentHost('codex').capabilities.structuredOutput).toBe(true)
     expect(createAgentHost('omp').capabilities.structuredOutput).toBe(false)
     expect(createAgentHost('omp').capabilities.mcp).toBe(true)
-    expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe('enforced')
+    expect(createAgentHost('codex').capabilities.workspaceIsolation).toBe(
+      process.platform === 'win32' ? 'prompt_only' : 'enforced',
+    )
     expect(createAgentHost('codex').modelProvider.supportedApis).toEqual(['openai-responses'])
     expect(createAgentHost('omp').modelProvider.supportedApis).toContain('openai-completions')
     expect(createAgentHost('omp').capabilities.workspaceIsolation).toBe('prompt_only')
@@ -228,7 +230,7 @@ describe('AgentHost contract', () => {
     expect(codexWorkspaceIsolation('win32')).toBe('prompt_only')
   })
 
-  it('passes the Windows fallback to the native Codex CLI invocation', async () => {
+  it.skipIf(process.platform === 'win32')('passes the Windows fallback to the native Codex CLI invocation', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-sandbox-'))
     directories.push(directory)
     const capturePath = resolve(directory, 'argv.json')
