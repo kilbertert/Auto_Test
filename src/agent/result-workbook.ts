@@ -322,14 +322,17 @@ function setCellsInRow(xml: string, rowNumber: number, cells: string[], referenc
   return `${xml.slice(0, bounds.contentStart)}${retained}${cells.join('')}${xml.slice(bounds.end)}`
 }
 
-function updateDimension(xml: string, finalColumn: number, finalRow: number): string {
+function updateDimension(xml: string, finalColumn: number, firstRow: number, finalRow: number): string {
   const match = /<dimension\b[^>]*\bref=(["'])(.*?)\1[^>]*\/?\s*>/.exec(xml)
   if (!match) return xml
   const references = match[2]!.split(':')
-  const first = references[0]!.replace(/\$/g, '')
+  const currentFirst = references[0]!.replace(/\$/g, '')
   const currentLast = references.at(-1)!.replace(/\$/g, '')
+  const currentFirstColumn = columnIndex(currentFirst) ?? 0
+  const currentFirstRow = Number(/\d+$/.exec(currentFirst)?.[0] ?? firstRow)
   const currentColumn = columnIndex(currentLast) ?? finalColumn
   const currentRow = Number(/\d+$/.exec(currentLast)?.[0] ?? finalRow)
+  const first = `${utils.encode_col(currentFirstColumn)}${Math.min(currentFirstRow, firstRow)}`
   const last = `${utils.encode_col(Math.max(currentColumn, finalColumn))}${Math.max(currentRow, finalRow)}`
   return `${xml.slice(0, match.index)}${match[0]!.replace(match[2]!, `${first}:${last}`)}${xml.slice(match.index! + match[0]!.length)}`
 }
@@ -400,7 +403,7 @@ function patchWorksheet(xml: string, manifest: WorkflowIntakeManifest, result: C
     const references = columns.map((column) => `${utils.encode_col(column)}${phase.sourceRow}`)
     patched = setCellsInRow(patched, phase.sourceRow, output.map((value, index) => encodeInlineCell(references[index]!, value)), references)
   }
-  return updateDimension(patched, Math.max(...columns), Math.max(...sourceRows, headerRow))
+  return updateDimension(patched, Math.max(...columns), Math.min(...sourceRows, headerRow), Math.max(...sourceRows, headerRow))
 }
 
 export async function writeResultWorkbook(options: {
