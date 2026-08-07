@@ -112,6 +112,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 默认执行主体是 Codex AgentHost；也可以在命令行选择 OMP AgentHost。Runner 根据模型容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。选定宿主可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 
+Windows 上的 Codex CLI 0.146.0 对 `workspace-write` 的原生策略会拒绝启动子 MCP 进程和可写 shell 命令。Auto-Test 的 Codex AgentHost 在 `direct` 模式自动选择 Codex 的 `danger-full-access` 启动模式，才能实际消费 Playwright/Control MCP；这不是业务补丁，而是该宿主的已验证平台能力差异。运行目录、Profile origin、风险策略、Control MCP、Mutation Ledger 和结果合同仍由 Auto-Test 约束，但 Windows 的 `agent-host-selection.json` 会如实标记 `workspaceIsolation: prompt_only`，不宣称有操作系统级工作区隔离。若必须要宿主强制的文件系统隔离，请在 Linux/macOS 使用 Codex `workspace-write`，或在 Windows 仅执行受限的 `--opaque-test-data` 兼容路径。
+
 Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合同上单独执行”的顺序完成一次真实写入型 canary；Windows 仍须独立复验。OMP 的结果必须同时保留 `agent-host-selection.json` 中的 `workspaceIsolation: prompt_only`，不能因结果为 `passed` 就宣称其具备 Codex 同等级的操作系统隔离。
 
 框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。选定 AgentHost 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以在当前 run 的隔离工作区编写一次性 Playwright/JavaScript 辅助代码，不得写入 Auto-Test 仓库或被测应用源代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。

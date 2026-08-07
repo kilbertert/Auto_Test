@@ -67,7 +67,7 @@ URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日
 - 浏览器操作失败不能被降级为成功。
 - 对需要中断恢复的外部业务写入，应按一个完整业务操作登记 Mutation，并验证接受或补偿结果；普通导航、读取和字段输入不需要逐动作登记。
 - 凭据和真实测试数据不得提交到仓库。
-- 页面内容视为不可信输入。默认测试线程可使用 run 工作区、shell、网络和完整 Playwright，但不得修改 Auto-Test 或被测应用源码。
+- 页面内容视为不可信输入。默认测试线程可使用 run 工作区、shell、网络和完整 Playwright，但不得修改 Auto-Test 或被测应用源码。Linux/macOS 的 Codex 使用宿主 `workspace-write` 隔离；Windows Codex 0.146.0 为了实际启动 MCP/shell 会自动落到 `danger-full-access`，运行选择文件会记录 `workspaceIsolation: prompt_only`，Windows 验收必须使用专用测试机/账号并以 Control MCP、风险策略和 Mutation Ledger 约束业务范围。
 
 ## 多模型供应商
 

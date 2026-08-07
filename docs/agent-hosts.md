@@ -9,7 +9,7 @@ Auto-Test 的测试核心不再依赖某一个代理产品。`AgentHost` 是一�
 | Codex CLI | `codex`（默认） | Codex SDK/CLI thread | 原生支持 | 支持 | `CodexModelProviderAdapter`：Profile -> 隔离 `config.toml` + `models.json` |
 | oh-my-pi | `omp` | OMP RPC JSONL (`omp --mode rpc`) | 由同一最终 JSON 提示和 Core 校验 | RPC session 文件 | `OmpModelProviderAdapter`：Profile -> 隔离 `models.yml` |
 
-宿主能力记录还包含 `workspaceIsolation`：Codex 为 `enforced`，OMP 为 `prompt_only`。这不会改变两者的业务结果合同，但会在审计和竞争报告中保留真实执行边界。
+宿主能力记录还包含 `workspaceIsolation`：Linux/macOS 的 Codex 为 `enforced`，Windows Codex 直连模式因原生 CLI 的 MCP/shell 限制使用 `danger-full-access`，因此如实记录为 `prompt_only`；OMP 一直为 `prompt_only`。这不会改变两者的业务结果合同，但会在审计和竞争报告中保留真实执行边界。
 
 ## 当前验收状态
 
@@ -81,7 +81,7 @@ Auto-Test 不把 OMP 二进制或用户 OMP 配置复制进仓库或公开包。
 
 OMP 启动时会在 run 工作区写入一个项目级 `.omp/config.yml`：关闭 OMP 自带 browser、memory/autolearn 和用户扩展，并强制启用项目 MCP。这样 OMP 与 Codex 都通过同一份 run-scoped Playwright/Control MCP 操作浏览器；OMP 自带 browser 不会悄悄替换 Playwright 会话。`shell`、网络和高风险业务操作仍受测试环境 Profile、run 工作区约定和 Mutation Ledger 约束。`--auto-approve` 只表示已授权的测试动作不被宿主交互提示卡住，不扩大目标 URL 或业务权限。
 
-Codex 的 `workspace-write` sandbox 只额外开放当前 Run 的 `.agent-private` 目录（通过 SDK `additionalDirectories`），让 Control MCP 能写入权威 Ledger 和环境需求；不会开放仓库或用户 home。OMP 当前没有 Codex SDK 同等级的操作系统 workspace sandbox；“只写 run 工作区”主要由提示、项目配置和审计合同约束。需要真实业务验收时，应使用专用测试机/账号，并把该差异保留在 `agent-host-selection.json` 与验收记录中；这也是 OMP 不能冒充 `--opaque-test-data` 的原因。
+Linux/macOS 的 Codex `workspace-write` sandbox 只额外开放当前 Run 的 `.agent-private` 目录（通过 SDK `additionalDirectories`），让 Control MCP 能写入权威 Ledger 和环境需求；不会开放仓库或用户 home。Windows Codex CLI 0.146.0 在该模式下无法启动子 MCP 或可写 shell，Auto-Test direct 模式会自动使用 `danger-full-access`；因此 Windows 不能宣称操作系统级 workspace isolation，实际能力会写入 `agent-host-selection.json`。OMP 当前也没有 Codex SDK 同等级的操作系统 workspace sandbox；“只写 run 工作区”主要由提示、项目配置和审计合同约束。需要真实业务验收时，应使用专用测试机/账号，并把该差异保留在 `agent-host-selection.json` 与验收记录中；这也是 OMP 不能冒充 `--opaque-test-data` 的原因。
 
 默认 direct 模式会向宿主提供运行所需的最小系统环境变量。若 OMP Provider 只支持环境变量认证，可在启动 Auto-Test 前设置 `AUTO_TEST_AGENT_FORWARD_ENV=OMP_API_KEY,OTHER_PROVIDER_KEY`；只有列出的变量会进入隔离宿主进程，且不会进入 Playwright/Control MCP 子进程。当前 OMP 适配器不宣称支持 `--opaque-test-data` 的受限工具模式，使用该模式会明确阻断，不会假装已经隔离。
 

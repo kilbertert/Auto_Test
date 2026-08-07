@@ -1,5 +1,5 @@
 import { Codex, type Input, type Thread, type ThreadEvent } from '@openai/codex-sdk'
-import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import type {
   AgentEvent,
   AgentHost,
@@ -15,6 +15,8 @@ import { AgentHostError, normalizeAgentEvent } from './host.js'
 import { resolveCodexExecutable } from './codex-executable.js'
 import { CodexModelProviderAdapter } from './codex-provider.js'
 import { controlServerPath, packageFilePath } from './runtime-paths.js'
+
+const require = createRequire(import.meta.url)
 
 interface CodexThreadLike {
   readonly id: string | null
@@ -78,6 +80,28 @@ function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefin
   ]
 }
 
+/**
+ * The native Windows Codex runner cannot launch child MCP processes or run
+ * writable shell commands under its workspace-write policy.  The CLI's
+ * danger-full-access mode is the documented escape hatch for an externally
+ * isolated automation process.  Auto-Test still constrains business writes
+ * through the Control MCP and Mutation Ledger, while the host capability
+ * below records that the OS-level workspace sandbox is not enforced there.
+ */
+export function codexSandboxMode(
+  fullAgentAccess: boolean,
+  platform: NodeJS.Platform = process.platform,
+): 'read-only' | 'workspace-write' | 'danger-full-access' {
+  if (!fullAgentAccess) return 'read-only'
+  return platform === 'win32' ? 'danger-full-access' : 'workspace-write'
+}
+
+export function codexWorkspaceIsolation(
+  platform: NodeJS.Platform = process.platform,
+): AgentHostCapabilities['workspaceIsolation'] {
+  return platform === 'win32' ? 'prompt_only' : 'enforced'
+}
+
 export function codexWebSearchEnabled(runtime: AgentHostLaunchOptions['runtime'], fullAgentAccess: boolean): boolean {
   const modelSupportsSearch = runtime.provider
     ? runtime.provider.supportsSearchTool === true
@@ -85,10 +109,13 @@ export function codexWebSearchEnabled(runtime: AgentHostLaunchOptions['runtime']
   return fullAgentAccess && modelSupportsSearch
 }
 
-export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
+export function startCodexSdkThread(
+  options: AgentHostLaunchOptions,
+  platform: NodeJS.Platform = process.platform,
+): Thread {
   if (!options.executable) throw new AgentHostError('codex', 'Codex executable was not resolved before starting a thread', 'configuration')
   const playwrightCli = packageFilePath('@playwright/mcp', 'cli.js')
-  const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'))
+  const tsxCli = require.resolve('tsx/cli')
   const controlServer = controlServerPath()
   const enabledTools = restrictedPlaywrightTools(options.fullAgentAccess)
   const webSearchEnabled = codexWebSearchEnabled(options.runtime, options.fullAgentAccess)
@@ -137,7 +164,7 @@ export function startCodexSdkThread(options: AgentHostLaunchOptions): Thread {
   const managedReasoningEffort = options.runtime.provider?.reasoningEffort
   const threadOptions = {
     ...(options.runtime.model ? { model: options.runtime.model } : {}),
-    sandboxMode: options.fullAgentAccess ? 'workspace-write' : 'read-only',
+    sandboxMode: codexSandboxMode(options.fullAgentAccess, platform),
     workingDirectory: options.workspaceDirectory,
     skipGitRepoCheck: true,
     ...(managedReasoningEffort
@@ -180,7 +207,7 @@ const capabilities: AgentHostCapabilities = {
   mcp: true,
   shell: true,
   network: true,
-  workspaceIsolation: 'enforced',
+  workspaceIsolation: codexWorkspaceIsolation(),
   restrictedMode: true,
 }
 
