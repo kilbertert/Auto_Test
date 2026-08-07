@@ -106,7 +106,7 @@ OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工
 
 主要文件：
 
-- `codex-agent.state.json`：Run 状态、线程代数、完成 case、active epoch、checkpoint 和最近一次 turn usage；
+- `codex-agent.state.json`：Run 状态、线程代数、完成 case、active epoch、无密钥的 AgentHost/模型绑定指纹、checkpoint 和最近一次 turn usage；
 - `codex-agent.result.json`：完整 `passed`、`product_failed` 或 `blocked` 结果；
 - `.agent-private/case-results/`：逐 case 事实源，每个 case 一个幂等 JSON 记录；
 - `.agent-private/execution-epochs/`：每个 epoch 的有界结构化结果；
@@ -127,7 +127,7 @@ npm run easy -- run \
   --resume
 ```
 
-恢复会校验 workflow/source 身份和 Ledger。已写入逐 case store 的 case 不会重跑；active epoch 会恢复原 thread，容量轮换后的新 epoch 会从 checkpoint 和原工作区继续。旧版 `version: 1.0` 状态、`activeBatch`、`completedBatchIds` 等状态不再兼容，恢复会 fail closed 并要求新建 Run。
+恢复会校验 workflow/source 身份和 Ledger。已写入逐 case store 的 case 不会重跑；active epoch 通常恢复原 thread，容量轮换后的新 epoch 会从 checkpoint 和原工作区继续。若基础设施恢复需要切换模型 Profile，逻辑 Run、active epoch、工作区和 Ledger 保持不变，但与新 AgentHost/Provider/模型绑定不兼容的物理 session 会被下一代 thread 替换；新 thread 必须先执行 resume 协议并核对 pending Mutation。早期 v2 状态没有绑定指纹时，Runner 只在宿主明确报告 session 不兼容后轮换一次；普通执行错误不会触发轮换。旧版 `version: 1.0` 状态、`activeBatch`、`completedBatchIds` 等状态不再兼容，恢复会 fail closed 并要求新建 Run。
 
 需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据和 Ledger，不启动新的 Agent，也不重复业务写入。两个 Run 必须同时提供 immutable `test-manifest.json`、一致的 `workflowId`/`sourceSha256`、Excel 与同名 sidecar/image 的 `input-bundle.json`、Manifest hash、Environment selection hash、平台、架构、Auto-Test 包版本、commit 和 `agent-host-selection.json`。缺少或不一致的任一合同输入时，比较器会 fail closed，结果为 `invalid`，不会继续给出宿主等价性结论。
 

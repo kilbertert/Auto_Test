@@ -225,7 +225,9 @@ OMP 与 Codex 使用同一个 Auto-Test Model Profile 选择层；真正的请�
   --headed
 ```
 
-恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。Excel、URL、Profile、风险策略和原有 origin 必须保持不变；旧版 v1 状态不支持恢复，其他环境替换或权限收窄都会拒绝恢复。
+恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。若原模型额度或 Provider 不可用，可以在同一命令中显式选择另一个可用模型 Profile。Runner 会保留原 active epoch、工作区和 Ledger；当已保存的物理 session 与新 AgentHost/Provider/模型绑定不兼容时，只启动一代新 thread，先执行 resume 协议并核对 pending Mutation，再继续原 epoch。普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍不兼容也不会无限重试。
+
+Excel、URL、Environment Profile、风险策略和原有 origin 必须保持不变；这里的 Environment Profile 不等于可为基础设施恢复而切换的模型 Profile。旧版 v1 状态不支持恢复，其他业务环境替换或权限收窄都会拒绝恢复。
 
 只有排查旧链路兼容性时才使用：
 

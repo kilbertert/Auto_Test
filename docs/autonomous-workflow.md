@@ -57,15 +57,17 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 ## 恢复契约
 
-`codex-agent.state.json` 使用 `version: "2.0"`，保存 `completedCaseIds`、`threadGeneration`、`activeEpoch`、`checkpointPath` 和最近一次 `turn.completed.usage`。旧版 `single_thread/case_windows`、`activeBatch`、`completedBatchIds` 和 `case-batches` 状态不再兼容；恢复旧状态会 fail closed，要求新建 Run。
+`codex-agent.state.json` 使用 `version: "2.0"`，保存 `completedCaseIds`、`threadGeneration`、`activeEpoch`、`checkpointPath`、无密钥的 `sessionBindingFingerprint` 和最近一次 `turn.completed.usage`。旧版 `single_thread/case_windows`、`activeBatch`、`completedBatchIds` 和 `case-batches` 状态不再兼容；恢复旧状态会 fail closed，要求新建 Run。
 
 恢复流程：
 
 1. 校验原始 workflow ID、source SHA、Environment Profile 和 Mutation Ledger；
 2. 读取逐 case store，将已完成 case 从待执行集合移除；
-3. active epoch 有 thread ID 时恢复该 thread，否则从最近 checkpoint 启动下一代 thread；
+3. active epoch 有 thread ID 且 AgentHost/Provider/模型绑定指纹未变化时恢复该 thread，否则保留逻辑 Run 并启动下一代 thread；
 4. 仍有 pending Mutation 时，选定 AgentHost 先重新观察真实业务状态，禁止盲目重放写入；
 5. 读取所有逐 case 记录，按 Manifest 不可变顺序聚合最终结果。
+
+早期 v2 状态可能没有绑定指纹。此时 Runner 先尝试恢复旧物理 session；若宿主明确返回 `session_incompatible`，Runner 最多轮换一次物理 thread，并先发送标准 resume prompt 重建上下文和核对 Ledger，再继续原 active epoch。普通业务错误、页面操作错误或未分类 Agent 错误不会触发该轮换；新 thread 仍不兼容时按基础设施阻断结束，禁止无限重启。
 
 如果最终 JSON 响应在传输中断，但 epoch recovery artifact 已存在，Runner 只在确定性校验通过后采用它。Runner 不从日志、标题或页面残片补造 case 结果。
 

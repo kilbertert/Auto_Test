@@ -119,6 +119,8 @@ export interface CodexTestAgentState {
   finishedAt?: string
   threadId?: string
   threadGeneration: number
+  /** Secret-free identity of the AgentHost/model binding used by threadId. */
+  sessionBindingFingerprint?: string
   resultPath?: string
   resultWorkbookPath?: string
   outcome?: CodexTestOutcome
