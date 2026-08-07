@@ -72,6 +72,22 @@ async function sourceWorkbook(directory: string): Promise<{ path: string; conten
   return { path, content }
 }
 
+async function offsetSourceWorkbook(directory: string): Promise<{ path: string; content: Buffer }> {
+  const workbook = utils.book_new()
+  const sheet = {
+    B2: { t: 's', v: 'same-id' },
+    C2: { t: 's', v: 'First duplicate' },
+    B3: { t: 's', v: 'same-id' },
+    C3: { t: 's', v: 'Second duplicate' },
+    '!ref': 'B2:C3',
+  }
+  utils.book_append_sheet(workbook, sheet, 'Cases')
+  const content = Buffer.from(write(workbook, { type: 'buffer', bookType: 'xlsx' }))
+  const path = resolve(directory, 'offset-cases.xlsx')
+  await writeFile(path, content)
+  return { path, content }
+}
+
 function digest(content: Buffer): string {
   return createHash('sha256').update(content).digest('hex')
 }
@@ -110,5 +126,26 @@ describe('result workbook writeback', () => {
     expect(sheet.C2?.f).toBe('1+1')
     expect(sheet['!merges']).toContainEqual(utils.decode_range('A4:B4'))
     expect(workbook.Sheets.Auxiliary?.A2?.v).toBe('完全不改写')
+  })
+
+  it('extends the worksheet dimension when it inserts a header above the original range', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-result-workbook-offset-'))
+    directories.push(directory)
+    const source = await offsetSourceWorkbook(directory)
+
+    const artifact = await writeResultWorkbook({
+      sourceFilePath: source.path,
+      outputDirectory: directory,
+      manifest: manifest(),
+      result: result('passed'),
+    })
+
+    const output = await readFile(artifact.path)
+    const workbook = read(output, { type: 'buffer', cellText: true })
+    const sheet = workbook.Sheets.Cases!
+    expect(sheet['!ref']).toBe('B1:I3')
+    expect(sheet.D1?.v).toBe('Auto-Test 状态')
+    expect(sheet.D2?.v).toBe('通过')
+    expect(sheet.D3?.v).toBe('通过')
   })
 })
