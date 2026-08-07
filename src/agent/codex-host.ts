@@ -11,7 +11,7 @@ import type {
   AgentInputPart,
   AgentHostStream,
 } from './host.js'
-import { AgentHostError, normalizeAgentEvent } from './host.js'
+import { AgentHostError, isAgentSessionIncompatibleMessage, normalizeAgentEvent } from './host.js'
 import { resolveCodexExecutable } from './codex-executable.js'
 import { CodexModelProviderAdapter } from './codex-provider.js'
 import { controlServerPath, packageFilePath } from './runtime-paths.js'
@@ -65,6 +65,14 @@ function toCodexInput(input: AgentInputPart[]): Input {
   return input.map((part) => part.type === 'text'
     ? { type: 'text', text: part.text }
     : { type: 'local_image', path: part.path }) as Input
+}
+
+function rethrowCodexSessionError(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error)
+  if (isAgentSessionIncompatibleMessage(message)) {
+    throw new AgentHostError('codex', message, 'session_incompatible')
+  }
+  throw error
 }
 
 function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefined {
@@ -190,10 +198,19 @@ class CodexSession implements AgentHostSession {
   }
 
   async run(input: AgentInputPart[], options?: { outputSchema?: unknown }): Promise<AgentHostStream> {
-    const stream = await this.thread.runStreamed(toCodexInput(input), options)
+    let stream: Awaited<ReturnType<CodexThreadLike['runStreamed']>>
+    try {
+      stream = await this.thread.runStreamed(toCodexInput(input), options)
+    } catch (error) {
+      rethrowCodexSessionError(error)
+    }
     return {
       events: (async function* (): AsyncGenerator<AgentEvent> {
-        for await (const event of stream.events) yield normalizeAgentEvent(event)
+        try {
+          for await (const event of stream.events) yield normalizeAgentEvent(event)
+        } catch (error) {
+          rethrowCodexSessionError(error)
+        }
       })(),
     }
   }

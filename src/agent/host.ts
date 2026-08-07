@@ -64,6 +64,7 @@ export type AgentEventType =
   | 'turn_started'
   | 'turn_completed'
   | 'turn_failed'
+  | 'session_incompatible'
   | 'error'
   | 'agent_message'
   | 'tool_started'
@@ -203,6 +204,7 @@ export type AgentHostErrorKind =
   | 'transport'
   | 'process'
   | 'quota'
+  | 'session_incompatible'
   | 'capability'
   | 'configuration'
   | 'protocol'
@@ -249,9 +251,28 @@ const advisoryHostMessagePatterns = [
   /^Heads up: Long threads and multiple compactions can cause the model to be less accurate\./i,
 ]
 
+const incompatibleSessionMessagePatterns = [
+  /^This (?:session|thread) was (?:recorded|created|started) with (?:model|provider) .+ but is resuming with .+[.]?$/i,
+  /\bCannot resume (?:session|thread)\b.*\b(?:different|incompatible)\b.*\b(?:model|provider)\b/i,
+  /\b(?:session|thread)\b.*\b(?:model|provider)\b.*\b(?:mismatch|incompatible)\b/i,
+]
+
 /** These Codex advisories do not stop the following turn from running. */
 function isAdvisoryHostMessage(message: string): boolean {
   return advisoryHostMessagePatterns.some((pattern) => pattern.test(message))
+}
+
+/** Host adapters use this only for physical-session compatibility failures. */
+export function isAgentSessionIncompatibleMessage(message: string): boolean {
+  return incompatibleSessionMessagePatterns.some((pattern) => pattern.test(message))
+}
+
+function normalizedFailureEvent(message: string, raw: unknown, id?: string): AgentEvent {
+  if (isAdvisoryHostMessage(message)) return eventWithRaw({ type: 'other', ...(id ? { id } : {}), message }, raw)
+  if (isAgentSessionIncompatibleMessage(message)) {
+    return eventWithRaw({ type: 'session_incompatible', ...(id ? { id } : {}), message }, raw)
+  }
+  return eventWithRaw({ type: 'error', ...(id ? { id } : {}), message }, raw)
 }
 
 function normalizeItemEvent(raw: Record<string, unknown>, item: Record<string, unknown>): AgentEvent {
@@ -297,9 +318,7 @@ function normalizeItemEvent(raw: Record<string, unknown>, item: Record<string, u
   if (itemType === 'agent_message') return eventWithRaw({ type: 'agent_message', id: itemId, text: stringValue(item.text) ?? '' }, raw)
   if (itemType === 'error') {
     const message = stringValue(item.message) ?? 'agent item failed'
-    return isAdvisoryHostMessage(message)
-      ? eventWithRaw({ type: 'other', id: itemId, message }, raw)
-      : eventWithRaw({ type: 'error', id: itemId, message }, raw)
+    return normalizedFailureEvent(message, raw, itemId)
   }
   return eventWithRaw({ type: 'other', id: itemId }, raw)
 }
@@ -382,7 +401,7 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
   if (!recordValue(value)) return { type: 'error', message: 'Agent host emitted a non-object event', raw: value }
   const raw = value as Record<string, unknown>
   if (isAgentEvent(raw) && [
-    'thread_started', 'turn_started', 'turn_completed', 'turn_failed', 'agent_message',
+    'thread_started', 'turn_started', 'turn_completed', 'turn_failed', 'session_incompatible', 'agent_message',
     'tool_started', 'tool_completed', 'command_started', 'command_completed', 'file_change_started',
     'file_change_completed', 'reasoning_started', 'todo_started', 'other',
   ].includes(raw.type)) return raw as AgentEvent
@@ -392,13 +411,14 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
   if (raw.type === 'turn.completed') return eventWithRaw({ type: 'turn_completed', usage: usageFrom(raw.usage) }, raw)
   if (raw.type === 'turn.failed') {
     const error = recordValue(raw.error)
-    return eventWithRaw({ type: 'turn_failed', message: stringValue(error?.message) ?? stringValue(raw.message) ?? 'agent turn failed' }, raw)
+    const message = stringValue(error?.message) ?? stringValue(raw.message) ?? 'agent turn failed'
+    return isAgentSessionIncompatibleMessage(message)
+      ? eventWithRaw({ type: 'session_incompatible', message }, raw)
+      : eventWithRaw({ type: 'turn_failed', message }, raw)
   }
   if (raw.type === 'error' || raw.type === 'extension_error') {
     const message = stringValue(raw.message) ?? stringValue(raw.error) ?? 'agent host error'
-    return isAdvisoryHostMessage(message)
-      ? eventWithRaw({ type: 'other', message }, raw)
-      : eventWithRaw({ type: 'error', message }, raw)
+    return normalizedFailureEvent(message, raw)
   }
   if (raw.type === 'notice') {
     return eventWithRaw({ type: 'other', message: stringValue(raw.message) }, raw)
@@ -483,6 +503,6 @@ export class AgentHostError extends Error {
     this.name = 'AgentHostError'
     this.hostId = hostId
     this.kind = kind
-    this.retryable = kind === 'transport' || kind === 'process' || kind === 'quota'
+    this.retryable = kind === 'transport' || kind === 'process' || kind === 'quota' || kind === 'session_incompatible'
   }
 }

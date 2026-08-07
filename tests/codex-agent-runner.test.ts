@@ -90,6 +90,37 @@ async function fixtureFiles(directory: string): Promise<{ sourceHome: string; br
   return { sourceHome, browserPath, codexExecutable }
 }
 
+async function createInterruptedExecution(
+  directory: string,
+  workflow: WorkflowIntakeManifest,
+  files: Awaited<ReturnType<typeof fixtureFiles>>,
+): Promise<{ outputDirectory: string; threadGeneration: number }> {
+  const outputDirectory = resolve(directory, 'run')
+  const run = await runCodexTestAgent({
+    outputDirectory, manifest: workflow,
+    profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+    secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+    agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+    modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+  }, {
+    browserExecutablePath: files.browserPath,
+    startThread: () => ({
+      id: 'thread-old',
+      runStreamed: async () => failedEventStream('network connection lost', 'thread-old'),
+    }),
+  })
+  expect(run.result?.outcome).toBe('blocked')
+  expect(run.state.activeEpoch).toMatchObject({ id: 'epoch-0001', stage: 'executing', threadId: 'thread-old' })
+  return { outputDirectory, threadGeneration: run.state.threadGeneration }
+}
+
+async function removeSessionBindingFingerprint(outputDirectory: string): Promise<void> {
+  const statePath = resolve(outputDirectory, 'codex-agent.state.json')
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+  delete state.sessionBindingFingerprint
+  await writeFile(statePath, JSON.stringify(state))
+}
+
 describe('adaptive Codex epochs', () => {
   it('plans capacity-bounded epochs without a fixed case count', () => {
     const workflow = manifest()
@@ -211,6 +242,207 @@ describe('adaptive Codex epochs', () => {
     expect(resumedThreadId).toBe('thread-2')
     expect(resumed.result?.cases.map((item) => item.caseId)).toEqual(['case-one', 'case-two'])
     expect(await readFile(firstRecordPath, 'utf8')).toBe(firstRecordBefore)
+  })
+
+  it('rotates one incompatible physical session while preserving the logical run and pending Ledger', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rotation-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    workflow.phases[0]!.risk = 'write'
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    await removeSessionBindingFingerprint(interrupted.outputDirectory)
+    const ledgerPath = resolve(interrupted.outputDirectory, '.agent-private', 'mutation-ledger.json')
+    await writeFile(ledgerPath, JSON.stringify([{
+      id: 'pending-before-provider-switch', caseId: 'case-one', description: 'Fixture write awaiting live reconciliation',
+      risk: 'write', status: 'pending', createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z', evidence: [],
+    }]))
+
+    let resumedOld = 0
+    let startedNew = 0
+    const newThreadPrompts: string[] = []
+    let stateObservedByNewThread: Record<string, unknown> | undefined
+    let pendingLedgerObserved = false
+    let newThreadTurn = 0
+    const resumed = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: ({ threadId }) => {
+        resumedOld += 1
+        expect(threadId).toBe('thread-old')
+        return {
+          id: threadId,
+          runStreamed: async () => failedEventStream(
+            'This session was recorded with model deepseek-v4-flash but is resuming with gpt-5.6-sol.',
+            threadId,
+          ),
+        }
+      },
+      startThread: () => {
+        startedNew += 1
+        return {
+          id: 'thread-new',
+          runStreamed: async (input, options) => {
+            const prompt = typeof input === 'string'
+              ? input
+              : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
+            newThreadPrompts.push(prompt)
+            if (newThreadTurn++ === 0) {
+              stateObservedByNewThread = JSON.parse(await readFile(resolve(interrupted.outputDirectory, 'codex-agent.state.json'), 'utf8')) as Record<string, unknown>
+              const ledger = JSON.parse(await readFile(ledgerPath, 'utf8')) as Array<Record<string, unknown>>
+              pendingLedgerObserved = ledger[0]?.status === 'pending'
+              await writeFile(ledgerPath, JSON.stringify([{ ...ledger[0], status: 'compensated', updatedAt: '2026-08-08T00:01:00.000Z' }]))
+              return eventStream('Recovered the live state and reconciled the pending mutation.', 'thread-new')
+            }
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, ['case-one']), 'thread-new')
+              : eventStream('Recovery complete.', 'thread-new')
+          },
+        }
+      },
+    })
+
+    expect(resumedOld).toBe(1)
+    expect(startedNew).toBe(1)
+    expect(newThreadPrompts[0]).toContain('Resume the interrupted Auto-Test execution')
+    expect(pendingLedgerObserved).toBe(true)
+    expect(stateObservedByNewThread).toMatchObject({
+      threadId: 'thread-new',
+      threadGeneration: interrupted.threadGeneration + 1,
+      activeEpoch: { id: 'epoch-0001', caseIds: ['case-one'], stage: 'executing', threadId: 'thread-new' },
+    })
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
+    expect(resumed.state.threadId).toBe('thread-new')
+    expect(resumed.result?.outcome).toBe('passed')
+    expect(resumed.result?.mutations).toContainEqual(expect.objectContaining({
+      id: 'pending-before-provider-switch', status: 'compensated',
+    }))
+  })
+
+  it('starts a recovery generation without touching the old session when the saved binding fingerprint changed', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-fingerprint-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    let resumedOld = 0
+    let startedNew = 0
+    const prompts: string[] = []
+    let turn = 0
+    const replacementProfile: ModelProfile = {
+      ...profile(), id: 'replacement', providerId: 'replacement', model: 'replacement-model',
+      baseUrl: 'https://replacement-provider.example.test',
+    }
+
+    const resumed = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: replacementProfile, environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: () => {
+        resumedOld += 1
+        throw new Error('a known incompatible binding must not resume the old physical session')
+      },
+      startThread: () => {
+        startedNew += 1
+        return {
+          id: 'thread-fingerprint-replacement',
+          runStreamed: async (input, options) => {
+            prompts.push(typeof input === 'string'
+              ? input
+              : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
+            if (turn++ === 0) return eventStream('Recovered from the saved run workspace.', 'thread-fingerprint-replacement')
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, ['case-one']), 'thread-fingerprint-replacement')
+              : eventStream('Recovery complete.', 'thread-fingerprint-replacement')
+          },
+        }
+      },
+    })
+
+    expect(resumedOld).toBe(0)
+    expect(startedNew).toBe(1)
+    expect(prompts[0]).toContain('Resume the interrupted Auto-Test execution')
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
+    expect(resumed.state.threadId).toBe('thread-fingerprint-replacement')
+    expect(resumed.result?.outcome).toBe('passed')
+  })
+
+  it('does not rotate a resumed physical session for an ordinary agent execution error', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-no-rotation-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    await removeSessionBindingFingerprint(interrupted.outputDirectory)
+    let startedNew = 0
+
+    const resumed = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: ({ threadId }) => ({
+        id: threadId,
+        runStreamed: async () => failedEventStream('The requested page assertion failed.', threadId),
+      }),
+      startThread: () => {
+        startedNew += 1
+        throw new Error('ordinary execution errors must not create a replacement session')
+      },
+    })
+
+    expect(startedNew).toBe(0)
+    expect(resumed.state.status).toBe('failed')
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration)
+    expect(resumed.state.threadId).toBe('thread-old')
+  })
+
+  it('attempts at most one replacement when the new physical session is also incompatible', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-single-retry-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    await removeSessionBindingFingerprint(interrupted.outputDirectory)
+    const mismatch = 'This session was recorded with model old-model but is resuming with new-model.'
+    let startedNew = 0
+
+    const resumed = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: ({ threadId }) => ({ id: threadId, runStreamed: async () => failedEventStream(mismatch, threadId) }),
+      startThread: () => {
+        startedNew += 1
+        return { id: 'thread-still-incompatible', runStreamed: async () => failedEventStream(mismatch, 'thread-still-incompatible') }
+      },
+    })
+
+    expect(startedNew).toBe(1)
+    expect(resumed.state.status).toBe('completed')
+    expect(resumed.result?.outcome).toBe('blocked')
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
+    expect(resumed.state.threadId).toBe('thread-still-incompatible')
   })
 
   it('stops later epochs and returns a complete blocked result when a mutation remains pending', async () => {

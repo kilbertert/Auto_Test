@@ -172,6 +172,17 @@ describe('AgentHost contract', () => {
     expect(normalizeAgentEvent({
       type: 'item.completed',
       item: {
+        id: 'session-model-mismatch',
+        type: 'error',
+        message: 'This session was recorded with model deepseek-v4-flash but is resuming with gpt-5.6-sol.',
+      },
+    })).toMatchObject({
+      type: 'session_incompatible',
+      message: expect.stringContaining('resuming with gpt-5.6-sol'),
+    })
+    expect(normalizeAgentEvent({
+      type: 'item.completed',
+      item: {
         id: 'metadata-warning',
         type: 'error',
         message: 'Model metadata for `deepseek-v4-flash` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.',
@@ -274,6 +285,7 @@ process.stdin.on('end', () => {
   it('classifies host errors so only operational transport classes are retryable', () => {
     expect(new AgentHostError('codex', 'quota', 'quota').retryable).toBe(true)
     expect(new AgentHostError('omp', 'transport', 'transport').retryable).toBe(true)
+    expect(new AgentHostError('codex', 'model changed', 'session_incompatible').retryable).toBe(true)
     expect(new AgentHostError('omp', 'unsupported mode', 'capability').retryable).toBe(false)
     expect(new AgentHostError('codex', 'bad executable', 'configuration').retryable).toBe(false)
     expect(new AgentHostError('omp', 'bad protocol', 'protocol').retryable).toBe(false)

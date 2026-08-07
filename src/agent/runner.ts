@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
@@ -96,6 +97,7 @@ function isNonFatalAgentHostError(message: string): boolean {
 
 async function runTurn(
   thread: AgentHostSession,
+  hostId: AgentHostId,
   input: AgentInputPart[],
   eventsPath: string,
   secrets: string[],
@@ -116,6 +118,9 @@ async function runTurn(
       if (event.type === 'thread_started' && event.threadId) await onThreadStarted?.(event.threadId)
       if (event.type === 'agent_message') finalResponse = event.text ?? ''
       if (event.type === 'turn_failed') throw new Error(event.message ?? 'agent turn failed')
+      if (event.type === 'session_incompatible') {
+        throw new AgentHostError(hostId, event.message ?? 'AgentHost session is incompatible with the current model binding', 'session_incompatible')
+      }
       if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) throw new Error(event.message ?? 'agent host error')
     }
     if (!finalResponse) throw new Error('Agent host returned no final response')
@@ -525,6 +530,20 @@ function hostInput(
   }]
 }
 
+function sessionBindingFingerprint(host: AgentHost, runtime: AgentHostRuntime): string {
+  const binding = runtime.provider
+    ? {
+        profileId: runtime.provider.profileId,
+        providerId: runtime.provider.providerId,
+        baseUrl: runtime.provider.baseUrl,
+        api: runtime.provider.api,
+        model: runtime.provider.model,
+        modelSelector: runtime.provider.modelSelector,
+      }
+    : { model: runtime.model ?? null }
+  return createHash('sha256').update(JSON.stringify({ hostId: host.id, binding })).digest('hex')
+}
+
 export async function runAgentTest(
   options: AgentTestOptions,
   dependencies: AgentTestDependencies = {},
@@ -790,6 +809,7 @@ export async function runAgentTest(
     })
     await writePrivateJson(statePath, state)
 
+    const currentSessionBindingFingerprint = sessionBindingFingerprint(host, runtime)
     let thread: AgentHostSession | undefined
     let threadId = state.threadId ?? resumeThreadId
     for (const epoch of epochs) {
@@ -803,7 +823,16 @@ export async function runAgentTest(
       await activateExecutionEpoch(workspace, epoch)
       const resumingEpoch = options.resume && state.activeEpoch?.id === epoch.id
       const initialEpochStage = resumingEpoch ? state.activeEpoch!.stage : 'executing'
-      const epochThreadId = resumingEpoch ? state.activeEpoch?.threadId ?? threadId : undefined
+      const storedEpochThreadId = resumingEpoch ? state.activeEpoch?.threadId ?? threadId : undefined
+      const bindingChanged = Boolean(
+        storedEpochThreadId &&
+        state.sessionBindingFingerprint &&
+        state.sessionBindingFingerprint !== currentSessionBindingFingerprint,
+      )
+      const epochThreadId = bindingChanged ? undefined : storedEpochThreadId
+      if (bindingChanged) {
+        progress.report('warning', '当前 Provider/模型绑定与已保存的物理 AgentHost session 不同，正在保留原 Run 并启动新的恢复线程')
+      }
       if (epochThreadId && !host.capabilities.sessionResume) {
         throw new Error(`${host.displayName} 不支持恢复既有会话；为避免重复业务写入，本次 Run 已安全阻断`)
       }
@@ -811,7 +840,7 @@ export async function runAgentTest(
         ? await host.resume({ ...threadOptions, resumeId: epochThreadId })
         : await host.start(threadOptions)
       activeThread = thread
-      threadId = epochThreadId ?? thread.id ?? threadId
+      threadId = epochThreadId ?? thread.id ?? undefined
       const { threadId: _previousThreadId, ...stateWithoutPreviousThread } = state
       const epochUsage: CodexTurnUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }
       const persistThreadId = async (id: string): Promise<void> => {
@@ -825,7 +854,10 @@ export async function runAgentTest(
       const stateForEpoch = epochThreadId ? state : stateWithoutPreviousThread
       state = updateCodexTestState(stateForEpoch, {
         stage: 'executing',
-        ...(!epochThreadId ? { threadGeneration: state.threadGeneration + 1 } : {}),
+        ...(!epochThreadId ? {
+          threadGeneration: state.threadGeneration + 1,
+          sessionBindingFingerprint: currentSessionBindingFingerprint,
+        } : {}),
         activeEpoch: {
           id: epoch.id,
           index: epoch.index,
@@ -844,6 +876,78 @@ export async function runAgentTest(
         epochUsage.outputTokens = usage.outputTokens
         state = updateCodexTestState(state, { lastUsage: { ...epochUsage } })
         await writePrivateJson(statePath, state)
+      }
+      // A logical Run may cold-resume on one replacement physical session,
+      // but only after the original resume attempt proves incompatible.
+      let resumeCompatibilityPending = Boolean(epochThreadId)
+      let sessionRotationAttempted = false
+      const invokeEpochTurn = async (
+        input: AgentInputPart[],
+        outputSchema?: unknown,
+      ): Promise<string> => {
+        if (!thread) throw new Error('AgentHost thread is unavailable for the active execution epoch')
+        return runTurn(
+          thread,
+          host.id,
+          input,
+          eventsPath,
+          redactionSecrets,
+          progress,
+          persistThreadId,
+          outputSchema,
+          receiptRecorder,
+          recordUsage,
+          scrubEpochArtifacts,
+        )
+      }
+      const confirmSessionBinding = async (): Promise<void> => {
+        if (state.sessionBindingFingerprint === currentSessionBindingFingerprint) return
+        state = updateCodexTestState(state, { sessionBindingFingerprint: currentSessionBindingFingerprint })
+        await writePrivateJson(statePath, state)
+      }
+      const rotateIncompatibleSession = async (): Promise<string> => {
+        sessionRotationAttempted = true
+        resumeCompatibilityPending = false
+        await thread?.close?.()
+        thread = await host.start(threadOptions)
+        activeThread = thread
+        threadId = thread.id ?? undefined
+        if (!state.activeEpoch) throw new Error('Cannot rotate an AgentHost session without an active execution epoch')
+        const { threadId: _oldThreadId, ...stateWithoutThread } = state
+        const { threadId: _oldEpochThreadId, ...activeEpochWithoutThread } = state.activeEpoch
+        state = updateCodexTestState(stateWithoutThread, {
+          threadGeneration: state.threadGeneration + 1,
+          sessionBindingFingerprint: currentSessionBindingFingerprint,
+          activeEpoch: {
+            ...activeEpochWithoutThread,
+            ...(thread.id ? { threadId: thread.id } : {}),
+          },
+          ...(thread.id ? { threadId: thread.id } : {}),
+        })
+        await writePrivateJson(statePath, state)
+        progress.report('warning', `已保留逻辑 Run、epoch 和 Mutation Ledger，并启动 thread generation ${state.threadGeneration} 恢复现场`)
+        return invokeEpochTurn(
+          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+        )
+      }
+      const runEpochTurn = async (
+        input: AgentInputPart[],
+        outputSchema?: unknown,
+        isResumePrompt = false,
+      ): Promise<string> => {
+        try {
+          const response = await invokeEpochTurn(input, outputSchema)
+          if (resumeCompatibilityPending) {
+            resumeCompatibilityPending = false
+            await confirmSessionBinding()
+          }
+          return response
+        } catch (error) {
+          const sessionIncompatible = error instanceof AgentHostError && error.kind === 'session_incompatible'
+          if (!sessionIncompatible || !resumeCompatibilityPending || sessionRotationAttempted) throw error
+          const recoveredResponse = await rotateIncompatibleSession()
+          return isResumePrompt ? recoveredResponse : invokeEpochTurn(input, outputSchema)
+        }
       }
 
       if (initialEpochStage === 'executing') {
@@ -866,7 +970,7 @@ export async function runAgentTest(
                 ...(workspace.runValuesPath ? { runValuesPath: workspace.runValuesPath } : {}),
                 ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
               }), imagePathsForExecutionEpoch(workspace, scopedManifest))
-        await runTurn(thread, input, eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
+        await runEpochTurn(input, undefined, resumingEpoch)
         state = updateCodexTestState(state, {
           stage: 'finalizing',
           activeEpoch: { ...state.activeEpoch!, stage: 'finalizing', ...(thread.id ? { threadId: thread.id } : {}) },
@@ -880,17 +984,10 @@ export async function runAgentTest(
       const ledgerBeforeFinalization = await readMutationLedger(workspace.mutationLedgerPath)
       if (ledgerBeforeFinalization.some((entry) => entry.status === 'pending')) {
         progress.report('stage', `epoch ${epoch.id} 存在未核销业务写入，正在由同一线程恢复核对`)
-        await runTurn(
-          thread,
+        await runEpochTurn(
           hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
-          eventsPath,
-          redactionSecrets,
-          progress,
-          persistThreadId,
           undefined,
-          receiptRecorder,
-          recordUsage,
-          scrubEpochArtifacts,
+          true,
         )
       }
 
@@ -903,17 +1000,9 @@ export async function runAgentTest(
           ? agentTestFinalPrompt(epoch)
           : `${agentTestFinalPrompt(epoch)}\n\nThe previous result had these deterministic contract problems:\n- ${deliveryProblems.join('\n- ')}\nCorrect only this epoch from existing evidence. Do not repeat business writes.`
         try {
-          const finalResponse = await runTurn(
-            thread,
+          const finalResponse = await runEpochTurn(
             hostInput(host, runtime, prompt, []),
-            eventsPath,
-            redactionSecrets,
-            progress,
-            persistThreadId,
             host.capabilities.structuredOutput ? agentTestStructuredOutputSchema : undefined,
-            receiptRecorder,
-            recordUsage,
-            scrubEpochArtifacts,
           )
           const candidate = parseAgentTestCandidate(finalResponse)
           const requirements = await reconcileEnvironmentRequirementCaseLinks(workspace.environmentRequirementsPath, candidate.cases)
@@ -1016,7 +1105,7 @@ export async function runAgentTest(
         })
         await writePrivateJson(statePath, state)
         progress.report('stage', `正在保存 ${epoch.id} 的 AgentHost 工作记忆 checkpoint`)
-        await runTurn(thread, hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []), eventsPath, redactionSecrets, progress, persistThreadId, undefined, receiptRecorder, recordUsage, scrubEpochArtifacts)
+        await runEpochTurn(hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []))
         const { activeEpoch: _checkpointedEpoch, ...checkpointedState } = state
         state = updateCodexTestState(checkpointedState, { stage: 'executing', checkpointPath })
         await writePrivateJson(statePath, state)
