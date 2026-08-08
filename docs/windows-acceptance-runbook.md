@@ -33,6 +33,8 @@ Linux/macOS 的 Codex 运行时只会把本次 Run 的 `.agent-private` 作为 s
 
 Windows 默认 Provider 的模型 API 探针最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。stdout+stderr 总量超过 4 MiB 同样会终止进程树、回滚配置并清理捕获文件。这不是业务测试结果。OMP 和显式 Model Profile 不运行该 Codex 默认探针，而是在 AgentHost 运行前准备自己的 Provider 绑定；两者都必须用真实 canary 验证协议、鉴权和模型能力。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
 
+启动层通过后，真实 AgentHost 还必须在第一个业务执行提示前完成只读 Control MCP 预检。验收时从 `codex-agent.events.jsonl` 精确确认恰好一次 `server=auto-test-control`、`tool=test_contract` 且 `status=completed` 的事件，并且该预检回合没有其他工具、shell 命令或文件改动事件；否则不能宣称业务通过，框架应生成 `blocked` 且 `failureSource=infrastructure` 的结构化结果。该门只确认 MCP 工具通道可用，不替代页面执行、业务断言或 Ledger 验收。
+
 如果默认 Key 额度不足，但另一个 Key 使用同一个 Provider Base URL，可在本次验收命令中临时指定：
 
 ```powershell
@@ -133,6 +135,8 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 - 每个测试用例均为 `passed`，且有对应业务证据；
 - Mutation Ledger 没有 `pending` 条目；
 - 测试材料要求的最终业务状态已验证，例如零活动订单、测试数据已删除、设备或连接器已恢复。
+
+另外，`.agent-private\mutation-ledger.json` 必须是 Core 校验通过的合法数组；若 Agent/脚本覆盖了 Ledger 形状，结果必须是 `blocked / agent_execution`，即使页面看起来已完成也不能算通过。
 
 `execution-plan.json`、`field-compositions.json`、Control MCP evidence checkpoint 或 AgentHost 生成的临时脚本可以存在，也可以不存在；它们不能替代最终业务证据，也不是通过条件。
 
