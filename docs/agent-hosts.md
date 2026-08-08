@@ -85,7 +85,9 @@ Linux/macOS 的 Codex `workspace-write` sandbox 只额外开放当前 Run 的 `.
 
 默认 direct 模式会向宿主提供运行所需的最小系统环境变量。若 OMP Provider 只支持环境变量认证，可在启动 Auto-Test 前设置 `AUTO_TEST_AGENT_FORWARD_ENV=OMP_API_KEY,OTHER_PROVIDER_KEY`；只有列出的变量会进入隔离宿主进程，且不会进入 Playwright/Control MCP 子进程。当前 OMP 适配器不宣称支持 `--opaque-test-data` 的受限工具模式，使用该模式会明确阻断，不会假装已经隔离。
 
-AgentHost 在页面、网络响应或浏览器存储中观察到的运行期凭据不一定属于输入 Secret。每个 turn 后的生成文本清洗会同时识别 Authorization/Cookie/API key、`access_token`/`refresh_token` 等敏感键和 JWT 形态；JSON/JSONL 仍保持可解析，immutable `test-manifest.json` 和原始输入不会被清洗器改写。该清洗不处理截图、PDF 等二进制证据，也不改写用于恢复的 `.agent-private`，因此外发前仍要人工检查二进制证据并排除私有目录。
+AgentHost 在页面、网络响应或浏览器存储中观察到的运行期凭据不一定属于输入 Secret。每个 turn 后的生成文本清洗会同时识别 Authorization/Cookie/API key、`access_token`/`refresh_token` 等敏感键和 JWT 形态；JSON/JSONL 仍保持可解析，JSONL 按行流式清洗并通过同目录临时文件替换，因此可以恢复处理旧版本留下的大事件日志。immutable `test-manifest.json` 和原始输入不会被清洗器改写。该清洗不处理截图、PDF 等二进制证据，也不改写用于恢复的 `.agent-private`，因此外发前仍要人工检查二进制证据并排除私有目录。
+
+OMP RPC 的 `message_update` 和 `tool_execution_update` 是包含累计完整内容的瞬时帧；适配器不会把它们送入 Core 事件日志。完整 `message_end`、工具开始/完成、错误和 turn 终态仍按共同 AgentHost 事件合同保留，因此诊断、进度、执行回执和最终交付不受影响。
 
 ## 公平比较
 

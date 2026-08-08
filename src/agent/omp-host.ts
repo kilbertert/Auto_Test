@@ -469,6 +469,9 @@ class OmpRpcSession implements AgentHostSession {
       this.fail(new AgentHostError('omp', `OMP requested an unsupported host integration frame: ${frame.type}`, 'capability'))
       return
     }
+    // OMP deltas contain the complete accumulated message/result. The final
+    // message and tool events carry the same usable facts without O(n^2) logs.
+    if (frame.type === 'message_start' || frame.type === 'message_update' || frame.type === 'tool_execution_update') return
     const active = this.activeRun
     if (!active) return
     const event = normalizeAgentEvent(frame)

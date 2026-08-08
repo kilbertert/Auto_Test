@@ -193,6 +193,6 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 
 `.agent-private` 用于本机恢复和审计，不应外发。页面证据也可能包含业务数据，离开测试团队前必须先检查和脱敏。
 
-生成文本会在每个 AgentHost turn 后自动清洗本轮 secret、Authorization、Cookie、Bearer、API key，以及页面或网络响应中动态产生的 `access_token`、`refresh_token` 和 JWT；结构化 JSON/JSONL 清洗后仍保持可解析。immutable `test-manifest.json`、原始输入目录和 `.agent-private` 不会被清洗器改写，前两者分别保留竞争合同和来源证据，后者仍然是本机私有恢复材料。截图、PDF 等二进制证据不做自动 OCR 或像素擦除，外发前必须人工检查。验收门禁应至少确认 `agent-workspace` 的生成文本没有精确 secret、JWT 或已知动态凭据命中，再结合人工检查二进制证据。
+生成文本会在每个 AgentHost turn 后自动清洗本轮 secret、Authorization、Cookie、Bearer、API key，以及页面或网络响应中动态产生的 `access_token`、`refresh_token` 和 JWT；结构化 JSON/JSONL 清洗后仍保持可解析，大 JSONL 按行流式处理。OMP 的累计消息和工具增量帧不会写入事件日志，完整消息、工具终态和错误仍须存在。immutable `test-manifest.json`、原始输入目录和 `.agent-private` 不会被清洗器改写，前两者分别保留竞争合同和来源证据，后者仍然是本机私有恢复材料。截图、PDF 等二进制证据不做自动 OCR 或像素擦除，外发前必须人工检查。验收门禁应至少确认 `agent-workspace` 的生成文本没有精确 secret、JWT 或已知动态凭据命中，再结合人工检查二进制证据。
 
 更详细的安装、私有 Provider、安全边界和命令说明见 [Windows 快速操作指南](windows-quick-start.md)。

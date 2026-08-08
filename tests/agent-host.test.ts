@@ -673,7 +673,12 @@ process.stdin.on('end', () => {
       send({ type: 'extension_ui_request', id: 'widget-1', method: 'setWidget', widgetKey: 'status', widgetLines: ['working'] })
       send({ type: 'extension_ui_request', id: 'notice-1', method: 'notify', message: 'fixture notice' })
       send({ type: 'agent_start' })
+      send({ type: 'message_start', message: { role: 'assistant', content: [] } })
+      for (let index = 1; index <= 32; index += 1) {
+        send({ type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(index * 4096) }] } })
+      }
       send({ type: 'tool_execution_start', toolCallId: 'click-1', toolName: 'browser_click', args: { label: 'fixture' } })
+      send({ type: 'tool_execution_update', toolCallId: 'click-1', toolName: 'browser_click', partialResult: { progress: 'x'.repeat(128 * 1024) } })
       send({ type: 'tool_execution_end', toolCallId: 'click-1', toolName: 'browser_click', result: { ok: true } })
       const assistant = { role: 'assistant', content: [{ type: 'text', text: 'fixture completed' }] }
       send({ type: 'message_end', message: assistant })
