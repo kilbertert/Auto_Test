@@ -1,6 +1,7 @@
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import type { AgentExecutionEpoch } from './execution-epochs.js'
 import type { AgentSecretAlias } from './workspace.js'
+import { environmentTargetUrls } from '../workflow/target-urls.js'
 
 function executionEpochContext(window?: AgentExecutionEpoch): string {
   if (!window) return [
@@ -33,7 +34,9 @@ export function agentTestPrompt(options: {
   checkpointPath?: string
   executionEpoch?: AgentExecutionEpoch
 }): string {
-  const registeredOrigins = [...new Set(options.allowedOrigins ?? options.manifest.targetUrls.map((url) => new URL(url).origin))]
+  const registeredOrigins = [...new Set(options.allowedOrigins ?? environmentTargetUrls(options.manifest).map((url) => new URL(url).origin))]
+  const declaredTargetUrls = environmentTargetUrls(options.manifest)
+  const materialUrls = options.manifest.targetUrls.filter((url) => !declaredTargetUrls.includes(url))
   const fullAgentAccess = options.testDataAccess !== 'opaque'
   const secretGuide = options.secretAliases.length === 0
     ? 'No run-scoped values are registered.'
@@ -120,6 +123,12 @@ The run-values file contains only this test run's Excel and Environment Profile 
 
 Registered environment context:
 ${options.environmentContext || '(none)'}
+
+Declared test environment URLs (the only URLs used for Profile selection):
+${declaredTargetUrls.map((url) => `- ${url}`).join('\n') || '- (none)'}
+
+Material/reference URLs extracted from the workbook (do not treat these as registered environments unless a case and live evidence require them):
+${materialUrls.map((url) => `- ${url}`).join('\n') || '- (none)'}
 
 Known starting origins (context, not a browser network allowlist):
 ${registeredOrigins.map((origin) => `- ${origin}`).join('\n') || '- (none)'}

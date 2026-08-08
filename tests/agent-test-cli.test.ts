@@ -7,6 +7,7 @@ import {
   scopeEnvironmentProfile,
 } from '../src/cli/agent-test.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
+import { environmentTargetUrls } from '../src/workflow/target-urls.js'
 
 function fixtureManifest(): WorkflowIntakeManifest {
   return {
@@ -20,6 +21,7 @@ function fixtureManifest(): WorkflowIntakeManifest {
       sha256: 'a'.repeat(64),
     },
     targetUrls: ['https://example.test'],
+    declaredTargetUrls: ['https://example.test'],
     requiredCapabilities: [],
     phases: [{
       id: 'case-1',
@@ -39,10 +41,14 @@ function fixtureManifest(): WorkflowIntakeManifest {
 }
 
 describe('Codex agent CLI', () => {
-  it('accepts an Excel with URLs supplied by the workbook', () => {
-    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--headed', '--max-iterations', '2', '--slow-mo', '50', '--case-limit', '12'])
+  it('requires an explicit environment URL for a new run', () => {
+    expect(() => parseAgentTestArgs(['--file', 'cases.xlsx'])).toThrow(/至少提供一个 --url/)
+    const options = parseAgentTestArgs([
+      '--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--headed',
+      '--max-iterations', '2', '--slow-mo', '50', '--case-limit', '12',
+    ])
 
-    expect(options.urls).toEqual([])
+    expect(options.urls).toEqual(['https://app.example.test/'])
     expect(options.headed).toBe(true)
     expect(options.maxIterations).toBe(2)
     expect(options.slowMo).toBe(50)
@@ -59,7 +65,7 @@ describe('Codex agent CLI', () => {
   })
 
   it('maps --one to one frozen manifest case', () => {
-    expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--one']).caseLimit).toBe(1)
+    expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--one']).caseLimit).toBe(1)
   })
 
   it('accepts explicit recovery of an existing output directory', () => {
@@ -95,11 +101,11 @@ describe('Codex agent CLI', () => {
   it('selects OMP for OMP-specific configuration and rejects mixed host arguments', () => {
     vi.stubEnv('AUTO_TEST_AGENT_HOST', '')
     try {
-      const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--omp-home', '/private/omp-agent'])
+      const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--omp-home', '/private/omp-agent'])
       expect(options.agentHostId).toBe('omp')
       expect(options.agentSourceHome).toMatch(/[\\/]private[\\/]omp-agent$/)
-      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
-      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
+      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--agent-host', 'codex', '--omp-home', '/private/omp-agent'])).toThrow(/不一致/)
+      expect(() => parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--codex-bin', '/bin/codex', '--omp-home', '/private/omp-agent'])).toThrow(/不能与.*同时使用/)
     } finally {
       vi.unstubAllEnvs()
     }
@@ -108,6 +114,7 @@ describe('Codex agent CLI', () => {
   it('normalizes generic and legacy host runtime flags before entering Core', () => {
     const generic = parseAgentTestArgs([
       '--file', 'cases.xlsx', '--agent-host', 'omp',
+      '--url', 'https://app.example.test/',
       '--agent-bin', '/opt/agent/bin', '--agent-home', '/opt/agent/home',
     ])
     expect(generic).toMatchObject({
@@ -117,7 +124,7 @@ describe('Codex agent CLI', () => {
     })
 
     const legacy = parseAgentTestArgs([
-      '--file', 'cases.xlsx', '--codex-bin', '/opt/codex/bin', '--codex-home', '/opt/codex/home',
+      '--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--codex-bin', '/opt/codex/bin', '--codex-home', '/opt/codex/home',
     ])
     expect(legacy).toMatchObject({
       agentHostId: 'codex',
@@ -129,17 +136,17 @@ describe('Codex agent CLI', () => {
   })
 
   it('supports an explicit opaque test-data mode', () => {
-    expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--opaque-test-data']).testDataAccess).toBe('opaque')
+    expect(parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--opaque-test-data']).testDataAccess).toBe('opaque')
   })
 
   it('parses the model-profile selection and registry path', () => {
-    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--model-profile', 'glm', '--model-profile-registry', '/custom/model-profiles.json'])
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/', '--model-profile', 'glm', '--model-profile-registry', '/custom/model-profiles.json'])
     expect(options.modelProfileId).toBe('glm')
     expect(options.modelProfileRegistryPath).toMatch(/[\\/]model-profiles\.json$/)
   })
 
   it('defaults the model-profile registry path', () => {
-    const options = parseAgentTestArgs(['--file', 'cases.xlsx'])
+    const options = parseAgentTestArgs(['--file', 'cases.xlsx', '--url', 'https://app.example.test/'])
     expect(options.modelProfileId).toBeUndefined()
     expect(options.modelProfileRegistryPath).toMatch(/auto-test[\\/]model-profiles\.json$/)
   })
@@ -236,12 +243,27 @@ describe('Codex agent CLI', () => {
     }, {
       version: '1.0', kind: 'workflow-intake', workflowId: 'catalog',
       source: { format: 'xlsx', fileName: 'catalog.xlsx', sheetName: 'Cases', sha256: 'a'.repeat(64) },
-      targetUrls: ['https://catalog.example.test/products'], requiredCapabilities: [], phases: [],
+      targetUrls: ['https://catalog.example.test/products'], declaredTargetUrls: ['https://catalog.example.test/'], requiredCapabilities: [], phases: [],
       embeddedImages: [], supplementalImages: [], review: { status: 'draft', reasons: [] },
     })
 
     expect(profile.origins).toEqual(['https://catalog.example.test'])
     expect(profile.auth).toHaveLength(1)
+  })
+
+  it('does not promote workbook reference links into pre-execution environment targets', () => {
+    const manifest = fixtureManifest()
+    manifest.targetUrls = ['https://app.example.test/', 'https://reference.example.test/']
+    manifest.declaredTargetUrls = ['https://app.example.test/']
+    const profile = scopeEnvironmentProfile({
+      id: 'app',
+      origins: ['https://app.example.test', 'https://reference.example.test'],
+      auth: [],
+      policy: { allowWrite: false, allowDestructive: false },
+    }, manifest)
+
+    expect(environmentTargetUrls(manifest)).toEqual(['https://app.example.test/'])
+    expect(profile.origins).toEqual(['https://app.example.test'])
   })
 
   it('retains only explicitly requested additional origins for a resumed run', () => {
@@ -257,7 +279,7 @@ describe('Codex agent CLI', () => {
     }, {
       version: '1.0', kind: 'workflow-intake', workflowId: 'catalog',
       source: { format: 'xlsx', fileName: 'catalog.xlsx', sheetName: 'Cases', sha256: 'a'.repeat(64) },
-      targetUrls: ['https://catalog.example.test/products'], requiredCapabilities: [], phases: [],
+      targetUrls: ['https://catalog.example.test/products'], declaredTargetUrls: ['https://catalog.example.test/'], requiredCapabilities: [], phases: [],
       embeddedImages: [], supplementalImages: [], review: { status: 'draft', reasons: [] },
     }, ['https://admin.example.test/virtual/device'])
 

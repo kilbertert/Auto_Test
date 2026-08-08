@@ -1,5 +1,6 @@
 import type { ModelProfile } from '../workflow/model-profile.js'
 import type { WorkflowIntakeManifest, WorkflowPhaseDraft } from '../workflow/types.js'
+import { targetUrlsForManifestCases } from '../workflow/target-urls.js'
 
 export interface AgentExecutionCapacity {
   contextWindowTokens: number
@@ -87,6 +88,7 @@ export function manifestForAgentExecutionEpoch(
   return {
     ...manifest,
     phases,
+    targetUrls: targetUrlsForManifestCases(manifest, phases),
     embeddedImages: manifest.embeddedImages.filter((image) => imageIds.has(image.id)),
     supplementalImages: manifest.supplementalImages.filter((image) => imageIds.has(image.id)),
   }
@@ -99,6 +101,7 @@ export function limitManifestToCases(manifest: WorkflowIntakeManifest, limit: nu
   return {
     ...manifest,
     phases,
+    targetUrls: targetUrlsForManifestCases(manifest, phases),
     embeddedImages: manifest.embeddedImages.filter((image) => imageIds.has(image.id)),
     supplementalImages: manifest.supplementalImages.filter((image) => imageIds.has(image.id)),
   }

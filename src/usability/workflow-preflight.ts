@@ -9,7 +9,7 @@ import {
 
 export interface EasyWorkflowPreflight {
   targetUrls: string[]
-  discoveredOrigins: string[]
+  materialOrigins: string[]
 }
 
 export async function preflightEasyWorkflow(
@@ -23,8 +23,8 @@ export async function preflightEasyWorkflow(
   })
   const targetUrls = normalizeTargetUrls(intake.manifest.targetUrls)
   const suppliedOrigins = new Set(targetOrigins(normalizedSuppliedUrls))
-  const discoveredOrigins = targetOrigins(targetUrls).filter((origin) => !suppliedOrigins.has(origin))
-  return { targetUrls, discoveredOrigins }
+  const materialOrigins = targetOrigins(targetUrls).filter((origin) => !suppliedOrigins.has(origin))
+  return { targetUrls, materialOrigins }
 }
 
 export interface EasyRegistrationDefaults {
@@ -49,9 +49,8 @@ export type EasyRegistrationPlan =
  *
  * Registration and login are scoped to the URLs the user explicitly pasted
  * (`suppliedUrls`). Origins merely discovered in the test-case workbook are
- * surfaced by `preflightEasyWorkflow` as a notice and never expand the
- * registration requirement, so an incidental link (e.g. a YouTube URL in test
- * data) cannot block the run.
+ * retained by `preflightEasyWorkflow` as material context and never expand the
+ * registration requirement, so incidental external references cannot block a run.
  */
 export async function planEasyRegistration(params: {
   suppliedUrls: string[]
@@ -60,6 +59,9 @@ export async function planEasyRegistration(params: {
   registryPath?: string
 }): Promise<EasyRegistrationPlan> {
   const registrationUrls = normalizeTargetUrls(params.suppliedUrls)
+  if (registrationUrls.length === 0) {
+    return { kind: 'error', message: '新 AgentHost Run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文' }
+  }
   const profileMatches = await environmentProfileMatches(registrationUrls, params.registryPath)
   if (params.profileId) {
     const requested = profileMatches.find((match) => match.profile.id === params.profileId)

@@ -35,11 +35,19 @@ describe('easy workflow preflight', () => {
       'https://simulator.example.test/',
       'https://h5.example.test/login',
     ])
-    expect(result.discoveredOrigins).toEqual(['https://h5.example.test'])
+    expect(result.materialOrigins).toEqual(['https://h5.example.test'])
   })
 })
 
 describe('easy registration plan', () => {
+  it('rejects an empty environment URL set instead of inferring targets from Excel', async () => {
+    const plan = await planEasyRegistration({ suppliedUrls: [], isTTY: true })
+    expect(plan).toEqual({
+      kind: 'error',
+      message: expect.stringContaining('至少提供一个 --url'),
+    })
+  })
+
   it('does not require registration for origins merely discovered in the workbook', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-reg-scope-'))
     temporaryDirectories.push(directory)
@@ -59,7 +67,7 @@ describe('easy registration plan', () => {
     const suppliedUrls = ['https://lta.example.test/']
     const preflight = await preflightEasyWorkflow(filePath, suppliedUrls)
     // preflight still surfaces the incidental YouTube origin as a notice
-    expect(preflight.discoveredOrigins).toContain('https://www.youtube.com')
+    expect(preflight.materialOrigins).toContain('https://www.youtube.com')
 
     const registryPath = resolve(directory, 'environment-profiles.json')
     await upsertEnvironmentProfile(

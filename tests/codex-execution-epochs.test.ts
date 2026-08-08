@@ -37,6 +37,19 @@ describe('Codex execution epoch planning', () => {
     expect(limited.source.sha256).toBe('a'.repeat(64))
   })
 
+  it('does not let unselected case references expand a canary target set', () => {
+    const input = manifest()
+    input.declaredTargetUrls = ['https://app.example.test/']
+    input.targetUrls = ['https://app.example.test/', 'https://reference.example.test/']
+    input.phases[0]!.resources = [{ sourceCell: 'A2', text: 'https://case-one.example.test/', urls: ['https://case-one.example.test/'] }]
+    input.phases[1]!.resources = [{ sourceCell: 'A3', text: 'https://case-two.example.test/', urls: ['https://case-two.example.test/'] }]
+
+    expect(limitManifestToCases(input, 1).targetUrls).toEqual([
+      'https://app.example.test/',
+      'https://case-one.example.test/',
+    ])
+  })
+
   it('rejects epochs that contain case IDs outside the immutable manifest', () => {
     expect(() => manifestForExecutionEpoch(manifest(), {
       id: 'epoch-unknown', index: 0, total: 1, caseIds: ['missing-case'], estimatedInputTokens: 500, estimatedOutputTokens: 900,
