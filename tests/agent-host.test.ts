@@ -673,7 +673,12 @@ process.stdin.on('end', () => {
       send({ type: 'extension_ui_request', id: 'widget-1', method: 'setWidget', widgetKey: 'status', widgetLines: ['working'] })
       send({ type: 'extension_ui_request', id: 'notice-1', method: 'notify', message: 'fixture notice' })
       send({ type: 'agent_start' })
+      send({ type: 'message_start', message: { role: 'assistant', content: [] } })
+      for (let index = 1; index <= 32; index += 1) {
+        send({ type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(index * 4096) }] } })
+      }
       send({ type: 'tool_execution_start', toolCallId: 'click-1', toolName: 'browser_click', args: { label: 'fixture' } })
+      send({ type: 'tool_execution_update', toolCallId: 'click-1', toolName: 'browser_click', partialResult: { progress: 'x'.repeat(128 * 1024) } })
       send({ type: 'tool_execution_end', toolCallId: 'click-1', toolName: 'browser_click', result: { ok: true } })
       const assistant = { role: 'assistant', content: [{ type: 'text', text: 'fixture completed' }] }
       send({ type: 'message_end', message: assistant })
@@ -755,6 +760,24 @@ process.stdin.on('end', () => {
       toolName: 'mcp__auto_test_control_mutation_list',
       result: {},
     })?.message).toContain('核对未完成的业务写入')
+  })
+
+  it('normalizes native OMP MCP calls for the shared control preflight', () => {
+    expect(normalizeAgentEvent({
+      type: 'tool_execution_end',
+      toolCallId: 'contract-1',
+      toolName: 'mcp__auto_test_control_test_contract',
+      result: {
+        details: { serverName: 'auto-test-control', mcpToolName: 'test_contract' },
+        isError: false,
+      },
+      isError: false,
+    })).toMatchObject({
+      type: 'tool_completed',
+      server: 'auto-test-control',
+      tool: 'test_contract',
+      status: 'completed',
+    })
   })
 
   it('waits for terminal agent_end across OMP inner turns and maintenance continuations', async () => {

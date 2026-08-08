@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto'
-import { access, chmod, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, relative, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { access, chmod, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { redactAgentArtifactText, redactAgentArtifactValue } from './redact.js'
 
 const textArtifactExtensions = new Set(['.csv', '.json', '.jsonl', '.log', '.md', '.txt', '.yaml', '.yml'])
@@ -42,17 +44,16 @@ export async function redactAgentTextArtifacts(
 }
 
 export async function redactAgentTextArtifact(path: string, secrets: string[]): Promise<boolean> {
+  const extension = extname(path).toLowerCase()
+  if (extension === '.jsonl') return redactJsonLinesArtifact(path, secrets)
   const content = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return undefined
     throw error
   })
   if (content === undefined || content.includes('\u0000')) return false
-  const extension = extname(path).toLowerCase()
   const redacted = extension === '.json'
     ? redactJson(content, secrets)
-    : extension === '.jsonl'
-      ? redactJsonLines(content, secrets)
-      : redactAgentArtifactText(content, secrets)
+    : redactAgentArtifactText(content, secrets)
   if (redacted === content) return false
   await writeFile(path, redacted, 'utf8')
   if (process.platform !== 'win32') await chmod(path, 0o640)
@@ -264,24 +265,63 @@ function redactJson(content: string, secrets: string[]): string {
   }
 }
 
-function redactJsonLines(content: string, secrets: string[]): string {
+function redactJsonLine(line: string, secrets: string[]): string {
   try {
-    const parts = content.split(/(\r\n|\n|\r)/)
-    let changed = false
-    for (let index = 0; index < parts.length; index += 2) {
-      const line = parts[index] ?? ''
-      if (line.length === 0) continue
-      const parsed = JSON.parse(line) as unknown
-      const redacted = redactAgentArtifactValue(parsed, secrets)
-      if (JSON.stringify(redacted) !== JSON.stringify(parsed)) {
-        parts[index] = JSON.stringify(redacted)
-        changed = true
-      }
-    }
-    return changed ? parts.join('') : content
+    const parsed = JSON.parse(line) as unknown
+    const redacted = redactAgentArtifactValue(parsed, secrets)
+    return JSON.stringify(redacted) === JSON.stringify(parsed) ? line : JSON.stringify(redacted)
   } catch {
-    return redactAgentArtifactText(content, secrets)
+    return redactAgentArtifactText(line, secrets)
   }
+}
+
+async function redactJsonLinesArtifact(path: string, secrets: string[]): Promise<boolean> {
+  const temporaryPath = resolve(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
+  let changed = false
+  try {
+    await pipeline(
+      createReadStream(path, { encoding: 'utf8' }),
+      async function* (chunks) {
+        let remainder = ''
+        for await (const chunk of chunks) {
+          const content = remainder + String(chunk)
+          let start = 0
+          const separators = /\r\n|\n|\r/g
+          for (let match = separators.exec(content); match; match = separators.exec(content)) {
+            if (match[0] === '\r' && match.index + 1 === content.length) break
+            const line = content.slice(start, match.index)
+            const redacted = line ? redactJsonLine(line, secrets) : line
+            if (redacted !== line) changed = true
+            yield redacted + match[0]
+            start = match.index + match[0].length
+          }
+          remainder = content.slice(start)
+        }
+        if (remainder.endsWith('\r')) {
+          const line = remainder.slice(0, -1)
+          const redacted = line ? redactJsonLine(line, secrets) : line
+          if (redacted !== line) changed = true
+          yield `${redacted}\r`
+        } else if (remainder) {
+          const redacted = redactJsonLine(remainder, secrets)
+          if (redacted !== remainder) changed = true
+          yield redacted
+        }
+      },
+      createWriteStream(temporaryPath, { encoding: 'utf8', flags: 'wx', mode: 0o600 }),
+    )
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined)
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (!changed) {
+    await rm(temporaryPath, { force: true })
+    return false
+  }
+  await rename(temporaryPath, path)
+  if (process.platform !== 'win32') await chmod(path, 0o640)
+  return true
 }
 
 async function redactDirectory(

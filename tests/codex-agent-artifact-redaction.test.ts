@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from '../src/agent/artifact-redaction.js'
+import { redactAgentTextArtifact, redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from '../src/agent/artifact-redaction.js'
 
 describe('agent artifact redaction', () => {
   it('redacts registered secrets and common authentication material in nested evidence text', async () => {
@@ -92,6 +92,30 @@ describe('agent artifact redaction', () => {
       expect(JSON.parse(await readFile(jsonPath, 'utf8'))).toEqual({ cost: 0.09356, message: '<redacted-secret>' })
       const lines = (await readFile(jsonlPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
       expect(lines).toEqual([{ cost: 0.09356, message: '<redacted-secret>' }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('streams large JSONL redaction without changing its line contract', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-large-jsonl-redaction-'))
+    try {
+      const path = resolve(directory, 'events.jsonl')
+      const lines = Array.from({ length: 8_192 }, (_, index) => JSON.stringify({
+        index,
+        message: `fixture-password-${'x'.repeat(1024)}`,
+      }))
+      await writeFile(path, `${lines.join('\r\n')}\r\n`)
+
+      await expect(redactAgentTextArtifact(path, ['fixture-password'])).resolves.toBe(true)
+
+      const redacted = await readFile(path, 'utf8')
+      expect(redacted).not.toContain('fixture-password')
+      expect(redacted.split('\r\n')).toHaveLength(lines.length + 1)
+      const first = JSON.parse(redacted.split('\r\n')[0]!) as { index: number; message: string }
+      expect(first.index).toBe(0)
+      expect(first.message).toBe(`<redacted-secret>-${'x'.repeat(1024)}`)
+      expect(JSON.parse(redacted.split('\r\n').at(-2)!)).toMatchObject({ index: lines.length - 1 })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
