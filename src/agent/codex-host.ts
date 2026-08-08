@@ -148,6 +148,7 @@ export function startCodexSdkThread(
       features: {
         shell_tool: options.fullAgentAccess,
         apps: false,
+        plugins: false,
         multi_agent: options.fullAgentAccess,
         remote_plugin: false,
         hooks: false,
