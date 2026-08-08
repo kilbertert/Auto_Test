@@ -166,6 +166,32 @@ function rewriteSseLine(line: string, mapping: ResponsesToolMapping): string {
   }
 }
 
+async function writeResponse(
+  response: import('node:http').ServerResponse,
+  chunk: string,
+): Promise<boolean> {
+  if (response.destroyed || response.writableEnded) return false
+  if (response.write(chunk)) return true
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      response.off('drain', onDrain)
+      response.off('close', onClose)
+      response.off('error', onClose)
+    }
+    const onDrain = () => {
+      cleanup()
+      resolve(true)
+    }
+    const onClose = () => {
+      cleanup()
+      resolve(false)
+    }
+    response.once('drain', onDrain)
+    response.once('close', onClose)
+    response.once('error', onClose)
+  })
+}
+
 async function pipeSse(
   body: ReadableStream<Uint8Array>,
   response: import('node:http').ServerResponse,
@@ -174,17 +200,18 @@ async function pipeSse(
   const decoder = new TextDecoder()
   let pending = ''
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    if (response.destroyed || response.writableEnded) return
     pending += decoder.decode(chunk, { stream: true })
     let newline = pending.indexOf('\n')
     while (newline >= 0) {
       const line = pending.slice(0, newline).replace(/\r$/, '')
-      response.write(`${rewriteSseLine(line, mapping)}\n`)
+      if (!await writeResponse(response, `${rewriteSseLine(line, mapping)}\n`)) return
       pending = pending.slice(newline + 1)
       newline = pending.indexOf('\n')
     }
   }
   pending += decoder.decode()
-  if (pending) response.write(rewriteSseLine(pending.replace(/\r$/, ''), mapping))
+  if (pending) await writeResponse(response, rewriteSseLine(pending.replace(/\r$/, ''), mapping))
 }
 
 async function closeServer(server: Server): Promise<void> {
@@ -200,6 +227,10 @@ async function closeServer(server: Server): Promise<void> {
 export async function startResponsesToolBridge(upstreamBaseUrl: string): Promise<ResponsesToolBridge> {
   const upstreamUrl = upstreamResponsesUrl(upstreamBaseUrl)
   const server = createServer(async (request, response) => {
+    const controller = new AbortController()
+    const abortUpstream = () => controller.abort()
+    request.once('aborted', abortUpstream)
+    response.once('close', abortUpstream)
     try {
       if (request.method !== 'POST' || request.url !== '/responses') {
         response.writeHead(404).end()
@@ -214,6 +245,7 @@ export async function startResponsesToolBridge(upstreamBaseUrl: string): Promise
         headers: forwardedHeaders(request.headers),
         body: JSON.stringify(payload),
         redirect: 'manual',
+        signal: controller.signal,
       })
       response.statusCode = upstream.status
       copyResponseHeaders(upstream.headers, response)
@@ -226,19 +258,23 @@ export async function startResponsesToolBridge(upstreamBaseUrl: string): Promise
       } else {
         const text = await upstream.text()
         try {
-          response.write(JSON.stringify(restoreResponsesToolCalls(JSON.parse(text) as unknown, mapping)))
+          await writeResponse(response, JSON.stringify(restoreResponsesToolCalls(JSON.parse(text) as unknown, mapping)))
         } catch {
-          response.write(text)
+          await writeResponse(response, text)
         }
       }
-      response.end()
+      if (!response.destroyed && !response.writableEnded) response.end()
     } catch (error) {
+      if (response.destroyed) return
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : undefined)
         return
       }
       response.writeHead(502, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error) } }))
+    } finally {
+      request.off('aborted', abortUpstream)
+      response.off('close', abortUpstream)
     }
   })
   await new Promise<void>((resolve, reject) => {

@@ -118,7 +118,7 @@ Windows 上的 Codex CLI 0.146.0 对 `workspace-write` 的原生策略会拒绝�
 
 Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合同上单独执行”的顺序完成一次真实写入型 canary；Windows 仍须独立复验。OMP 的结果必须同时保留 `agent-host-selection.json` 中的 `workspaceIsolation: prompt_only`，不能因结果为 `passed` 就宣称其具备 Codex 同等级的操作系统隔离。
 
-发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到恰好一次已完成的 `auto-test-control.test_contract` 调用且没有其他工具、shell 命令或文件改动事件；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检未满足该合同，框架会返回 `blocked / infrastructure`，通常表示当前 Provider 的工具调用兼容性不足，应切换到支持本地 MCP 工具的 Model Profile 后用原输出目录恢复。
+发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到恰好一次已完成的 `auto-test-control.test_contract` 调用且没有其他工具、shell 命令或文件改动事件；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检未满足该合同，框架会返回 `blocked / infrastructure`；应依次检查本地 MCP 启动、Provider 的标准 function/SSE/工具结果续传协议和模型工具调用能力，修复后用原输出目录恢复。
 
 每个 Codex Run 都会关闭 Apps、插件和远程插件目录，避免隔离 Agent Home 首次启动时同步 marketplace 或引入无关工具；测试能力只来自 Auto-Test 注入的 Playwright 和 Control MCP。
 

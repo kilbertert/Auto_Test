@@ -119,4 +119,32 @@ describe('Responses namespace compatibility bridge', () => {
       },
     })
   })
+
+  it('cancels the upstream stream when the Codex client disconnects', async () => {
+    let upstreamClosed!: () => void
+    const closed = new Promise<void>((resolve) => { upstreamClosed = resolve })
+    const upstream = createServer(async (request, response) => {
+      await jsonBody(request)
+      response.on('close', upstreamClosed)
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'response-1' } })}\n\n`)
+    })
+    servers.push(upstream)
+    const bridge = await startResponsesToolBridge(`${await listen(upstream)}/v1`)
+    bridges.push(bridge)
+    const controller = new AbortController()
+    const response = await fetch(`${bridge.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ model: 'fixture', stream: true, input: [], tools: [] }),
+    })
+
+    controller.abort()
+    await expect(response.text()).rejects.toThrow()
+    await expect(Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('upstream stream remained open')), 2_000)),
+    ])).resolves.toBeUndefined()
+  })
 })
