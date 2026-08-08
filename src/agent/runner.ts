@@ -271,8 +271,8 @@ function isMutationLedgerViolation(message: string): boolean {
 function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {
   if (/control mcp capability preflight/i.test(message)) {
     return {
-      reason: '当前 Provider/AgentHost 没有向模型提供 Auto-Test Control MCP 工具。',
-      nextAction: '切换到已验证支持本地 MCP 工具调用的 Provider/AgentHost 后，使用原结果目录继续上次测试。',
+      reason: 'Control MCP 能力预检未观察到唯一且合规的 test_contract 调用。',
+      nextAction: '检查本地 MCP 启动、Provider 的标准 function/SSE/工具结果协议和模型工具调用能力后，使用原结果目录继续上次测试。',
     }
   }
   if (/mutation ledger/i.test(message)) {
