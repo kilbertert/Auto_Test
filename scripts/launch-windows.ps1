@@ -799,15 +799,18 @@ function Test-PlaywrightChromiumReady {
   if (-not $script:NodeExecutable -or -not (Test-Path $script:NodeExecutable)) { return $false }
   $browserCheck = Join-Path $RepositoryRoot 'scripts\check-playwright-browser.cjs'
   if (-not (Test-Path $browserCheck)) { return $false }
+  # A missing or unlaunchable browser is an expected condition on first run.
+  # Suppress the probe's stderr so it does not render as a red native-command
+  # error; the caller prints a normal informational message and downloads
+  # Chromium when this returns false.
   $previousErrorActionPreference = $ErrorActionPreference
   try {
-    $ErrorActionPreference = 'Continue'
-    $checkOutput = (& $script:NodeExecutable $browserCheck 2>&1 | Out-String).Trim()
+    $ErrorActionPreference = 'SilentlyContinue'
+    $checkOutput = (& $script:NodeExecutable $browserCheck 2>$null | Out-String).Trim()
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
   }
   if ($checkOutput -match '(?m)^AUTO_TEST_CHROMIUM_READY\s*$') { return $true }
-  if ($checkOutput) { Write-Host $checkOutput }
   return $false
 }
 
@@ -821,6 +824,7 @@ function Ensure-ProjectRuntime {
 
   $browserReady = Test-PlaywrightChromiumReady
   if (-not $browserReady) {
+    Write-Host '[安装] Chromium 未安装,开始下载……'
     Install-PlaywrightChromium
     if (-not (Test-PlaywrightChromiumReady)) {
       throw 'Chromium 安装命令已结束，但没有找到可用的浏览器文件。'
