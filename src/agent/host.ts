@@ -447,12 +447,14 @@ export function normalizeAgentEvent(value: unknown): AgentEvent {
     const details = recordValue(raw)
     const type = raw.type === 'tool_execution_start' ? 'tool_started' : 'tool_completed'
     const xdev = ompXdInvocation(raw)
+    const toolName = stringValue(details?.toolName) ?? 'agent_tool'
+    const identity = xdev ?? parseOmpMcpIdentity(toolName, recordValue(recordValue(details?.result)?.details))
     return eventWithRaw({
       type,
       id: stringValue(details?.toolCallId),
       callId: stringValue(details?.toolCallId),
-      ...(xdev?.server ? { server: xdev.server } : {}),
-      tool: xdev?.tool ?? stringValue(details?.toolName) ?? 'agent_tool',
+      ...(identity?.server ? { server: identity.server } : {}),
+      tool: identity?.tool ?? toolName,
       status: xdev?.failed || details?.isError === true ? 'failed' : 'completed',
       arguments: xdev?.arguments ?? details?.args,
       result: details?.result ?? details?.partialResult,

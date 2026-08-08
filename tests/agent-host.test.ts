@@ -757,6 +757,24 @@ process.stdin.on('end', () => {
     })?.message).toContain('核对未完成的业务写入')
   })
 
+  it('normalizes native OMP MCP calls for the shared control preflight', () => {
+    expect(normalizeAgentEvent({
+      type: 'tool_execution_end',
+      toolCallId: 'contract-1',
+      toolName: 'mcp__auto_test_control_test_contract',
+      result: {
+        details: { serverName: 'auto-test-control', mcpToolName: 'test_contract' },
+        isError: false,
+      },
+      isError: false,
+    })).toMatchObject({
+      type: 'tool_completed',
+      server: 'auto-test-control',
+      tool: 'test_contract',
+      status: 'completed',
+    })
+  })
+
   it('waits for terminal agent_end across OMP inner turns and maintenance continuations', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-omp-multiturn-'))
     directories.push(directory)
