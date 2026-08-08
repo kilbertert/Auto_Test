@@ -288,6 +288,7 @@ process.stdin.on('end', () => {
     const sandboxIndex = args.indexOf('--sandbox')
     expect(sandboxIndex).toBeGreaterThanOrEqual(0)
     expect(args[sandboxIndex + 1]).toBe('danger-full-access')
+    expect(args).toContain('features.plugins=false')
   })
 
   it('classifies host errors so only operational transport classes are retryable', () => {

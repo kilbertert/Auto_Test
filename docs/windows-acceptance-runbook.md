@@ -29,6 +29,9 @@ Set-Location "D:\Auto-Test"
 ```
 
 继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 使用 Windows 默认 Provider 时必须通过启动器探针；显式 Model Profile 不运行无关的默认探针，而由实际 Codex canary 验证。OMP 路径至少通过 `omp --version`，然后由 OMP 适配器使用同一个 Model Profile 生成隔离 `models.yml` 并在真实 canary 中验证 Provider。只有 legacy/native Run 才需要 `--agent-home` 或 `AUTO_TEST_AGENT_HOME` 提供宿主 provider/auth 源目录；省略时 Codex 可回退到 `%USERPROFILE%\.codex`，并保留当前 Provider 的 header 子表。子表引用的额外环境变量必须通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出。`--omp-home` / `AUTO_TEST_OMP_HOME` 是兼容别名。实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
+
+每个 Codex Run 都会关闭 Apps、插件和远程插件目录，避免隔离 Agent Home 在测试启动时同步 marketplace；测试工具只来自 Auto-Test 注入的 Playwright 和 Control MCP。
+
 Linux/macOS 的 Codex 运行时只会把本次 Run 的 `.agent-private` 作为 sandbox 的额外可写目录，以便 Control MCP 登记权威 Ledger。Windows Codex CLI 0.146.0 在 `workspace-write` 下无法启动子 MCP 或可写 shell，因此 Auto-Test direct 模式会由 AgentHost 自动切换到 `danger-full-access`；这是宿主平台限制的通用兼容处理，不是针对某个业务的放权。Windows 这条路径不具备 Codex 的操作系统级 workspace sandbox，`agent-host-selection.json` 必须显示 `workspaceIsolation: prompt_only`。Auto-Test 仍保留 run 工作区、允许 origin、风险策略、Control MCP、Mutation Ledger 和结果合同边界；只在专用测试账号/测试机运行，且不要把该能力等同于可写仓库或用户目录的安全隔离。选择 OMP 时，Windows 启动器不会显示 Codex 专用 Provider 探针结果；`omp --version` 只能证明 OMP 可启动，Model Profile 的环境变量、协议和模型能力仍要由真实 AgentHost canary 验证。
 
 Windows 默认 Provider 的模型 API 探针最多等待 120 秒，并在长时间等待时输出心跳。stdout/stderr 使用本次探针的临时文件捕获，后台继承句柄不会让已退出的主进程继续占用启动窗口；只有 Codex/API 调用本身未结束才会触发超时、恢复上一版 Provider 配置并明确报错。stdout+stderr 总量超过 4 MiB 同样会终止进程树、回滚配置并清理捕获文件。这不是业务测试结果。OMP 和显式 Model Profile 不运行该 Codex 默认探针，而是在 AgentHost 运行前准备自己的 Provider 绑定；两者都必须用真实 canary 验证协议、鉴权和模型能力。只有已经确认网关健康但首个响应确实较慢时，才为单次诊断临时设置 `AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS`（1 到 3600），不要用它掩盖额度、限流、网络或流式响应故障。
