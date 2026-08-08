@@ -30,6 +30,7 @@ import { WorkflowStateStore } from '../workflow/runtime-state.js'
 import { intakeWorkflowXlsx } from '../workflow/intake.js'
 import { discoverWorkflowInputBundle } from '../workflow/input-bundle.js'
 import { workflowSecretEnvironment } from '../workflow/intake-secrets.js'
+import { environmentTargetUrls } from '../workflow/target-urls.js'
 
 interface PipelineOptions {
   filePath: string
@@ -72,6 +73,7 @@ function help(): string {
     '  --model <id>                Planner/Refiner 模型',
     '  --max-refinements <count>   安全只读失败的最大自动修订轮数，默认 3',
     '  --autonomous                启用持久化自治控制器；策略通过后自动执行',
+    '                              自治执行必须显式提供至少一个 --url；非自治 intake/planning 可仅解析 Excel',
     '  --max-environment-retries N 环境错误自动重试次数，默认 2',
     '  --profile <id>              指定已注册的环境 Profile',
     `  --profile-registry <path>   环境 Profile Registry，默认 ${defaultEnvironmentProfileRegistryPath()}`,
@@ -144,9 +146,13 @@ function parseArgs(args: string[]): PipelineOptions {
   const maxEnvironmentRetries = integerOption(args, '--max-environment-retries', 2)!
   if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
   const slowMo = integerOption(args, '--slow-mo')
+  const urls = valuesAfter(args, '--url')
+  if (autonomous && urls.length === 0) {
+    throw new Error('自治执行必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
+  }
   return {
     filePath: resolve(file),
-    urls: valuesAfter(args, '--url'),
+    urls,
     images: valuesAfter(args, '--image').map((value) => resolve(value)),
     ...(valueAfter(args, '--brief') ? { briefPath: resolve(valueAfter(args, '--brief')!) } : {}),
     ...(valueAfter(args, '--draft') ? { draftPath: resolve(valueAfter(args, '--draft')!) } : {}),
@@ -236,7 +242,7 @@ async function main(): Promise<void> {
     const registryPath = options.profileRegistryPath ?? defaultEnvironmentProfileRegistryPath()
     try {
       const registry = await loadEnvironmentProfileRegistry(registryPath)
-      environmentProfile = selectEnvironmentProfile(registry, intake.manifest.targetUrls, options.profileId)
+      environmentProfile = selectEnvironmentProfile(registry, environmentTargetUrls(intake.manifest), options.profileId)
       environment = workflowSecretEnvironment(await loadEnvironmentProfileSecrets(environmentProfile), environment)
       plannerBrief = [await loadEnvironmentProfileContext(environmentProfile), plannerBrief].filter(Boolean).join('\n\n')
       console.log(`Environment profile: ${environmentProfile.id}`)

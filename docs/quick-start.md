@@ -26,7 +26,7 @@ npm run easy
 
 ## 3. 准备 Excel
 
-每条来源行都会建立稳定的 case ID。Excel 应提供操作步骤、可观察预期、业务实体匹配规则、写入后的清理要求和必要的环境前置条件。URL 可以通过 `--url` 提供，也可以从 Excel 中发现；内嵌图片和补充图片会进入同一 Run 工作区。
+每条来源行都会建立稳定的 case ID。Excel 应提供操作步骤、可观察预期、业务实体匹配规则、写入后的清理要求和必要的环境前置条件。新 AgentHost Run 必须用 `--url` 明确提供本次被测环境入口；Excel 中出现的其他链接仍保留给 Agent 理解和探索，但不会仅因出现在单元格中就成为 Environment Profile 的预执行覆盖要求。内嵌图片和补充图片会进入同一 Run 工作区。
 
 ## 4. 执行
 
@@ -43,13 +43,14 @@ npm run easy -- run \
   --case-limit 1
 ```
 
-`--one` 是 `--case-limit 1` 的快捷方式，真正把 Manifest 限制为一条 case；它不再只是把列表型数据 `maxIterations` 设为 1。完整执行省略 `--case-limit` 即可。
+`--one` 是 `--case-limit 1` 的快捷方式，真正把 Manifest 限制为一条 case，并只保留该 case 引用的材料链接；未执行 case 中的链接不会提前阻断 canary。完整执行省略 `--case-limit` 即可。
 
 底层入口：
 
 ```bash
 npm run agent:test -- \
   --file /private/cases.xlsx \
+  --url https://app.example.test/ \
   --profile staging \
   --output-dir artifacts/runs/example
 ```

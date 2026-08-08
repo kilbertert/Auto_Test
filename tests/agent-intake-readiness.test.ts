@@ -55,7 +55,8 @@ describe('Codex-native intake readiness', () => {
       kind: 'workflow-intake' as const,
       workflowId: 'empty',
       source: { format: 'xlsx' as const, fileName: 'empty.xlsx', sheetName: 'Cases', sha256: 'a'.repeat(64) },
-      targetUrls: [],
+      targetUrls: ['https://reference.example.test/'],
+      declaredTargetUrls: [],
       requiredCapabilities: [],
       phases: [],
       embeddedImages: [],
@@ -65,7 +66,7 @@ describe('Codex-native intake readiness', () => {
 
     expect(assessAgentIntakeReadiness(manifest)).toEqual({
       executable: false,
-      problems: ['测试材料没有可访问的目标 URL', '测试材料没有可追踪的测试 case'],
+      problems: ['新 AgentHost Run 必须显式提供至少一个 --url；Excel 中的链接仅作为测试材料上下文', '测试材料没有可追踪的测试 case'],
     })
   })
 })

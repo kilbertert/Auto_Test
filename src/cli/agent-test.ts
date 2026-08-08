@@ -36,6 +36,7 @@ import {
 import { discoverWorkflowInputBundle } from '../workflow/input-bundle.js'
 import { workflowSecretEnvironment } from '../workflow/intake-secrets.js'
 import { intakeWorkflowXlsx } from '../workflow/intake.js'
+import { environmentTargetUrls } from '../workflow/target-urls.js'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 
@@ -136,7 +137,7 @@ function help(): string {
     '',
     '输入与环境:',
     '  --file <path>               测试用例 Excel',
-    '  --url <url>                 目标网站，可重复；工作流型 Excel 也可从单元格发现 URL',
+    '  --url <url>                 新 Run 的目标网站，可重复；Excel 中的其他链接仅作为材料上下文',
     '  --image <path>              补充截图，可重复',
     '  --brief <path>              测试工程师补充说明',
     '  --profile <id>              指定已注册环境；省略时必须恰好匹配一个环境',
@@ -207,6 +208,10 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   const maxFinalizationTurns = positiveInteger(args, '--max-finalization-turns')
   if (args.includes('--one') && args.includes('--case-limit')) throw new Error('--one 与 --case-limit 不能同时使用')
   const caseLimit = args.includes('--one') ? 1 : positiveInteger(args, '--case-limit')
+  const urls = valuesAfter(args, '--url')
+  if (!args.includes('--resume') && urls.length === 0) {
+    throw new Error('新 AgentHost Run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
+  }
   const slowMo = nonNegativeInteger(args, '--slow-mo')
   const cliHost = valueAfter(args, '--agent-host')
   // A resume must inherit the frozen host from the run state unless the user
@@ -232,7 +237,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   const resolvedFilePath = resolve(filePath)
   return {
     filePath: resolvedFilePath,
-    urls: valuesAfter(args, '--url'),
+    urls,
     images: valuesAfter(args, '--image').map((path) => resolve(path)),
     ...(valueAfter(args, '--brief') ? { briefPath: resolve(valueAfter(args, '--brief')!) } : {}),
     ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
@@ -331,19 +336,15 @@ export function mergeAgentSecrets(
   return result
 }
 
-function targetOrigins(manifest: WorkflowIntakeManifest, additionalOrigins: string[] = []): Set<string> {
-  return new Set([
-    ...manifest.targetUrls.map((url) => new URL(url).origin),
-    ...additionalOrigins.map((origin) => new URL(origin).origin),
-  ])
-}
-
 export function scopeEnvironmentProfile(
   profile: EnvironmentProfile,
   manifest: WorkflowIntakeManifest,
   additionalOrigins: string[] = [],
 ): EnvironmentProfile {
-  const origins = targetOrigins(manifest, additionalOrigins)
+  const origins = new Set([
+    ...environmentTargetUrls(manifest).map((url) => new URL(url).origin),
+    ...additionalOrigins.map((origin) => new URL(origin).origin),
+  ])
   return {
     ...profile,
     origins: profile.origins.filter((origin) => origins.has(origin)),
@@ -499,6 +500,9 @@ async function writePreExecutionBlock(
 
 export async function runAgentTestCli(options: AgentTestCliOptions): Promise<number> {
   process.umask(0o027)
+  if (!options.resume && options.urls.length === 0) {
+    throw new Error('新 AgentHost Run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
+  }
   const printProgress = (message: string): void => {
     const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     console.log(`[${time}] ${message}`)
@@ -618,7 +622,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       .flatMap((requirement) => requirement.kind === 'origin' && requirement.origin ? [requirement.origin] : [])
     const requestedProfileId = options.profileId ?? priorSelection?.profileId
     profile = scopeEnvironmentProfile(
-      selectEnvironmentProfile(registry, manifest.targetUrls, requestedProfileId),
+      selectEnvironmentProfile(registry, environmentTargetUrls(manifest), requestedProfileId),
       manifest,
       additionalOrigins,
     )

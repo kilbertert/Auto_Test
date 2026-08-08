@@ -56,7 +56,7 @@ npm run agent:test -- \
   --agent-bin <path-to-omp>
 ```
 
-URL 也可以直接写在标准 Excel 单元格中。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
+新 AgentHost Run 必须显式提供 `--url`；Excel 中的其他 URL 只作为材料上下文，不会自动成为环境注册要求。环境首次注册后，日常执行不需要手工编写或修改 Execution Plan。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
 
 需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取两份 Run 的不可变输入合同、结构化结果、证据、回执和 Ledger，不会再次调用模型或重复业务写入。合同缺失或不一致时只返回 `invalid`。
 
@@ -300,7 +300,7 @@ npm run intake:workflow -- \
 - 标记跨 origin、新 BrowserContext、运行时实体捕获、验证码、物理状态、调度等待和破坏性批准等所需能力；
 - 为工作流型输入生成来源索引和诊断清单；该独立 intake 命令本身不执行浏览器操作。
 
-AgentHost 的 `npm run easy -- run` / `npm run agent:test` 会直接读取原始 Excel 并按每个来源行建立完整 case 合同。重复 ID、缺步骤/预期结果和无法解析的自由文本会保留在 Manifest 与诊断中，由同一 AgentHost 会话结合原始材料判断；它们不会再把整份业务输入提前挡在浏览器之外。真正的启动阻断仅限输入身份、目标 URL、case 索引和 Manifest 一致性无法建立的情况。写入权限只由 Environment Profile 控制，不由推断的 case 风险替代。
+AgentHost 的 `npm run easy -- run` / `npm run agent:test` 会直接读取原始 Excel 并按每个来源行建立完整 case 合同。新 Run 的环境入口必须来自显式 `--url`；Excel 中的教程或外部参考链接仍保留在 Manifest 供 Agent 理解，但不会提前扩大 Profile。重复 ID、缺步骤/预期结果和无法解析的自由文本会保留在 Manifest 与诊断中，由同一 AgentHost 会话结合原始材料判断；它们不会再把整份业务输入提前挡在浏览器之外。真正的启动阻断仅限输入身份、显式目标 URL、case 索引和 Manifest 一致性无法建立的情况。写入权限只由 Environment Profile 控制，不由推断的 case 风险替代。
 
 使用结构化执行证据生成工作流验收报告：
 

@@ -228,12 +228,17 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   if (!effectiveAgentHostId && configuredHost && !options.resume) effectiveAgentHostId = configuredHost as AgentHostId
   await access(filePath)
   const suppliedUrls = normalizeTargetUrls(options.urls)
+  if (suppliedUrls.length === 0) {
+    throw new Error('run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
+  }
   console.log('\n正在分析测试用例中的网站范围……')
   const preflight = await preflightEasyWorkflow(filePath, suppliedUrls)
-  const urls = preflight.targetUrls
-  if (preflight.discoveredOrigins.length > 0) {
+  // Intake reads the workbook again. Pass only user-declared URLs to the
+  // execution boundary; incidental material links remain Agent context.
+  const agentExecutionUrls = suppliedUrls
+  if (preflight.materialOrigins.length > 0) {
     console.log(
-      `从测试用例中发现还会访问：${preflight.discoveredOrigins.join('、')}（仅提示，不会要求为此注册登录）`,
+      `测试材料中另有链接：${preflight.materialOrigins.join('、')}（保留给 Agent 理解，不作为预执行环境注册要求）`,
     )
   }
   const plan = await planEasyRegistration({
@@ -273,7 +278,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
     const args = [
       'run', 'autonomous:workflow', '--',
       '--file', filePath,
-      ...urls.flatMap((url) => ['--url', url]),
+      ...agentExecutionUrls.flatMap((url) => ['--url', url]),
       ...(profileId ? ['--profile', profileId] : []),
       ...(options.maxIterations ? ['--max-iterations', String(options.maxIterations)] : []),
       options.headed ? '--headed' : '--headless',
@@ -285,7 +290,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   } else {
     exitCode = await runAgentTestCli({
       filePath,
-      urls,
+      urls: agentExecutionUrls,
       images: options.images ?? [],
       ...(options.briefPath ? { briefPath: resolve(options.briefPath) } : {}),
       ...(profileId ? { profileId } : {}),
@@ -593,7 +598,8 @@ async function main(): Promise<void> {
   if (command === 'run') {
     const filePath = valueAfter(args, '--file')
     const urls = valuesAfter(args, '--url')
-    if (!filePath) throw new Error('run 必须提供 --file；URL 可以通过 --url 提供，也可以写在 Excel 中')
+    if (!filePath) throw new Error('run 必须提供 --file')
+    if (urls.length === 0) throw new Error('run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
     if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
     if (args.includes('--resume') && !valueAfter(args, '--output-dir')) throw new Error('--resume 必须同时提供原运行的 --output-dir')
     if (args.includes('--resume') && args.includes('--legacy-runtime')) throw new Error('--resume 仅适用于 AgentHost 测试代理')
@@ -653,7 +659,7 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx [--url https://example.test/] [--agent-host codex|omp] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
+    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--agent-host codex|omp] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
     console.log('      AgentHost 会按模型容量自动规划执行 epoch，并在需要时轮换或恢复会话；无需手工切分用例')
     console.log('      Codex 和 OMP 获得相同原始材料、可写 run 工作区、shell、网络、完整 Playwright 与结果合同')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')

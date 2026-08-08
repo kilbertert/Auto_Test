@@ -51,9 +51,30 @@ describe('workflow xlsx intake', () => {
       const result = await intakeWorkflowXlsx({ filePath })
 
       expect(result.manifest.targetUrls).toContain('https://catalog.example.test/catalog')
+      expect(result.manifest.declaredTargetUrls).toEqual([])
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+
+  it('keeps material reference URLs separate from explicitly declared environment targets', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-target-url-contract-'))
+    temporaryDirectories.push(directory)
+    const filePath = resolve(directory, 'cases.xlsx')
+    const workbook = utils.book_new()
+    utils.book_append_sheet(workbook, utils.aoa_to_sheet([
+      ['用例ID', '用例标题', '测试步骤', '预期结果', '前置条件'],
+      ['case-1', '筛选', '打开页面并筛选', '列表正确', '参考 https://reference.example.test/video'],
+    ]), 'Cases')
+    await writeFile(filePath, write(workbook, { type: 'buffer', bookType: 'xlsx' }))
+
+    const result = await intakeWorkflowXlsx({ filePath, additionalUrls: ['https://app.example.test/'] })
+
+    expect(result.manifest.targetUrls).toEqual([
+      'https://app.example.test/',
+      'https://reference.example.test/video',
+    ])
+    expect(result.manifest.declaredTargetUrls).toEqual(['https://app.example.test/'])
   })
 
   it('moves plaintext secrets from standard titles and steps into secret bindings', async () => {

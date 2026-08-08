@@ -1,4 +1,5 @@
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
+import { environmentTargetUrls } from '../workflow/target-urls.js'
 
 export interface AgentIntakeReadiness {
   executable: boolean
@@ -14,7 +15,9 @@ const sha256Pattern = /^[a-f0-9]{64}$/i
 export function assessAgentIntakeReadiness(manifest: WorkflowIntakeManifest): AgentIntakeReadiness {
   const problems: string[] = []
   if (!sha256Pattern.test(manifest.source.sha256)) problems.push('原始测试材料缺少有效 SHA-256 身份')
-  if (manifest.targetUrls.length === 0) problems.push('测试材料没有可访问的目标 URL')
+  if (environmentTargetUrls(manifest).length === 0) {
+    problems.push('新 AgentHost Run 必须显式提供至少一个 --url；Excel 中的链接仅作为测试材料上下文')
+  }
   if (manifest.phases.length === 0) problems.push('测试材料没有可追踪的测试 case')
 
   const ids = new Set<string>()

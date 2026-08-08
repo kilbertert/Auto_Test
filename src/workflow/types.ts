@@ -80,7 +80,10 @@ export interface WorkflowIntakeManifest {
     sheetName: string
     sha256: string
   }
+  /** All URLs extracted from the workbook plus explicit run URLs, retained as Agent material context. */
   targetUrls: string[]
+  /** URLs explicitly supplied with the run command; the only pre-execution environment targets. */
+  declaredTargetUrls?: string[]
   requiredCapabilities: WorkflowCapability[]
   phases: WorkflowPhaseDraft[]
   embeddedImages: WorkflowEmbeddedImage[]

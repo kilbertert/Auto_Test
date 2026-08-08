@@ -17,6 +17,7 @@ import type {
   WorkflowSupplementalImage,
 } from './types.js'
 import { extractWpsCellImages, mediaTypeForPath, type FormulaImageCell } from './xlsx-media.js'
+import { extractWorkflowUrls as extractUrls, normalizeWorkflowUrl as normalizeUrl } from './target-urls.js'
 
 export interface WorkflowIntakeOptions {
   filePath: string
@@ -51,7 +52,6 @@ const credentialPattern = /\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\/([^\s,，;
 const labeledCredentialPattern = /(?:账号|用户名|user(?:name)?)\s*[:：]?\s*([^\s,，;；]+)[\s,，;；]*(?:密码|password|passwd|pwd)\s*[:：]?\s*([^\s,，;；]+)/gi
 const combinedCredentialPattern = /(?:账号密码|用户名密码|登录凭据|credentials?)\s*[:：]?\s*([^\s,，;；/]+)\s*[,，;；/]\s*([^\s,，;；]+)/gi
 const verificationPattern = /(验证码|verification\s*code)\s*[‘'"：:]?\s*([A-Za-z0-9]{4,8})\s*[’'"]?/gi
-const urlPattern = /https?:\/\/[^\s,，;；]+/gi
 
 function formulaId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
@@ -101,19 +101,6 @@ function phasesFromSheet(sheetName: string, sheet: WorkSheet): SourcePhase[] {
     })
   }
   return phases
-}
-
-function normalizeUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value.replace(/[)）\]】。]+$/g, ''))
-    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function extractUrls(value: string): string[] {
-  return [...new Set((value.match(urlPattern) ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))]
 }
 
 function addBinding(bindings: WorkflowSecretBinding[], phaseId: string, suffix: string, purpose: string, sourceCell: string): string {
@@ -541,6 +528,7 @@ async function intakeStandardTestCases(
       sha256: imported.suite.source.sha256,
     },
     targetUrls,
+    declaredTargetUrls: [...new Set((options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))],
     requiredCapabilities: [...capabilities],
     phases,
     embeddedImages: embeddedAssets.map((asset) => asset.metadata),
@@ -687,6 +675,7 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
       sha256,
     },
     targetUrls: [...targetUrls],
+    declaredTargetUrls: [...new Set((options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))],
     requiredCapabilities,
     phases,
     embeddedImages: assets.map((asset) => asset.metadata),
