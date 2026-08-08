@@ -388,7 +388,10 @@ process.stdin.on('end', () => {
       manifest: oneCaseManifest(),
       profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentHost: host,
-    }, { browserExecutablePath: browserPath })
+    }, {
+      browserExecutablePath: browserPath,
+      startThread: () => { throw new Error('the injected real AgentHost must take precedence') },
+    })
 
     expect(prompts).toHaveLength(1)
     expect(prompts[0]).toContain('capability preflight')
@@ -397,6 +400,59 @@ process.stdin.on('end', () => {
     expect(run.result?.cases[0]).toMatchObject({ outcome: 'blocked', failureSource: 'infrastructure' })
     expect(run.result?.blockers[0]).toMatch(/没有向模型提供 Auto-Test Control MCP 工具/)
     expect(JSON.parse(await readFile(resolve(outputDirectory, '.agent-private', 'mutation-ledger.json'), 'utf8'))).toEqual([])
+  })
+
+  it('rejects a Control MCP preflight that also calls another tool', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-host-preflight-extra-tool-'))
+    directories.push(directory)
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const prompts: string[] = []
+    const host = {
+      id: 'portable',
+      displayName: 'Portable fixture host',
+      capabilities: {
+        streaming: true, sessionResume: true, structuredOutput: false, localImages: true, mcp: true,
+        shell: true, network: true, workspaceIsolation: 'prompt_only' as const, restrictedMode: false,
+      },
+      modelProvider: {
+        supportedApis: ['openai-responses'] as const,
+        async prepare(options: AgentHostProviderPrepareOptions) {
+          return { agentHome: options.agentHome, environment: {}, mcpEnvironment: {} }
+        },
+      },
+      async probe() {
+        return { ok: true as const, hostId: 'portable', executable: '/fixture/portable' }
+      },
+      async start() {
+        return {
+          id: 'portable-extra-tool',
+          async run(input: AgentInputPart[]) {
+            prompts.push(input.filter((part) => part.type === 'text').map((part) => part.text).join('\n'))
+            return {
+              events: (async function* () {
+                yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'test_contract', status: 'completed' as const }
+                yield { type: 'tool_completed' as const, server: 'playwright', tool: 'browser_snapshot', status: 'completed' as const }
+                yield { type: 'agent_message' as const, text: 'preflight complete' }
+              })(),
+            }
+          },
+        }
+      },
+      async resume(): Promise<never> {
+        throw new Error('fixture must not resume')
+      },
+    } satisfies AgentHost
+    const run = await runAgentTest({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: oneCaseManifest(),
+      profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentHost: host,
+    }, { browserExecutablePath: browserPath })
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain('capability preflight')
+    expect(run.result?.cases[0]).toMatchObject({ outcome: 'blocked', failureSource: 'infrastructure' })
   })
 
   it('runs an unregistered third-party host through the generic provider runtime contract', async () => {

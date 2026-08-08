@@ -104,7 +104,7 @@ Provider 探针通过只证明宿主启动层；不能替代真实页面执行�
 
 ## Control MCP 能力预检
 
-真实 AgentHost 在每个物理执行线程的第一轮业务提示前，会先发送一次只读能力预检。Core 必须在归一化事件流中观察到已完成的 `auto-test-control.test_contract` `tool_completed` 事件，才会发送浏览器探索和业务执行提示；模型的文字声称、`list_mcp_resources` 结果、Provider 探针通过或宿主静态 `mcp: true` 能力声明都不算预检通过。未观察到该事件时，Run 会直接生成 `blocked` 的 `infrastructure` 结果，并说明 Provider/AgentHost 没有把 Control MCP 工具暴露给模型。
+真实 AgentHost 在每个物理执行线程的第一轮业务提示前，会先发送一次只读能力预检。Core 必须在归一化事件流中观察到恰好一次已完成的 `auto-test-control.test_contract` `tool_completed` 事件，且不能出现其他工具、shell 命令或文件改动事件，才会发送浏览器探索和业务执行提示；模型的文字声称、`list_mcp_resources` 结果、Provider 探针通过或宿主静态 `mcp: true` 能力声明都不算预检通过。未满足该合同时，Run 会直接生成 `blocked` 的 `infrastructure` 结果，并说明 Provider/AgentHost 没有正确提供 Control MCP 工具。
 
 这条预检只验证工具通道和不可变契约，不解释业务语义、规划步骤或裁决结果。它尤其用于识别“Control MCP 进程本身正常，但第三方 Responses Provider 丢弃本地工具定义”的兼容性问题。更换兼容 Provider 后，应在同一输入和环境下重新执行；未发生业务写入的预检阻断可以直接从原目录恢复。
 

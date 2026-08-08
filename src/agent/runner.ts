@@ -422,6 +422,9 @@ async function readMutationLedger(path: string): Promise<CodexTestMutationLedger
   if (!Array.isArray(parsed)) {
     throw new Error('Mutation Ledger is invalid: expected a JSON array of entries')
   }
+  const isIsoTimestamp = (value: unknown): value is string => typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    !Number.isNaN(Date.parse(value))
   const invalidIndex = parsed.findIndex((entry) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true
     const value = entry as Record<string, unknown>
@@ -430,8 +433,8 @@ async function readMutationLedger(path: string): Promise<CodexTestMutationLedger
       typeof value.description !== 'string' ||
       (value.risk !== 'write' && value.risk !== 'destructive') ||
       (value.status !== 'pending' && value.status !== 'compensated' && value.status !== 'accepted') ||
-      typeof value.createdAt !== 'string' ||
-      typeof value.updatedAt !== 'string' ||
+      !isIsoTimestamp(value.createdAt) ||
+      !isIsoTimestamp(value.updatedAt) ||
       !Array.isArray(value.evidence) ||
       value.evidence.some((item) => typeof item !== 'string')
   })
@@ -452,6 +455,20 @@ function isCompletedControlContractCall(event: AgentEvent): boolean {
     event.status === 'completed' &&
     event.server === 'auto-test-control' &&
     event.tool === 'test_contract'
+}
+
+function isToolEvent(event: AgentEvent): boolean {
+  return event.type === 'tool_started' || event.type === 'tool_completed'
+}
+
+function isPreflightActionEvent(event: AgentEvent): boolean {
+  return isToolEvent(event) ||
+    event.type === 'command_started' || event.type === 'command_completed' ||
+    event.type === 'file_change_started' || event.type === 'file_change_completed'
+}
+
+function isControlContractToolEvent(event: AgentEvent): boolean {
+  return isToolEvent(event) && event.server === 'auto-test-control' && event.tool === 'test_contract'
 }
 
 async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
@@ -647,13 +664,15 @@ export async function runAgentTest(
   const injectedHost = options.agentHost ?? dependencies.agentHost
   const requestedHostId = options.agentHostId ?? state.agentHost
   const selectedHostId = injectedHost?.id ?? requestedHostId ?? 'codex'
+  const usesLegacyThreadFactory = !injectedHost && selectedHostId === 'codex' &&
+    Boolean(dependencies.startThread || dependencies.resumeThread)
   if (injectedHost && requestedHostId && injectedHost.id !== requestedHostId) {
     throw new Error(`AgentHost selection is ambiguous: injected ${injectedHost.id} but requested ${requestedHostId}`)
   }
   let host: AgentHost
   if (injectedHost) {
     host = injectedHost
-  } else if (selectedHostId === 'codex' && (dependencies.startThread || dependencies.resumeThread)) {
+  } else if (usesLegacyThreadFactory) {
     host = createLegacyCodexAgentHost({
       startThread: dependencies.startThread ?? (() => { throw new Error('Legacy startThread dependency is missing') }),
       resumeThread: dependencies.resumeThread ?? (() => { throw new Error('Legacy resumeThread dependency is missing') }),
@@ -869,7 +888,7 @@ export async function runAgentTest(
     // Legacy injected thread factories are deterministic unit-test seams; a
     // real AgentHost must prove that its configured Control MCP reaches the
     // model before any browser or business operation is attempted.
-    const capabilityPreflightRequired = !(dependencies.startThread || dependencies.resumeThread)
+    const capabilityPreflightRequired = !usesLegacyThreadFactory
     let thread: AgentHostSession | undefined
     let threadId = state.threadId ?? resumeThreadId
     for (const epoch of epochs) {
@@ -945,7 +964,8 @@ export async function runAgentTest(
       const verifyControlMcpCapability = async (): Promise<void> => {
         if (!capabilityPreflightRequired || capabilityPreflightCompleted) return
         if (!thread) throw new Error('AgentHost thread is unavailable for the Control MCP capability preflight')
-        let contractCallObserved = false
+        let completedContractCalls = 0
+        let unexpectedTool: string | undefined
         await runTurn(
           thread,
           host.id,
@@ -959,11 +979,18 @@ export async function runAgentTest(
           undefined,
           undefined,
           (event) => {
-            if (isCompletedControlContractCall(event)) contractCallObserved = true
+            if (isCompletedControlContractCall(event)) completedContractCalls += 1
+            else if (isPreflightActionEvent(event) && !isControlContractToolEvent(event)) {
+              unexpectedTool = [event.server, event.tool].filter(Boolean).join('.') || 'unknown'
+            }
           },
         )
-        if (!contractCallObserved) {
-          throw new Error('Auto-Test Control MCP capability preflight failed: no completed auto-test-control.test_contract call was observed')
+        if (completedContractCalls !== 1 || unexpectedTool) {
+          const details = [
+            ...(completedContractCalls !== 1 ? [`expected one completed auto-test-control.test_contract call, observed ${completedContractCalls}`] : []),
+            ...(unexpectedTool ? [`unexpected tool call observed: ${unexpectedTool}`] : []),
+          ]
+          throw new Error(`Auto-Test Control MCP capability preflight failed: ${details.join('; ')}`)
         }
         capabilityPreflightCompleted = true
       }
@@ -1234,15 +1261,20 @@ export async function runAgentTest(
     if (isOperationalBlock(message, error)) {
       progress.report('warning', '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
       let ledger: CodexTestMutationLedgerEntry[] = []
+      let ledgerError: string | undefined
       if (mutationLedgerPath) {
-        ledger = await readMutationLedger(mutationLedgerPath).catch(() => [])
+        try {
+          ledger = await readMutationLedger(mutationLedgerPath)
+        } catch (ledgerReadError) {
+          ledgerError = redactAgentValue(ledgerReadError instanceof Error ? ledgerReadError.message : String(ledgerReadError), redactionSecrets)
+        }
       }
       const environmentRequirements = environmentRequirementsPath
         ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
         : []
       const result = redactAgentJsonArtifact(
-        isMutationLedgerViolation(message)
-          ? deliveryBlockedResult(options.manifest, state, message, ledger, environmentRequirements)
+        ledgerError || isMutationLedgerViolation(message)
+          ? deliveryBlockedResult(options.manifest, state, ledgerError ?? message, ledger, environmentRequirements)
           : blockedResult(options.manifest, state, message, ledger, environmentRequirements),
         redactionSecrets,
       )

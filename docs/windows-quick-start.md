@@ -116,7 +116,7 @@ Windows 上的 Codex CLI 0.146.0 对 `workspace-write` 的原生策略会拒绝�
 
 Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合同上单独执行”的顺序完成一次真实写入型 canary；Windows 仍须独立复验。OMP 的结果必须同时保留 `agent-host-selection.json` 中的 `workspaceIsolation: prompt_only`，不能因结果为 `passed` 就宣称其具备 Codex 同等级的操作系统隔离。
 
-发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到已完成的 `auto-test-control.test_contract` 调用；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检没有该事件，框架会返回 `blocked / infrastructure`，通常表示当前 Provider 的工具调用兼容性不足，应切换到支持本地 MCP 工具的 Model Profile 后用原输出目录恢复。
+发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到恰好一次已完成的 `auto-test-control.test_contract` 调用且没有其他工具、shell 命令或文件改动事件；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检未满足该合同，框架会返回 `blocked / infrastructure`，通常表示当前 Provider 的工具调用兼容性不足，应切换到支持本地 MCP 工具的 Model Profile 后用原输出目录恢复。
 
 框架不会再为手机号、日期、组合输入框或其他页面形态增加业务字段规则。选定 AgentHost 直接读取原始测试材料，根据页面证据决定如何填写和验证；需要复杂处理时可以在当前 run 的隔离工作区编写一次性 Playwright/JavaScript 辅助代码，不得写入 Auto-Test 仓库或被测应用源代码。旧的 `case_result_record` checkpoint、复合字段 Gate 和动态计划仍可作为诊断记录；它们不替代新的浏览器执行回执，也不单独决定通过。
 
