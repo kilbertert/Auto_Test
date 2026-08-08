@@ -14,6 +14,7 @@ import type {
 import { AgentHostError, isAgentSessionIncompatibleMessage, normalizeAgentEvent } from './host.js'
 import { resolveCodexExecutable } from './codex-executable.js'
 import { CodexModelProviderAdapter } from './codex-provider.js'
+import { startResponsesToolBridge, type ResponsesToolBridge } from './responses-tool-bridge.js'
 import { controlServerPath, packageFilePath } from './runtime-paths.js'
 
 const require = createRequire(import.meta.url)
@@ -118,7 +119,7 @@ export function codexWebSearchEnabled(runtime: AgentHostLaunchOptions['runtime']
 }
 
 export function startCodexSdkThread(
-  options: AgentHostLaunchOptions,
+  options: AgentHostLaunchOptions & { providerBaseUrlOverride?: string },
   platform: NodeJS.Platform = process.platform,
 ): Thread {
   if (!options.executable) throw new AgentHostError('codex', 'Codex executable was not resolved before starting a thread', 'configuration')
@@ -155,6 +156,11 @@ export function startCodexSdkThread(
         memories: false,
       },
       tools: { web_search: webSearchEnabled },
+      ...(options.providerBaseUrlOverride && options.runtime.provider ? {
+        model_providers: {
+          [options.runtime.provider.providerId]: { base_url: options.providerBaseUrlOverride },
+        },
+      } : {}),
       mcp_servers: {
         playwright: playwrightServer,
         'auto-test-control': {
@@ -192,7 +198,12 @@ export function startCodexSdkThread(
 }
 
 class CodexSession implements AgentHostSession {
-  constructor(private readonly thread: CodexThreadLike) {}
+  private closed = false
+
+  constructor(
+    private readonly thread: CodexThreadLike,
+    private readonly bridge?: ResponsesToolBridge,
+  ) {}
 
   get id(): string | null {
     return this.thread.id
@@ -214,6 +225,12 @@ class CodexSession implements AgentHostSession {
         }
       })(),
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    await this.bridge?.close()
   }
 }
 
@@ -248,14 +265,27 @@ export class CodexAgentHost implements AgentHost {
       : { ok: false, hostId: this.id, reason: reason ?? 'Codex CLI executable is unavailable' }
   }
 
-  async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
+  private async open(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
     const executable = await resolveCodexExecutable(options.executable, options.runtime.environment)
-    return new CodexSession(startCodexSdkThread({ ...options, executable }))
+    const bridge = options.runtime.provider ? await startResponsesToolBridge(options.runtime.provider.baseUrl) : undefined
+    try {
+      return new CodexSession(startCodexSdkThread({
+        ...options,
+        executable,
+        ...(bridge ? { providerBaseUrlOverride: bridge.baseUrl } : {}),
+      }), bridge)
+    } catch (error) {
+      await bridge?.close()
+      throw error
+    }
+  }
+
+  async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
+    return this.open(options)
   }
 
   async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
-    const executable = await resolveCodexExecutable(options.executable, options.runtime.environment)
-    return new CodexSession(startCodexSdkThread({ ...options, executable }))
+    return this.open(options)
   }
 }
 

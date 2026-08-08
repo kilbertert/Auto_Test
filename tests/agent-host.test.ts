@@ -401,7 +401,7 @@ process.stdin.on('end', () => {
     expect(prompts[0]).not.toContain('primary test engineer')
     expect(run.state.status).toBe('completed')
     expect(run.result?.cases[0]).toMatchObject({ outcome: 'blocked', failureSource: 'infrastructure' })
-    expect(run.result?.blockers[0]).toMatch(/没有向模型提供 Auto-Test Control MCP 工具/)
+    expect(run.result?.blockers[0]).toMatch(/能力预检未观察到唯一且合规的 test_contract 调用/)
     expect(JSON.parse(await readFile(resolve(outputDirectory, '.agent-private', 'mutation-ledger.json'), 'utf8'))).toEqual([])
   })
 

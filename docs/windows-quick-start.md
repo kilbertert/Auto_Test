@@ -45,6 +45,8 @@ supports_websockets = false
 
 Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保存在 `%APPDATA%\auto-test\codex-home`。整个过程不需要管理员权限，不会安装或覆盖电脑上的全局 Node/Codex，也不会修改已有的 `%USERPROFILE%\.codex`。API Key 使用 Windows DPAPI 加密保存，仅当前 Windows 用户能够解密；启动时加载到 Auto-Test 当前进程的 `AUTO_TEST_MODEL_API_KEY`。只有 Base URL 去除尾部 `/` 后等于 `https://api.deepseek.com` 且模型等于 `deepseek-v4-flash` 时，启动器才在同一进程额外设置 `DEEPSEEK_API_KEY`，让完整的内置 DeepSeek Profile 复用该 Key。其他 endpoint/model 会发布一个不含 Key 的进程级 `windows-private` Profile，Codex 和 OMP 都通过各自适配器消费它；Key 不会被映射给 DeepSeek，也不会写入仓库、TOML 或明文用户环境变量。
 
+Windows 默认 Provider 和显式 Codex Model Profile 都属于受管 Profile。Codex AgentHost 会自动用本机 loopback 兼容桥把 Codex namespace MCP 工具转换为标准 Responses function tools，因此兼容 Provider 不需要实现 Codex 私有 namespace 扩展；Provider 仍必须支持标准 function tools、SSE 流和工具结果续传。该桥只监听 `127.0.0.1`，不记录 Key。模型探针只能证明最小模型请求可用，真实 Run 开始前的 Control MCP 能力预检才证明工具链可用。
+
 旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。只有本次使用 Codex 默认 Windows Provider 时才运行该探针；显式 `--model-profile` 不会被无关的旧默认 Provider 阻断，OMP 也不运行 Codex 专用探针。新默认配置通过探针后才会替换旧配置，验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
 
 只有确认私有网关正常但响应时间确实超过 120 秒时，才临时调高等待时间；取值范围为 1 到 3600 秒。这个参数不会修复额度不足、限流或断流，不应作为日常配置：
@@ -116,7 +118,7 @@ Windows 上的 Codex CLI 0.146.0 对 `workspace-write` 的原生策略会拒绝�
 
 Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合同上单独执行”的顺序完成一次真实写入型 canary；Windows 仍须独立复验。OMP 的结果必须同时保留 `agent-host-selection.json` 中的 `workspaceIsolation: prompt_only`，不能因结果为 `passed` 就宣称其具备 Codex 同等级的操作系统隔离。
 
-发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到恰好一次已完成的 `auto-test-control.test_contract` 调用且没有其他工具、shell 命令或文件改动事件；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检未满足该合同，框架会返回 `blocked / infrastructure`，通常表示当前 Provider 的工具调用兼容性不足，应切换到支持本地 MCP 工具的 Model Profile 后用原输出目录恢复。
+发送真实页面探索和业务执行提示前，Windows 每个 Codex/OMP 物理线程都会先执行一次只读 Control MCP 能力预检。必须在 `codex-agent.events.jsonl` 中看到恰好一次已完成的 `auto-test-control.test_contract` 调用且没有其他工具、shell 命令或文件改动事件；只看到 Provider 探针成功、浏览器打开或模型说“已读取契约”都不够。若预检未满足该合同，框架会返回 `blocked / infrastructure`；应依次检查本地 MCP 启动、Provider 的标准 function/SSE/工具结果续传协议和模型工具调用能力，修复后用原输出目录恢复。
 
 每个 Codex Run 都会关闭 Apps、插件和远程插件目录，避免隔离 Agent Home 首次启动时同步 marketplace 或引入无关工具；测试能力只来自 Auto-Test 注入的 Playwright 和 Control MCP。
 

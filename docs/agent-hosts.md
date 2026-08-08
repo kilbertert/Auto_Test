@@ -75,6 +75,8 @@ Provider 选择在 AgentHost 边界完成。Core 只传递 `AgentModelProviderDe
 
 新 Run 默认选择 `deepseek`，无论选用 Codex 还是 OMP；显式传入 `--model-profile volcengine` 可切换火山，显式参数、自定义注册表的 `defaultProfileId` 和同名 `deepseek` 定义都能覆盖内置默认元数据。Windows 私有包若使用其他 endpoint/model，会在当前启动进程发布一个不含 Key 的 `windows-private` 默认 Profile；精确匹配内置 DeepSeek 时则保留内置推理、容量和输入模态元数据。API Key 必须由当前进程环境提供，缺失时适配器会在模型请求前 fail closed。裸 `--resume` 优先复用 `model-selection.json` 中的 Profile 与模型覆盖；升级前没有该文件的旧 Run 继续使用原 AgentHost Provider，以避免迁移后静默换模。供应商是否开放精确模型 ID、账号额度和结构化输出兼容性仍需用真实 Provider canary 验证，不能由配置解析通过推断。
 
+Codex 使用受管 Model Profile 时，会在 AgentHost 内启动仅监听 `127.0.0.1` 的 Responses 工具兼容桥。Codex CLI 发出的 namespace MCP 工具会在请求边界展开为标准 Responses `function` 工具，Provider 返回的调用再恢复为 Codex 可路由的 namespace 调用；API Key 只作为请求头经过内存转发，不写入桥接日志或文件。第三方 Provider 因此不必实现 Codex 的 namespace 扩展，但至少必须正确支持标准 Responses function tools、流式 SSE、工具结果续传以及所选模型的工具调用。未选择 Model Profile 的 native Codex 配置不经过这层桥接，其 Provider 必须自行兼容 Codex 原生工具协议。
+
 ## OMP 前置条件
 
 Auto-Test 不把 OMP 二进制或用户 OMP 配置复制进仓库或公开包。内部私有 Windows 包可以携带一个默认 Provider 的一次性引导凭据；首次启动会导入 DPAPI 并删除解压目录中的明文文件，随后 Codex 或 OMP 都可消费对应 Model Profile。使用 OMP 前仍需在测试机安装 `omp` 并确认 `omp --version` 能运行。选择 Auto-Test `--model-profile` 时，OMP 适配器在私有 `agentHome/models.yml` 中生成本次 Profile，并通过选定环境变量认证；不选择 Profile 的 legacy/native Run 才会复制 OMP 自身的 provider/auth 文件。两种路径都会设置 `PI_CODING_AGENT_DIR` 与隔离 session 目录，不继承调用者的 OMP profile、用户 MCP、插件或历史 session。Auto-Test 会在每个 run 工作区生成 `.omp/mcp.json`，其中只包含本次 Playwright 和 `auto-test-control` MCP 的隔离命令与路径；不会复用用户的 Codex MCP 配置。
@@ -108,7 +110,7 @@ Provider 探针通过只证明宿主启动层；不能替代真实页面执行�
 
 真实 AgentHost 在每个物理执行线程的第一轮业务提示前，会先发送一次只读能力预检。Core 必须在归一化事件流中观察到恰好一次已完成的 `auto-test-control.test_contract` `tool_completed` 事件，且不能出现其他工具、shell 命令或文件改动事件，才会发送浏览器探索和业务执行提示；模型的文字声称、`list_mcp_resources` 结果、Provider 探针通过或宿主静态 `mcp: true` 能力声明都不算预检通过。未满足该合同时，Run 会直接生成 `blocked` 的 `infrastructure` 结果，并说明 Provider/AgentHost 没有正确提供 Control MCP 工具。
 
-这条预检只验证工具通道和不可变契约，不解释业务语义、规划步骤或裁决结果。它尤其用于识别“Control MCP 进程本身正常，但第三方 Responses Provider 丢弃本地工具定义”的兼容性问题。更换兼容 Provider 后，应在同一输入和环境下重新执行；未发生业务写入的预检阻断可以直接从原目录恢复。
+这条预检只验证工具通道和不可变契约，不解释业务语义、规划步骤或裁决结果。受管 Codex Profile 已把 namespace 工具转换为标准 function；若预检仍失败，应分别检查本地 MCP 启动、Provider 的标准 function/SSE/工具结果协议和模型是否实际发起工具调用。旧包在没有预检时通过 shell 或临时脚本得到的 `passed` 不能证明 Control MCP 通道可用。修复基础设施后，应在同一输入和环境下重新执行；未发生业务写入的预检阻断可以从原目录恢复。
 
 Core 读取 `.agent-private/mutation-ledger.json` 时会运行时验证其必须是合法数组且每个条目符合 Ledger 合同。Agent 或辅助脚本把该文件覆盖为对象、坏 JSON 或不完整条目时，结果会 fail closed 为 `agent_execution` blocked，并保留明确的制品违规原因；不会再因 `.some()` 等类型错误丢失权威结果文件。只有 Control MCP 登记的 Ledger 才是业务写入事实源。
 

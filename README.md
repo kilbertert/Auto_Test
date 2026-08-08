@@ -85,6 +85,8 @@ npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profil
 
 `deepseek` 使用 `deepseek-v4-flash @ https://api.deepseek.com`；`volcengine` 使用 `glm-5.2 @ https://ark.cn-beijing.volces.com/api/coding/v3`，并同时识别 `ARK_API_KEY`、`VOLCENGINE_API_KEY` 和 `VOLCENGINE_ARK_API_KEY`。同一 Profile 可交给 `--agent-host codex` 或 `--agent-host omp`：Codex 以当前安装版 CLI 的 bundled catalog 为模板生成 `config.toml` 与完整 `models.json`，保留原生 agent instructions 并覆盖 Profile 能力；OMP 生成 `models.yml`，不会把宿主格式泄漏到 Core。两个内置模型目前都声明为文本输入；补充图片会保留在 run 工作区并在提示中给出路径，不会作为 Provider 会静默忽略的 inline image 发送。选择优先级是显式 `--model-profile`、恢复记录、自定义注册表的 `defaultProfileId`、内置 `deepseek`；注册表中的同名 `deepseek` 可覆盖内置公开元数据。模型 ID 是否已在订阅中开放仍以 Provider 的真实响应为准；必要时用自定义注册表或 `--model` 覆盖。容量不足会被归类为可恢复的 `infrastructure` 阻断：切换 Profile 后，以原 `--output-dir` 执行 `--resume`；裸恢复会复用上次有效的 Profile 和 `--model`，显式传入新值才会切换。升级前创建且没有 `model-selection.json` 的旧 Run 在裸恢复时继续使用原 AgentHost Provider，避免迁移后静默换模。已经写入逐 case 结果库的 case 不会重跑。详见 [跨场景自动化测试快速操作指南](docs/quick-start.md)。
 
+受管 Codex Profile 会在 AgentHost 边界把 Codex namespace MCP 工具转换为标准 Responses function tools，再把 Provider 的调用恢复给 Codex。第三方 Provider 不必实现 Codex 的 namespace 扩展，但必须支持标准 function tools、SSE 和工具结果续传。每个物理线程仍必须通过只读 `auto-test-control.test_contract` 能力预检；模型探针或旧包绕过 MCP 得到的页面结果不能替代该门。
+
 ## Legacy IR/Runtime
 
 以下 Phase 1 到 Phase 5 文档描述旧的 IR/Runtime 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。通过 `npm run easy -- run ... --legacy-runtime` 才会显式启动旧自治链路。
