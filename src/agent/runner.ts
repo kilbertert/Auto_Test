@@ -124,6 +124,7 @@ async function runTurn(
         throw new AgentHostError(hostId, event.message ?? 'AgentHost session is incompatible with the current model binding', 'session_incompatible')
       }
       if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) throw new Error(event.message ?? 'agent host error')
+      if (event.type === 'turn_completed') break
     }
     if (!finalResponse) throw new Error('Agent host returned no final response')
     return finalResponse

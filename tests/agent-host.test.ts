@@ -373,6 +373,8 @@ process.stdin.on('end', () => {
               events: (async function* () {
                 yield { type: 'thread_started' as const, threadId: 'portable-no-control-mcp' }
                 yield { type: 'agent_message' as const, text: 'No Control MCP tool is available.' }
+                yield { type: 'turn_completed' as const }
+                throw new Error('terminal AgentHost events must end turn consumption')
               })(),
             }
           },
