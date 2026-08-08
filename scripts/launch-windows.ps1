@@ -708,7 +708,11 @@ function Test-CodexProvider {
         $hint = Get-CodexProbeFailureHint $probe $probeExitCode
         throw "模型 API 探针失败。$hint"
       }
-      if ($probe -notmatch '(?m)^\s*AUTO_TEST_API_READY\s*$') {
+      # Substring match (not a strict whole-line match): reasoning models such
+      # as deepseek-v4-flash tend to wrap the requested marker in thinking or
+      # extra text, so requiring a line that is exactly AUTO_TEST_API_READY
+      # rejects a healthy API. The marker is distinctive enough for a probe.
+      if ($probe -notmatch 'AUTO_TEST_API_READY') {
         throw '模型 API 已响应但健康检查结果异常。'
       }
       Write-Host '[OK] 模型 API 调用验证通过'
