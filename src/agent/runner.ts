@@ -107,6 +107,7 @@ async function runTurn(
   receiptRecorder?: ExecutionReceiptRecorder,
   onUsage?: (usage: CodexTurnUsage) => Promise<void> | void,
   afterTurn?: () => Promise<void>,
+  onEvent?: (event: AgentEvent) => Promise<void> | void,
 ): Promise<string> {
   try {
     const streamed = await thread.run(input, outputSchema ? { outputSchema } : undefined)
@@ -116,6 +117,7 @@ async function runTurn(
       progress.observe(event)
       if (event.type === 'turn_completed' && event.usage) await onUsage?.(event.usage)
       if (event.type === 'thread_started' && event.threadId) await onThreadStarted?.(event.threadId)
+      await onEvent?.(event)
       if (event.type === 'agent_message') finalResponse = event.text ?? ''
       if (event.type === 'turn_failed') throw new Error(event.message ?? 'agent turn failed')
       if (event.type === 'session_incompatible') {
@@ -258,10 +260,20 @@ function enforceEnvironmentRequirements(
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
   if (error instanceof AgentHostError) return error.retryable
-  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|chromium executable|spawn .*enoent|no final response|不可用/i.test(message)
+  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|mutation ledger|chromium executable|spawn .*enoent|no final response|不可用/i.test(message)
+}
+
+function isMutationLedgerViolation(message: string): boolean {
+  return /mutation ledger is invalid|mutation ledger is not valid json/i.test(message)
 }
 
 function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {
+  if (/control mcp capability preflight/i.test(message)) {
+    return {
+      reason: '当前 Provider/AgentHost 没有向模型提供 Auto-Test Control MCP 工具。',
+      nextAction: '切换到已验证支持本地 MCP 工具调用的 Provider/AgentHost 后，使用原结果目录继续上次测试。',
+    }
+  }
   if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(message)) {
     return {
       reason: '当前执行 epoch 超出模型上下文或单次输出容量。',
@@ -369,12 +381,15 @@ function deliveryBlockedResult(
   ledger: CodexTestMutationLedgerEntry[],
   environmentRequirements: CodexTestEnvironmentRequirement[],
 ): CodexTestAgentResult {
+  const ledgerViolation = isMutationLedgerViolation(message)
   return enforceMutationLedger({
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
     outcome: 'blocked',
-    summary: 'The selected AgentHost completed execution but did not produce a complete evidence-based delivery result.',
+    summary: ledgerViolation
+      ? 'The selected AgentHost damaged the authoritative Mutation Ledger, so Auto-Test rejected the delivery result.'
+      : 'The selected AgentHost completed execution but did not produce a complete evidence-based delivery result.',
     startedAt: state.startedAt,
     finishedAt: new Date().toISOString(),
     cases: manifest.phases.map((phase) => ({
@@ -390,12 +405,52 @@ function deliveryBlockedResult(
     environmentRequirements,
     blockers: [message],
     productDefects: [],
-    nextActions: ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
+    nextActions: [ledgerViolation
+      ? 'Inspect the Agent events and Mutation Ledger before resuming; do not repeat business writes whose terminal state is unknown.'
+      : 'Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
   }, ledger)
 }
 
 async function readMutationLedger(path: string): Promise<CodexTestMutationLedgerEntry[]> {
-  return JSON.parse(await readFile(path, 'utf8')) as CodexTestMutationLedgerEntry[]
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`Mutation Ledger is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('Mutation Ledger is invalid: expected a JSON array of entries')
+  }
+  const invalidIndex = parsed.findIndex((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true
+    const value = entry as Record<string, unknown>
+    return typeof value.id !== 'string' ||
+      typeof value.caseId !== 'string' ||
+      typeof value.description !== 'string' ||
+      (value.risk !== 'write' && value.risk !== 'destructive') ||
+      (value.status !== 'pending' && value.status !== 'compensated' && value.status !== 'accepted') ||
+      typeof value.createdAt !== 'string' ||
+      typeof value.updatedAt !== 'string' ||
+      !Array.isArray(value.evidence) ||
+      value.evidence.some((item) => typeof item !== 'string')
+  })
+  if (invalidIndex >= 0) {
+    throw new Error(`Mutation Ledger is invalid: entry ${invalidIndex} does not match the run contract`)
+  }
+  return parsed as CodexTestMutationLedgerEntry[]
+}
+
+const controlMcpPreflightPrompt = [
+  'This is a read-only Auto-Test capability preflight.',
+  'Call auto-test-control.test_contract exactly once and do not call any other tool.',
+  'After the tool returns, reply with a short confirmation only.',
+].join(' ')
+
+function isCompletedControlContractCall(event: AgentEvent): boolean {
+  return event.type === 'tool_completed' &&
+    event.status === 'completed' &&
+    event.server === 'auto-test-control' &&
+    event.tool === 'test_contract'
 }
 
 async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
@@ -810,6 +865,10 @@ export async function runAgentTest(
     await writePrivateJson(statePath, state)
 
     const currentSessionBindingFingerprint = sessionBindingFingerprint(host, runtime)
+    // Legacy injected thread factories are deterministic unit-test seams; a
+    // real AgentHost must prove that its configured Control MCP reaches the
+    // model before any browser or business operation is attempted.
+    const capabilityPreflightRequired = !(dependencies.startThread || dependencies.resumeThread)
     let thread: AgentHostSession | undefined
     let threadId = state.threadId ?? resumeThreadId
     for (const epoch of epochs) {
@@ -881,11 +940,38 @@ export async function runAgentTest(
       // but only after the original resume attempt proves incompatible.
       let resumeCompatibilityPending = Boolean(epochThreadId)
       let sessionRotationAttempted = false
+      let capabilityPreflightCompleted = false
+      const verifyControlMcpCapability = async (): Promise<void> => {
+        if (!capabilityPreflightRequired || capabilityPreflightCompleted) return
+        if (!thread) throw new Error('AgentHost thread is unavailable for the Control MCP capability preflight')
+        let contractCallObserved = false
+        await runTurn(
+          thread,
+          host.id,
+          [{ type: 'text', text: controlMcpPreflightPrompt }],
+          eventsPath,
+          redactionSecrets,
+          progress,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (event) => {
+            if (isCompletedControlContractCall(event)) contractCallObserved = true
+          },
+        )
+        if (!contractCallObserved) {
+          throw new Error('Auto-Test Control MCP capability preflight failed: no completed auto-test-control.test_contract call was observed')
+        }
+        capabilityPreflightCompleted = true
+      }
       const invokeEpochTurn = async (
         input: AgentInputPart[],
         outputSchema?: unknown,
       ): Promise<string> => {
         if (!thread) throw new Error('AgentHost thread is unavailable for the active execution epoch')
+        await verifyControlMcpCapability()
         return runTurn(
           thread,
           host.id,
@@ -911,6 +997,7 @@ export async function runAgentTest(
         await thread?.close?.()
         thread = await host.start(threadOptions)
         activeThread = thread
+        capabilityPreflightCompleted = false
         threadId = thread.id ?? undefined
         if (!state.activeEpoch) throw new Error('Cannot rotate an AgentHost session without an active execution epoch')
         const { threadId: _oldThreadId, ...stateWithoutThread } = state
@@ -1144,12 +1231,22 @@ export async function runAgentTest(
   } catch (error) {
     const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
     if (isOperationalBlock(message, error)) {
-      progress.report('warning', '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
-      const ledger = mutationLedgerPath ? await readMutationLedger(mutationLedgerPath).catch(() => []) : []
+      progress.report('warning', isMutationLedgerViolation(message)
+        ? 'Mutation Ledger 交付制品不符合合同，正在保存 agent_execution blocked 结果'
+        : '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
+      let ledger: CodexTestMutationLedgerEntry[] = []
+      if (mutationLedgerPath) {
+        ledger = await readMutationLedger(mutationLedgerPath).catch(() => [])
+      }
       const environmentRequirements = environmentRequirementsPath
         ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
         : []
-      const result = redactAgentJsonArtifact(blockedResult(options.manifest, state, message, ledger, environmentRequirements), redactionSecrets)
+      const result = redactAgentJsonArtifact(
+        isMutationLedgerViolation(message)
+          ? deliveryBlockedResult(options.manifest, state, message, ledger, environmentRequirements)
+          : blockedResult(options.manifest, state, message, ledger, environmentRequirements),
+        redactionSecrets,
+      )
       await writePrivateJson(resultPath, result)
       state = updateCodexTestState(state, {
         status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),

@@ -342,6 +342,63 @@ process.stdin.on('end', () => {
     expect(run.state.error).toMatch(/does not support model API openai-completions/)
   })
 
+  it('blocks before the business prompt when the model cannot call the Control MCP', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-host-preflight-'))
+    directories.push(directory)
+    const browserPath = resolve(directory, 'chromium')
+    await writeFile(browserPath, '')
+    const prompts: string[] = []
+    const host = {
+      id: 'portable',
+      displayName: 'Portable fixture host',
+      capabilities: {
+        streaming: true, sessionResume: true, structuredOutput: false, localImages: true, mcp: true,
+        shell: true, network: true, workspaceIsolation: 'prompt_only' as const, restrictedMode: false,
+      },
+      modelProvider: {
+        supportedApis: ['openai-responses'] as const,
+        async prepare(options: AgentHostProviderPrepareOptions) {
+          return { agentHome: options.agentHome, environment: {}, mcpEnvironment: {} }
+        },
+      },
+      async probe() {
+        return { ok: true as const, hostId: 'portable', executable: '/fixture/portable' }
+      },
+      async start() {
+        return {
+          id: 'portable-no-control-mcp',
+          async run(input: AgentInputPart[]) {
+            prompts.push(input.filter((part) => part.type === 'text').map((part) => part.text).join('\n'))
+            return {
+              events: (async function* () {
+                yield { type: 'thread_started' as const, threadId: 'portable-no-control-mcp' }
+                yield { type: 'agent_message' as const, text: 'No Control MCP tool is available.' }
+              })(),
+            }
+          },
+        }
+      },
+      async resume(): Promise<never> {
+        throw new Error('fixture must not resume')
+      },
+    } satisfies AgentHost
+    const outputDirectory = resolve(directory, 'run')
+    const run = await runAgentTest({
+      outputDirectory,
+      manifest: oneCaseManifest(),
+      profile: { id: 'fixture', origins: ['https://agent.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentHost: host,
+    }, { browserExecutablePath: browserPath })
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain('capability preflight')
+    expect(prompts[0]).not.toContain('primary test engineer')
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.cases[0]).toMatchObject({ outcome: 'blocked', failureSource: 'infrastructure' })
+    expect(run.result?.blockers[0]).toMatch(/没有向模型提供 Auto-Test Control MCP 工具/)
+    expect(JSON.parse(await readFile(resolve(outputDirectory, '.agent-private', 'mutation-ledger.json'), 'utf8'))).toEqual([])
+  })
+
   it('runs an unregistered third-party host through the generic provider runtime contract', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-host-portable-'))
     directories.push(directory)
@@ -378,6 +435,15 @@ process.stdin.on('end', () => {
     const session = {
       id: 'portable-session',
       async run(input: AgentInputPart[]) {
+        if (input[0]?.type === 'text' && input[0].text.includes('capability preflight')) {
+          return {
+            events: (async function* () {
+              yield { type: 'thread_started' as const, threadId: 'portable-session' }
+              yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'test_contract', status: 'completed' as const }
+              yield { type: 'agent_message' as const, text: 'preflight complete' }
+            })(),
+          }
+        }
         if (turn === 0) receivedExecutionInput = input
         const text = turn++ === 0 ? 'Portable execution completed.' : JSON.stringify(delivered)
         return {
@@ -677,7 +743,10 @@ process.stdin.on('end', () => {
     }
     const spawnProcess = (() => fakeOmpProcess(directory, (send, promptIndex) => {
       send({ type: 'agent_start' })
-      const text = promptIndex === 0 ? 'fixture execution complete' : JSON.stringify(result)
+      if (promptIndex === 0) {
+        send({ type: 'tool_completed', server: 'auto-test-control', tool: 'test_contract', status: 'completed' })
+      }
+      const text = promptIndex <= 1 ? 'fixture execution complete' : JSON.stringify(result)
       send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } })
       send({ type: 'agent_end', messages: [] })
     })) as unknown as typeof spawn

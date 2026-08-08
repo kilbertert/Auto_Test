@@ -487,6 +487,40 @@ describe('adaptive Codex epochs', () => {
     expect(run.result?.mutations).toContainEqual(expect.objectContaining({ id: 'pending-write', status: 'pending' }))
   })
 
+  it('fails closed with a structured agent-execution block when the Mutation Ledger is malformed', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-malformed-ledger-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const run = await runCodexTestAgent({
+      outputDirectory,
+      manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-malformed-ledger',
+        runStreamed: async (_input, options) => {
+          if (!options?.outputSchema) {
+            await writeFile(resolve(outputDirectory, '.agent-private', 'mutation-ledger.json'), JSON.stringify({ overwritten: true }))
+            return eventStream('execution complete', 'thread-malformed-ledger')
+          }
+          return eventStream(resultFor(workflow, ['case-one']), 'thread-malformed-ledger')
+        },
+      }),
+    })
+
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({ failureSource: 'agent_execution', failureKind: 'execution' })
+    expect(run.result?.blockers[0]).toMatch(/Mutation Ledger is invalid: expected a JSON array/)
+    expect(await readFile(resolve(outputDirectory, 'codex-agent.result.json'), 'utf8')).toContain('Mutation Ledger is invalid')
+  })
+
   it('resumes finalization without replaying the epoch execution turn', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-finalization-resume-'))
     directories.push(directory)
