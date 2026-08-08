@@ -274,6 +274,12 @@ function infrastructureBlockDetails(message: string): { reason: string; nextActi
       nextAction: '切换到已验证支持本地 MCP 工具调用的 Provider/AgentHost 后，使用原结果目录继续上次测试。',
     }
   }
+  if (/mutation ledger/i.test(message)) {
+    return {
+      reason: '本次 Agent 执行破坏了 Auto-Test 的 Mutation Ledger 交付制品，核心拒绝继续判定业务结果。',
+      nextAction: '检查运行目录中的 Mutation Ledger 和 Agent 事件，修复宿主执行后使用原结果目录恢复；不要重复已发生的业务写入。',
+    }
+  }
   if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(message)) {
     return {
       reason: '当前执行 epoch 超出模型上下文或单次输出容量。',
@@ -381,15 +387,12 @@ function deliveryBlockedResult(
   ledger: CodexTestMutationLedgerEntry[],
   environmentRequirements: CodexTestEnvironmentRequirement[],
 ): CodexTestAgentResult {
-  const ledgerViolation = isMutationLedgerViolation(message)
   return enforceMutationLedger({
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
     outcome: 'blocked',
-    summary: ledgerViolation
-      ? 'The selected AgentHost damaged the authoritative Mutation Ledger, so Auto-Test rejected the delivery result.'
-      : 'The selected AgentHost completed execution but did not produce a complete evidence-based delivery result.',
+    summary: 'The selected AgentHost completed execution but did not produce a complete evidence-based delivery result.',
     startedAt: state.startedAt,
     finishedAt: new Date().toISOString(),
     cases: manifest.phases.map((phase) => ({
@@ -405,9 +408,7 @@ function deliveryBlockedResult(
     environmentRequirements,
     blockers: [message],
     productDefects: [],
-    nextActions: [ledgerViolation
-      ? 'Inspect the Agent events and Mutation Ledger before resuming; do not repeat business writes whose terminal state is unknown.'
-      : 'Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
+    nextActions: ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
   }, ledger)
 }
 
@@ -1231,9 +1232,7 @@ export async function runAgentTest(
   } catch (error) {
     const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
     if (isOperationalBlock(message, error)) {
-      progress.report('warning', isMutationLedgerViolation(message)
-        ? 'Mutation Ledger 交付制品不符合合同，正在保存 agent_execution blocked 结果'
-        : '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
+      progress.report('warning', '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
       let ledger: CodexTestMutationLedgerEntry[] = []
       if (mutationLedgerPath) {
         ledger = await readMutationLedger(mutationLedgerPath).catch(() => [])
