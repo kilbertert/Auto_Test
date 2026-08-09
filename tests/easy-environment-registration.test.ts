@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -21,6 +22,27 @@ afterEach(async () => {
 })
 
 describe('easy environment registration', () => {
+  it('registers a clean environment by default and requires an explicit interactive login capture', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-clean-auth-'))
+    temporaryDirectories.push(directory)
+    const root = resolve(import.meta.dirname, '..')
+    const command = [
+      resolve(root, 'node_modules/tsx/dist/cli.mjs'),
+      resolve(root, 'src/cli/easy.ts'),
+      'register', '--profile', 'auth-under-test', '--url', 'https://login.example.test/', '--risk', 'read',
+    ]
+    const environment = { ...process.env, XDG_CONFIG_HOME: directory }
+
+    const clean = spawnSync(process.execPath, command, { cwd: root, env: environment, encoding: 'utf8' })
+    const capture = spawnSync(process.execPath, [...command, '--capture-login'], { cwd: root, env: environment, encoding: 'utf8' })
+
+    expect(clean.status, clean.stderr).toBe(0)
+    expect(JSON.parse(await readFile(resolve(directory, 'auto-test', 'environment-profiles.json'), 'utf8')))
+      .toMatchObject({ profiles: [{ id: 'auth-under-test', auth: [] }] })
+    expect(capture.status).toBe(1)
+    expect(capture.stderr).toContain('捕获登录状态需要交互终端')
+  })
+
   it('normalizes user-facing URLs and profile names', () => {
     expect(normalizeTargetUrls([' https://example.test/login ', 'https://example.test/login'])).toEqual([
       'https://example.test/login',

@@ -2,11 +2,13 @@
 
 面向测试工程师的 AI 辅助 Web 自动化测试项目。
 
-Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需账号登录或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
+Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需登录 Codex/ChatGPT 账号或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
 
 默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
 
-当前实现已经完成原始材料工作区、环境选择与认证刷新、宿主隔离配置、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、被动 Playwright 执行回执、自适应 epoch、逐 case 私有结果库、thread checkpoint/轮换和 Windows 启动器接入。每个 epoch 只要求选定 AgentHost 交付当前有界 case 集，最终完整结果由框架按不可变 Manifest 顺序确定性聚合，避免大用例集同时撞上上下文和单次 JSON 输出上限。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。旧版状态不再兼容恢复，必须新建 Run。基于 commit `c94ad77` 的历史 thin harness Windows 私有包曾在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该历史结果尚未验证本次自适应 epoch 重构，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
+认证状态是测试状态，不是 AgentHost 的固定前置。环境注册默认只登记 URL 范围和权限，不要求人工预登录；显式保存的登录状态只是普通受保护业务用例的可选会话种子。登录、登出、错误凭据、会话失效和角色隔离等认证用例必须由选定 AgentHost 先建立 Excel 要求的初始状态，再真实操作和断言，不能因继承会话已登录而跳过。
+
+当前实现已经完成原始材料工作区、环境选择与可选会话种子、宿主隔离配置、完整 Playwright MCP、可选 Control MCP 日志、Mutation Ledger、被动 Playwright 执行回执、自适应 epoch、逐 case 私有结果库、thread checkpoint/轮换和 Windows 启动器接入。每个 epoch 只要求选定 AgentHost 交付当前有界 case 集，最终完整结果由框架按不可变 Manifest 顺序确定性聚合，避免大用例集同时撞上上下文和单次 JSON 输出上限。完整回执仍保存在运行目录，供确定性校验和审计。终态会额外生成 `原文件名-Auto-Test-结果.xlsx`，作为原工作簿的副本按来源行回写每条用例结果，原件不改写。环境阻断必须关联同一 case 的已保存证据需求；可用的只读页面交互未完成时归类为 `agent_execution`，不归为环境。不能用另一 case 或一份通用证据批量生成结论。旧版状态不再兼容恢复，必须新建 Run。基于 commit `c94ad77` 的历史 thin harness Windows 私有包曾在一个多站点、多账号、含真实业务写入和恢复的充电 manifest 上自主执行为 `passed`：实际 manifest 3/3 case 通过，生成 129 个证据文件，26 条 Mutation Ledger 最终 `pending=0`。该历史结果尚未验证本次自适应 epoch 重构，不覆盖未随 Excel 输入包交付的 sidecar 扩展步骤，也不构成任意未知网站都能无条件通过的承诺。
 
 执行回执由 Runner 被动捕获；选定 AgentHost 可以按需使用 Control MCP 查询当前 Run 或显式 case episode，完整回执仍保存在运行目录，供确定性校验和审计。回执 ID 包含 epoch 命名空间和 turn 序号，避免物理 thread 轮换后重复使用 `item_*` 编号时互相覆盖。
 
@@ -382,7 +384,7 @@ Recovery Planner 只能修改 phase 的 `recovery` 字段；任何步骤、断�
 
 Environment Profile Registry 会按 URL origin 自动解析 `storageState` / `sessionStorage`、写入权限和重试预算。完全陌生且尚未登记凭据或风险策略的 origin 会返回 `blocked`；系统不会从页面或 Excel 猜测认证信息。
 
-Profile 可配置基于 Secret 引用的表单登录 adapter。Auth Broker 在每轮前验证认证后 pathname，Session 过期时使用已验证 locator 自动刷新私有 `storageState` 和可选 `sessionStorage`；登录页不会再被误送给 Refiner 当作业务页面修改计划。
+Profile 可配置基于 Secret 引用的表单登录 adapter。仅在显式 `--legacy-runtime` 的旧 pipeline 中，Auth Broker 才会在每轮前验证认证后 pathname，并在 Session 过期时使用已验证 locator 自动刷新私有 `storageState` 和可选 `sessionStorage`；默认 AgentHost 不会在用例执行前替用例先登录。
 
 ```bash
 npm run pipeline:workflow -- \

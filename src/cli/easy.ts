@@ -136,8 +136,8 @@ async function registerInteractive(
     : safeProfileId(await ask('给这个测试环境起个简短名称', suggested), urls)
   if (defaults.existingProfile) console.log(`正在更新环境：${profileId}`)
   const captureLogin = defaults.existingProfile
-    ? await confirm('是否重新捕获这些网站的登录状态', false)
-    : await confirm('这些网站是否需要登录', true)
+    ? await confirm('是否更新供普通业务用例复用的登录状态', false)
+    : await confirm('是否保存当前登录状态（测试登录/登出时请选否）', false)
   const risk = await chooseRisk(defaults.existingProfile ? riskForPolicy(defaults.existingProfile.policy) : 'read')
   console.log('\n正在注册环境，请不要关闭本窗口……')
   const result = await registerEnvironment({
@@ -147,7 +147,10 @@ async function registerInteractive(
     captureLogin,
     ...(captureLogin ? { waitForLogin: waitForManualLogin } : {}),
   })
-  console.log(`\n环境“${result.profile.id}”已注册。后续测试会自动复用登录状态和权限设置。`)
+  const authentication = captureLogin
+    ? '已保存可选会话种子；认证类用例仍会先建立用例要求的干净状态'
+    : '未要求预先登录；认证步骤由测试代理按用例执行'
+  console.log(`\n环境“${result.profile.id}”已注册。${authentication}，权限设置将自动复用。`)
   console.log(`配置位置：${result.registryPath}`)
   return result.profile.id
 }
@@ -584,13 +587,15 @@ async function main(): Promise<void> {
     if (urls.length === 0) throw new Error('register 必须至少提供一个 --url')
     const risk = valueAfter(args, '--risk') ?? 'read'
     if (!['read', 'write', 'destructive'].includes(risk)) throw new Error('--risk 必须是 read、write 或 destructive')
-    if (!args.includes('--no-login') && !input.isTTY) throw new Error('捕获登录状态需要交互终端；无需登录时请加 --no-login')
+    if (args.includes('--capture-login') && args.includes('--no-login')) throw new Error('--capture-login 与 --no-login 不能同时使用')
+    const captureLogin = args.includes('--capture-login')
+    if (captureLogin && !input.isTTY) throw new Error('捕获登录状态需要交互终端')
     const result = await registerEnvironment({
       profileId: valueAfter(args, '--profile') ?? safeProfileId('', urls),
       urls,
       risk: risk as EasyRiskLevel,
-      captureLogin: !args.includes('--no-login'),
-      ...(!args.includes('--no-login') ? { waitForLogin: waitForManualLogin } : {}),
+      captureLogin,
+      ...(captureLogin ? { waitForLogin: waitForManualLogin } : {}),
     })
     console.log(`环境已注册：${result.profile.id}`)
     return
@@ -665,7 +670,7 @@ async function main(): Promise<void> {
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      AgentHost 通用模型供应商：默认 deepseek；--model-profile volcengine 或自定义 Profile 可切换；Codex/OMP 各自生成原生隔离配置')
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC；仅兼容旧链路时使用 --legacy-runtime')
-    console.log('      npm run easy -- register --profile test --url https://example.test/')
+    console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return

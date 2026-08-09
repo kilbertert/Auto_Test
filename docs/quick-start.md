@@ -22,7 +22,7 @@ Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖
 npm run easy
 ```
 
-环境 Profile 至少登记目标 URL、登录状态和最高风险：`read` 只读，`write` 允许授权测试写入，`destructive` 允许授权测试清理。实际动作仍必须受测试材料、环境授权和权威 Mutation Ledger 约束；对外部持久化写入，Agent 必须通过 `auto-test-control.mutation_begin` / `mutation_resolve` 登记和核销，工作区自建的同名文件不算登记。
+环境 Profile 至少登记目标 URL 和最高风险：`read` 只读，`write` 允许授权测试写入，`destructive` 允许授权测试清理。登录状态是可选会话种子，注册时默认不捕获；如果 Excel 要测试登录、登出或会话失效，应保持该默认，让 AgentHost 真实执行认证用例。实际动作仍必须受测试材料、环境授权和权威 Mutation Ledger 约束；对外部持久化写入，Agent 必须通过 `auto-test-control.mutation_begin` / `mutation_resolve` 登记和核销，工作区自建的同名文件不算登记。
 
 ## 3. 准备 Excel
 

@@ -13,7 +13,6 @@ import type { AgentHostId } from '../agent/host.js'
 import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult, CodexTestFailureKind } from '../agent/types.js'
 import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
-import { ensureEnvironmentAuthentication } from '../workflow/auth-broker.js'
 import {
   defaultEnvironmentProfileRegistryPath,
   loadEnvironmentProfileContext,
@@ -34,7 +33,6 @@ import {
   type ModelProfile,
 } from '../workflow/model-profile.js'
 import { discoverWorkflowInputBundle } from '../workflow/input-bundle.js'
-import { workflowSecretEnvironment } from '../workflow/intake-secrets.js'
 import { intakeWorkflowXlsx } from '../workflow/intake.js'
 import { environmentTargetUrls } from '../workflow/target-urls.js'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
@@ -609,7 +607,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   let secrets: Record<string, string | string[]>
   let environmentContext: string
   try {
-    printProgress('正在匹配环境 Profile、权限策略和登录状态')
+    printProgress('正在匹配环境 Profile、权限策略和可选会话种子')
     const registry = await loadEnvironmentProfileRegistry(options.profileRegistryPath)
     const environmentSelectionPath = resolve(options.outputDirectory, 'environment-selection.json')
     const priorSelection = options.resume
@@ -634,11 +632,6 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     const profileContext = await loadEnvironmentProfileContext(profile)
     const brief = redactSensitiveContent(inputBundle.brief)
     environmentContext = [profileContext, brief].filter(Boolean).join('\n\n')
-    await ensureEnvironmentAuthentication(
-      profile,
-      workflowSecretEnvironment(secrets),
-      { headless: !options.headed, ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}) },
-    )
     printProgress(`环境“${profile.id}”已就绪，正在启动 ${effectiveAgentHostId} AgentHost`)
     const environmentSelection: AgentEnvironmentSelection = {
       profileId: profile.id,
