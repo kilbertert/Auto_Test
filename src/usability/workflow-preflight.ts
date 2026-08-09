@@ -72,7 +72,7 @@ export async function planEasyRegistration(params: {
       kind: 'register',
       registrationUrls,
       defaults: { existingProfile: requested.profile },
-      message: `环境“${params.profileId}”尚未覆盖：${requested.missingOrigins.join('、')}\n现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。`,
+      message: `环境“${params.profileId}”尚未覆盖：${requested.missingOrigins.join('、')}\n现在进入环境更新向导；默认会保留已有会话种子和权限范围，但不要求用例执行前人工登录。`,
     }
   }
   const profiles = profileMatches
@@ -95,7 +95,7 @@ export async function planEasyRegistration(params: {
         message:
           '已有环境尚未覆盖测试用例需要的全部网站：\n' +
           related.map((match) => `  ${match.profile.id}：缺少 ${match.missingOrigins.join('、')}`).join('\n') +
-          '\n现在进入环境更新向导；直接使用默认选项会保留已有登录状态和权限范围。',
+          '\n现在进入环境更新向导；默认会保留已有会话种子和权限范围，但不要求用例执行前人工登录。',
       }
     }
     return {

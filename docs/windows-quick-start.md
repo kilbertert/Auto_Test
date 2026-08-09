@@ -86,11 +86,13 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 1. 粘贴当前已知的前台、后台等网站 URL；
 2. 给环境起一个名称，例如 `test-95`；
-3. 选择是否需要登录；
+3. 选择是否保存一份供普通业务用例复用的登录状态；默认选“否”；
 4. 选择允许的最高操作范围；
-5. 如果需要登录，在自动打开的浏览器中正常登录，看到业务页面后回到窗口按回车。
+5. 只有本套用例默认从“已登录”业务页开始且不测试认证过程时，才选“是”并在自动打开的浏览器中登录。
 
-框架会自动保存浏览器登录状态并生成环境 Profile。测试工程师不需要接触 Registry、Secret Vault、`storageState` 或 `sessionStorage`。
+测试登录、登出、错误凭据、会话失效或角色隔离时必须选“否”。AgentHost 会按 Excel 建立用例要求的认证前置、真实执行认证操作并断言；不会再由运行前 Auth Broker 替用例先登录。如果显式保存了会话，它也只是普通受保护业务用例的可选种子；认证用例会先按用例需要清理 cookie、`localStorage` 和 `sessionStorage`。测试工程师不需要接触 Registry、Secret Vault、`storageState` 或 `sessionStorage`。
+
+命令行注册同样默认不捕获登录状态；仅在明确需要会话种子时使用 `npm run easy -- register ... --capture-login`。旧的 `--no-login` 参数仍可使用，但已与默认行为等价。
 
 风险选择含义：
 
@@ -110,7 +112,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 4. 选择是否显示浏览器中的自动化操作；Windows 默认显示，并对动作做轻微减速以便观察；
 5. 等待框架显示最终结果。
 
-框架会先解析 Excel；新 Run 只使用你粘贴的 URL 作为环境入口。单元格中的教程、连通性参照和外部资料链接只作为 Agent 材料上下文，不会自动扩大 Profile 或触发注册。环境完整后，框架会自动选择并复用登录状态。每次运行的输出目录也会自动创建。
+框架会先解析 Excel；新 Run 只使用你粘贴的 URL 作为环境入口。单元格中的教程、连通性参照和外部资料链接只作为 Agent 材料上下文，不会自动扩大 Profile 或触发注册。环境完整后，框架会自动选择 Profile；选定 AgentHost 根据原始用例决定使用、清理或重新建立会话。每次运行的输出目录也会自动创建。
 
 默认执行主体是 Codex AgentHost；也可以在命令行选择 OMP AgentHost。Runner 根据模型容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。选定宿主可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
 

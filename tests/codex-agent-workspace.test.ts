@@ -8,6 +8,7 @@ import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 import { prepareCodexAgentWorkspace, type AgentWorkspace } from '../src/agent/workspace.js'
 import { CodexAgentHost } from '../src/agent/codex-host.js'
 import { OmpAgentHost } from '../src/agent/omp-host.js'
+import { agentTestPrompt, agentTestResumePrompt } from '../src/agent/prompt.js'
 import type { AgentHostProviderPrepareOptions } from '../src/agent/host.js'
 import { resolveModelProfileEnvironment, toAgentModelProviderDescriptor, type ModelProfile } from '../src/workflow/model-profile.js'
 
@@ -61,6 +62,23 @@ function providerPrepareOptions(
 }
 
 describe('Codex agent workspace', () => {
+  it('keeps authentication transitions under test even when a reusable browser session exists', () => {
+    const input = {
+      manifest: manifest(['https://login.example.test']),
+      environmentContext: '',
+      secretAliases: [],
+      allowedOrigins: ['https://login.example.test'],
+    }
+
+    const direct = agentTestPrompt({ ...input, testDataAccess: 'direct' })
+    const restricted = agentTestPrompt({ ...input, testDataAccess: 'opaque' })
+
+    expect(direct).toContain('registered browser state is only a reusable seed')
+    expect(direct).toContain('clear cookies, localStorage, and sessionStorage')
+    expect(restricted).toContain('Never pass such a case merely because registered state was already authenticated')
+    expect(agentTestResumePrompt()).toContain('Do not pass the case from an inherited session')
+  })
+
   it('stages raw run inputs and enables the complete Playwright capability set without copying provider secrets', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-'))
     directories.push(directory)
@@ -139,6 +157,7 @@ describe('Codex agent workspace', () => {
     const playwrightConfig = JSON.parse(await readFile(workspace.playwrightConfigPath, 'utf8'))
     const mergedState = JSON.parse(await readFile(resolve(workspace.privateDirectory, 'merged-storage-state.json'), 'utf8'))
     const secrets = await readFile(workspace.playwrightSecretsPath, 'utf8')
+    const initPage = await readFile(resolve(workspace.privateDirectory, 'init-page.cjs'), 'utf8')
     const serializedWorkspace = [
       await readFile(workspace.manifestPath, 'utf8'),
       await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8'),
@@ -168,6 +187,10 @@ describe('Codex agent workspace', () => {
     expect(mergedState.cookies).toHaveLength(2)
     expect(mergedState.origins).toHaveLength(2)
     expect(mergedState.origins.find((item: { origin: string }) => item.origin === 'https://two.example.test').indexedDB).toHaveLength(1)
+    expect(mergedState.origins.find((item: { origin: string }) => item.origin === 'https://two.example.test').localStorage)
+      .toContainEqual({ name: '__auto_test_session_seed__', value: '1' })
+    expect(initPage).toContain('localStorage.getItem(marker)')
+    expect(initPage).toContain('localStorage.removeItem(marker)')
     expect(secrets).toContain('AUTO_TEST_VALUE_001="sensitive-value"')
     expect(workspace.secretAliases[0]?.aliases).toEqual(['AUTO_TEST_VALUE_001'])
     expect(await readFile(workspace.sourceFilePath!, 'utf8')).toBe('raw-workbook')
@@ -177,6 +200,7 @@ describe('Codex agent workspace', () => {
       secretRef: 'fixture.accessCode', alias: 'AUTO_TEST_VALUE_001', value: 'sensitive-value',
     }))
     expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('primary test engineer')
+    expect(await readFile(resolve(workspace.workspaceDirectory, 'AGENTS.md'), 'utf8')).toContain('reusable seed')
     expect(runtime.environment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue, FIXTURE_MODEL_KEY: 'provider-key', FIXTURE_FORWARD: 'agent-only-secret' })
     expect(runtime.environment).not.toHaveProperty('UNRELATED_SERVER_SECRET')
     expect(runtime.mcpEnvironment).toMatchObject({ PATH: '/usr/bin', [homeKey]: homeValue })
