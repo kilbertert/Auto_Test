@@ -108,17 +108,17 @@ function normalizedToolIdentity(server: string | undefined, tool: string | undef
   return { server: '', tool: value }
 }
 
-function safeIdentityPart(value: string | undefined): string | undefined {
-  if (!value) return undefined
-  const sanitized = value.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 48)
-  return sanitized || undefined
-}
-
-function actionIdentity(identity: { server: string; tool: string }): { server?: string; tool?: string; suffix: string } {
-  const server = safeIdentityPart(identity.server)
-  const tool = safeIdentityPart(identity.tool)
-  const name = [server, tool].filter(Boolean).join('.')
-  return { ...(server ? { server } : {}), ...(tool ? { tool } : {}), suffix: name ? ` [${name}]` : '' }
+function actionIdentity(identity: { server: string; tool: string }): { server?: string; tool: string } | undefined {
+  if (identity.server === 'playwright' && Object.hasOwn(browserToolLabels, identity.tool)) {
+    return { server: 'playwright', tool: identity.tool }
+  }
+  if (identity.server === 'auto-test-control' && Object.hasOwn(controlToolLabels, identity.tool)) {
+    return { server: 'auto-test-control', tool: identity.tool }
+  }
+  if (!identity.server && ['web_search', 'command_execution', 'file_change'].includes(identity.tool)) {
+    return { tool: identity.tool }
+  }
+  return undefined
 }
 
 function actionCategory(server: string, tool: string): AgentProgressActionCategory {
@@ -139,17 +139,19 @@ function actionProgress(
   else if (event.type.endsWith('_started')) phase = 'started'
   else phase = 'completed'
   const safe = actionIdentity(identity)
-  const suffix = safe.suffix
+  const safeLabel = safe ? label : '调用受控测试工具'
+  const name = safe ? [safe.server, safe.tool].filter(Boolean).join('.') : ''
+  const suffix = name ? ` [${name}]` : ''
   let message: string
-  if (phase === 'started') message = `正在${label}${suffix}`
-  else if (phase === 'failed') message = `${label}返回失败，测试代理正在分析并尝试恢复${suffix}`
-  else message = `${label}已完成${suffix}`
+  if (phase === 'started') message = `正在${safeLabel}${suffix}`
+  else if (phase === 'failed') message = `${safeLabel}返回失败，测试代理正在分析并尝试恢复${suffix}`
+  else message = `${safeLabel}已完成${suffix}`
   const action: AgentProgressAction = {
     phase,
-    category: actionCategory(identity.server, identity.tool),
-    label,
-    ...(safe.server ? { server: safe.server } : {}),
-    ...(safe.tool ? { tool: safe.tool } : {}),
+    category: safe ? actionCategory(identity.server, identity.tool) : 'tool',
+    label: safeLabel,
+    ...(safe?.server ? { server: safe.server } : {}),
+    ...(safe ? { tool: safe.tool } : {}),
   }
   return { kind: phase === 'failed' ? 'warning' : 'activity', message, action }
 }
@@ -222,7 +224,17 @@ function hostLabel(hostId: string | undefined): string | undefined {
   if (!hostId) return undefined
   if (hostId.toLowerCase() === 'codex') return 'Codex'
   if (hostId.toLowerCase() === 'omp') return 'OMP'
-  return safeIdentityPart(hostId)
+  return 'Custom'
+}
+
+function safeContext(context: AgentTestProgressContext): AgentTestProgressContext {
+  const host = hostLabel(context.hostId)
+  return {
+    ...(host ? { hostId: host.toLowerCase() } : {}),
+    ...(context.epochIndex !== undefined ? { epochIndex: context.epochIndex } : {}),
+    ...(context.epochTotal !== undefined ? { epochTotal: context.epochTotal } : {}),
+    ...(context.threadGeneration !== undefined ? { threadGeneration: context.threadGeneration } : {}),
+  }
 }
 
 function contextPrefix(context: AgentTestProgressContext): string {
@@ -264,6 +276,13 @@ export class CodexTestProgressReporter {
   ) {}
 
   setContext(context: AgentTestProgressContext): void {
+    const threadChanged = context.threadGeneration !== undefined && context.threadGeneration !== this.context.threadGeneration
+    if (threadChanged) {
+      this.activeActions.clear()
+      this.recentEventKeys.clear()
+      this.currentAction = undefined
+      this.recoveryActive = false
+    }
     this.context = { ...this.context, ...context }
   }
 
@@ -274,7 +293,7 @@ export class CodexTestProgressReporter {
   }
 
   private emit(progress: CodexTestAgentProgress): void {
-    const context = Object.keys(this.context).length > 0 ? { ...this.context } : undefined
+    const context = Object.keys(this.context).length > 0 ? safeContext(this.context) : undefined
     const message = `${contextPrefix(this.context)}${progress.message}`
     try {
       this.sink?.({
@@ -362,7 +381,7 @@ export class CodexTestProgressReporter {
         this.sink?.({
           kind: 'heartbeat',
           message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${recovery}`,
-          ...(Object.keys(this.context).length > 0 ? { context: { ...this.context } } : {}),
+          ...(Object.keys(this.context).length > 0 ? { context: safeContext(this.context) } : {}),
           ...(active ? {
             action: {
               ...active.action,

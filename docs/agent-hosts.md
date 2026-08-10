@@ -91,7 +91,7 @@ AgentHost 在页面、网络响应或浏览器存储中观察到的运行期凭�
 
 OMP RPC 的 `message_update` 和 `tool_execution_update` 是包含累计完整内容的瞬时帧；适配器不会把它们送入 Core 事件日志。完整 `message_end`、工具开始/完成、错误和 turn 终态仍按共同 AgentHost 事件合同保留，因此诊断、进度、执行回执和最终交付不受影响。
 
-进度回调是同一事件合同的安全投影，不是第二个执行裁决器。每个宿主动作会归一化为 `server.tool`（或 `command_execution` / `file_change`）类别，并在控制台回显 `started`、`completed` 或 `failed`、动作序号和耗时；回调还携带 `hostId`、当前 epoch 和 thread generation。相同 `callId` 的重复开始/完成帧只报告一次。心跳优先显示仍在进行的动作及其持续时间，空闲时显示最近动作和恢复状态。参数、结果、命令正文、表单值、Cookie、验证码和模型推理正文永远不进入该投影；需要逐帧审计时查看同一 Run 的脱敏 `codex-agent.events.jsonl`、执行回执和证据制品。
+进度回调是同一事件合同的安全投影，不是第二个执行裁决器。每个宿主动作会归一化为已知白名单中的 `server.tool`（或 `command_execution` / `file_change`）类别，并在控制台回显 `started`、`completed` 或 `failed`、动作序号和耗时；未知宿主或工具标识只显示固定通用类别，不回显原标识。回调还携带安全的 `hostId`、当前 epoch 和 thread generation。相同物理 thread generation 内，同一 `callId` 的重复开始/完成帧只报告一次；线程切换会清空短期关联状态。心跳优先显示仍在进行的动作及其持续时间，空闲时显示最近动作和恢复状态。参数、结果、命令正文、表单值、Cookie、验证码和模型推理正文永远不进入该投影；需要逐帧审计时查看同一 Run 的脱敏 `codex-agent.events.jsonl`、执行回执和证据制品。
 
 ## 公平比较
 

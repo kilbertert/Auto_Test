@@ -130,7 +130,7 @@ Linux x64 已按“默认 Codex 执行并清理，再由 OMP 在同一输入合�
 
 `--url` 是新 Run 必须提供的环境入口显式声明。Excel 中的教程、连通性参照、依赖说明和后续 case 链接仍完整保存在冻结 Manifest 中供 Agent 理解，但不再直接扩大 Environment Profile 的预执行覆盖范围；`--one` / `--case-limit` 也只保留当前 case 引用的材料链接。完整 Agent 模式可以跟随页面真实跳转和测试材料中的辅助 origin；如果目标权限、认证、测试数据、物理前置或新 origin 确实不可用，选定的 AgentHost 必须先在页面完成可用的只读筛选、搜索、日期范围、分页、刷新或详情观察，再将带 case ID 和证据的待补充条件记录到 `.agent-private/environment-requirements.json` 和 `codex-agent.result.json`。未完成可用页面交互属于 `agent_execution`，不能误报为环境阻断。完成环境注册或其他所需条件后，使用原 Excel、原 Profile 和原输出目录执行 `--resume`；Runner 会复用原宿主重新观察该条件、保存新证据并解除已满足的需求，不会重做已经确认的业务写入。只有 `--opaque-test-data` 受限模式仍会把未注册 origin 作为浏览器阻断；当前 OMP 适配器不支持该受限模式。
 
-启动窗口会持续显示带时间的执行进度，包括 `AgentHost`、epoch 编号、thread generation、累计完成 case 数，以及每个受控动作的安全回执。浏览器、Control MCP、辅助 shell 和工作区文件事件会显示标准工具名、动作序号、开始/完成/失败状态和耗时；同一个工具回执重复到达时只保留一次。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次带“当前动作”和已持续时间的“框架仍在运行”心跳，因此可以区分正常思考、页面等待、自动重连、thread 轮换和明确阻断。进度只显示动作类别和安全摘要，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息；完整脱敏事件仍保存在 `codex-agent.events.jsonl` 供审计。
+启动窗口会持续显示带时间的执行进度，包括 `AgentHost`、epoch 编号、thread generation、累计完成 case 数，以及每个受控动作的安全回执。浏览器、Control MCP、辅助 shell 和工作区文件事件会显示标准工具名、动作序号、开始/完成/失败状态和耗时；同一个工具回执重复到达时只保留一次。模型或页面动作暂时没有新事件时，窗口每约 20 秒输出一次“框架仍在运行”心跳：存在活动动作时显示“当前动作”和该动作持续时间；推理、重连或其他没有活动工具的阶段显示“最近动作”、框架总运行时长和恢复状态。因此可以区分正常思考、页面等待、自动重连、thread 轮换和明确阻断。进度只显示动作类别和安全摘要，不显示模型推理正文、命令内容、表单值、工具参数、Cookie、验证码或 API 信息；完整脱敏事件仍保存在 `codex-agent.events.jsonl` 供审计。
 
 这些进度表示选定 AgentHost 仍在工作，不代表测试已经通过。最终结论以 `codex-agent.result.json`、其中引用的实际证据以及 Mutation Ledger 的终态为准；Execution Plan 和字段 Gate 不再是必需产物。
 

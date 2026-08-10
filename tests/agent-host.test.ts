@@ -766,6 +766,14 @@ process.stdin.on('end', () => {
       toolName: 'mcp__auto_test_control_mutation_list',
       result: {},
     })?.message).toContain('核对未完成的业务写入')
+    const unknown = progressFromAgentEvent({
+      type: 'tool_started', server: 'sk-secret-server', tool: 'token-secret-tool',
+    })
+    expect(unknown).toMatchObject({
+      message: '正在调用受控测试工具',
+      action: { category: 'tool', label: '调用受控测试工具' },
+    })
+    expect(JSON.stringify(unknown)).not.toMatch(/sk-secret-server|token-secret-tool/)
   })
 
   it('reports contextual action lifecycles, heartbeats, failures, and duplicate events safely', () => {
@@ -789,6 +797,8 @@ process.stdin.on('end', () => {
         type: 'item.completed',
         item: { id: 'click-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', result: { ok: true } },
       })
+      reporter.setContext({ threadGeneration: 4 })
+      reporter.observe(started)
       reporter.observe({
         type: 'item.completed',
         item: { id: 'command-1', type: 'command_execution', status: 'failed', command: 'echo must-not-leak' },
@@ -796,8 +806,9 @@ process.stdin.on('end', () => {
       reporter.close()
 
       const output = progress.map((event) => event.message).join('\n')
-      expect(progress.filter((event) => event.kind === 'activity' && event.action?.phase === 'started' && event.action.tool === 'browser_click')).toHaveLength(1)
+      expect(progress.filter((event) => event.kind === 'activity' && event.action?.phase === 'started' && event.action.tool === 'browser_click')).toHaveLength(2)
       expect(output).toContain('[Host=Codex | epoch=1/2 | thread generation=3]')
+      expect(output).toContain('[Host=Codex | epoch=1/2 | thread generation=4]')
       expect(output).toContain('当前动作：点击页面控件 [playwright.browser_click]')
       expect(output).toContain('动作 #1，状态=完成，耗时 1 秒')
       expect(output).toContain('运行测试辅助命令或脚本返回失败')
