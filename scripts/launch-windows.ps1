@@ -570,6 +570,12 @@ function Start-CodexProbeProcess([string] $Executable) {
     '--skip-git-repo-check',
     '--color',
     'never',
+    # The probe only checks that the model API echoes the marker, so override
+    # the configured reasoning effort to "minimal". Reasoning models such as
+    # deepseek-v4-flash otherwise spend the full probe timeout thinking about a
+    # trivial prompt and the health check times out.
+    '-c',
+    'model_reasoning_effort="minimal"',
     '-C',
     $RepositoryRoot
   )
