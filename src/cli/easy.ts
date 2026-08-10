@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline/promises'
 import { access, mkdir, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, extname, resolve } from 'node:path'
+import { delimiter, dirname, extname, resolve } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium } from '@playwright/test'
 import crossSpawn from 'cross-spawn'
@@ -30,6 +30,7 @@ import {
 } from '../workflow/model-profile.js'
 import { isBuiltInAgentHostId } from '../agent/host-registry.js'
 import type { AgentHostId } from '../agent/host.js'
+import { defaultRunDirectory, defaultRunRoot } from '../usability/run-directory.js'
 
 interface EasyRunOptions {
   filePath: string
@@ -153,25 +154,6 @@ async function registerInteractive(
   console.log(`\n环境“${result.profile.id}”已注册。${authentication}，权限设置将自动复用。`)
   console.log(`配置位置：${result.registryPath}`)
   return result.profile.id
-}
-
-function timestamp(): string {
-  const now = new Date()
-  const value = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-    '-',
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join('')
-  return value
-}
-
-function defaultRunDirectory(filePath: string): string {
-  const stem = basename(filePath, extname(filePath)).replace(/[^\p{L}\p{N}._-]+/gu, '-').slice(0, 48) || 'workflow'
-  return resolve('artifacts', 'runs', `${timestamp()}-${stem}-${Date.now().toString(36).slice(-5)}`)
 }
 
 function npmExecutable(): string {
@@ -396,7 +378,7 @@ async function runInteractive(): Promise<void> {
 }
 
 async function latestStatePath(): Promise<string | undefined> {
-  const root = resolve('artifacts', 'runs')
+  const root = defaultRunRoot()
   try {
     const entries = await readdir(root, { recursive: true, withFileTypes: true })
     const candidates = await Promise.all(entries
