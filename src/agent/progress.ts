@@ -2,9 +2,32 @@ import { normalizeAgentEvent, type AgentEvent } from './host.js'
 
 export type CodexTestAgentProgressKind = 'stage' | 'activity' | 'heartbeat' | 'warning'
 
+export type AgentProgressActionPhase = 'started' | 'completed' | 'failed'
+export type AgentProgressActionCategory = 'browser' | 'control' | 'shell' | 'workspace' | 'tool'
+
+/** Safe, non-content description of the operation currently visible to a user. */
+export interface AgentProgressAction {
+  phase: AgentProgressActionPhase
+  category: AgentProgressActionCategory
+  label: string
+  server?: string
+  tool?: string
+  sequence?: number
+  durationMs?: number
+}
+
+export interface AgentTestProgressContext {
+  hostId?: string
+  epochIndex?: number
+  epochTotal?: number
+  threadGeneration?: number
+}
+
 export interface CodexTestAgentProgress {
   kind: CodexTestAgentProgressKind
   message: string
+  context?: AgentTestProgressContext
+  action?: AgentProgressAction
 }
 
 export type CodexTestAgentProgressSink = (progress: CodexTestAgentProgress) => void
@@ -85,6 +108,54 @@ function normalizedToolIdentity(server: string | undefined, tool: string | undef
   return { server: '', tool: value }
 }
 
+function actionIdentity(identity: { server: string; tool: string }): { server?: string; tool: string } | undefined {
+  if (identity.server === 'playwright' && Object.hasOwn(browserToolLabels, identity.tool)) {
+    return { server: 'playwright', tool: identity.tool }
+  }
+  if (identity.server === 'auto-test-control' && Object.hasOwn(controlToolLabels, identity.tool)) {
+    return { server: 'auto-test-control', tool: identity.tool }
+  }
+  if (!identity.server && ['web_search', 'command_execution', 'file_change'].includes(identity.tool)) {
+    return { tool: identity.tool }
+  }
+  return undefined
+}
+
+function actionCategory(server: string, tool: string): AgentProgressActionCategory {
+  if (server === 'playwright') return 'browser'
+  if (server === 'auto-test-control') return 'control'
+  if (tool === 'command_execution') return 'shell'
+  if (tool === 'file_change') return 'workspace'
+  return 'tool'
+}
+
+function actionProgress(
+  event: AgentEvent,
+  label: string,
+  identity: { server: string; tool: string },
+): CodexTestAgentProgress {
+  let phase: AgentProgressActionPhase
+  if (event.status === 'failed') phase = 'failed'
+  else if (event.type.endsWith('_started')) phase = 'started'
+  else phase = 'completed'
+  const safe = actionIdentity(identity)
+  const safeLabel = safe ? label : '调用受控测试工具'
+  const name = safe ? [safe.server, safe.tool].filter(Boolean).join('.') : ''
+  const suffix = name ? ` [${name}]` : ''
+  let message: string
+  if (phase === 'started') message = `正在${safeLabel}${suffix}`
+  else if (phase === 'failed') message = `${safeLabel}返回失败，测试代理正在分析并尝试恢复${suffix}`
+  else message = `${safeLabel}已完成${suffix}`
+  const action: AgentProgressAction = {
+    phase,
+    category: safe ? actionCategory(identity.server, identity.tool) : 'tool',
+    label: safeLabel,
+    ...(safe?.server ? { server: safe.server } : {}),
+    ...(safe ? { tool: safe.tool } : {}),
+  }
+  return { kind: phase === 'failed' ? 'warning' : 'activity', message, action }
+}
+
 export function progressFromAgentEvent(value: unknown): CodexTestAgentProgress | undefined {
   const event = normalizeAgentEvent(value)
   if (event.type === 'thread_started') {
@@ -99,33 +170,39 @@ export function progressFromAgentEvent(value: unknown): CodexTestAgentProgress |
   if (event.type === 'error') {
     const reconnect = /^Reconnecting\.\.\.\s*(\d+\/\d+)/i.exec(event.message ?? '')
     if (reconnect) return { kind: 'warning', message: `模型连接暂时中断，AgentHost 正在自动重连（${reconnect[1]}）` }
-    return undefined
+    const message = event.message ?? ''
+    if (/quota|rate\s*limit|余额|额度|credit/i.test(message)) {
+      return { kind: 'warning', message: '模型额度或请求频率受限，AgentHost 正在尝试恢复' }
+    }
+    if (/timeout|timed\s*out|超时/i.test(message)) {
+      return { kind: 'warning', message: 'AgentHost 请求超时，测试代理正在分析并尝试恢复' }
+    }
+    return { kind: 'warning', message: 'AgentHost 返回通信错误，测试代理正在分析并尝试恢复' }
+  }
+  if (event.type === 'turn_failed') {
+    return { kind: 'warning', message: 'AgentHost 本轮执行失败，正在保存可恢复状态' }
+  }
+  if (event.type === 'session_incompatible') {
+    return { kind: 'warning', message: '原 AgentHost 会话与当前模型绑定不兼容，正在启动恢复线程' }
   }
   if (event.type === 'tool_started' || event.type === 'tool_completed') {
     const identity = normalizedToolIdentity(event.server, event.tool)
-    const label = toolLabel(identity.server, identity.tool)
-    if (event.type === 'tool_started') return { kind: 'activity', message: `正在${label}` }
-    if (event.status === 'failed') return { kind: 'warning', message: `${label}返回失败，测试代理正在分析并尝试恢复` }
-    return { kind: 'activity', message: `${label}已完成` }
+    return actionProgress(event, toolLabel(identity.server, identity.tool), identity)
   }
   if (event.type === 'command_started' || event.type === 'command_completed') {
-    if (event.type === 'command_started') return { kind: 'activity', message: '测试代理正在运行测试辅助命令或脚本' }
-    if (event.status === 'failed') return { kind: 'warning', message: '测试辅助命令执行失败，测试代理正在分析并恢复' }
-    return { kind: 'activity', message: '测试辅助命令或脚本已完成' }
+    return actionProgress(event, '运行测试辅助命令或脚本', { server: '', tool: 'command_execution' })
   }
   if (event.type === 'file_change_started' || event.type === 'file_change_completed') {
-    if (event.type === 'file_change_started') return { kind: 'activity', message: '测试代理正在更新本次运行的临时脚本或记录' }
-    if (event.status === 'failed') return { kind: 'warning', message: '本次运行工作区文件更新失败，测试代理正在恢复' }
-    return { kind: 'activity', message: '本次运行的临时脚本或记录已更新' }
+    return actionProgress(event, '更新本次运行工作区文件', { server: '', tool: 'file_change' })
   }
   if (event.type === 'reasoning_started') {
-    return { kind: 'activity', message: '测试代理正在分析当前证据和下一步动作' }
+    return { kind: 'activity', message: '测试代理正在分析当前证据和下一步动作（不显示模型推理正文）' }
   }
   if (event.type === 'todo_started') {
-    return { kind: 'activity', message: '测试代理正在整理当前执行步骤' }
+    return { kind: 'activity', message: '测试代理正在整理当前执行步骤清单' }
   }
   if (event.type === 'agent_message') {
-    return { kind: 'activity', message: '测试代理已完成本轮执行说明' }
+    return { kind: 'activity', message: '测试代理已生成本轮执行回执' }
   }
   return undefined
 }
@@ -143,9 +220,54 @@ function elapsedLabel(milliseconds: number): string {
   return seconds === 0 ? `${minutes} 分钟` : `${minutes} 分 ${seconds} 秒`
 }
 
+function hostLabel(hostId: string | undefined): string | undefined {
+  if (!hostId) return undefined
+  if (hostId.toLowerCase() === 'codex') return 'Codex'
+  if (hostId.toLowerCase() === 'omp') return 'OMP'
+  return 'Custom'
+}
+
+function safeContext(context: AgentTestProgressContext): AgentTestProgressContext {
+  const host = hostLabel(context.hostId)
+  return {
+    ...(host ? { hostId: host.toLowerCase() } : {}),
+    ...(context.epochIndex !== undefined ? { epochIndex: context.epochIndex } : {}),
+    ...(context.epochTotal !== undefined ? { epochTotal: context.epochTotal } : {}),
+    ...(context.threadGeneration !== undefined ? { threadGeneration: context.threadGeneration } : {}),
+  }
+}
+
+function contextPrefix(context: AgentTestProgressContext): string {
+  const parts: string[] = []
+  const host = hostLabel(context.hostId)
+  if (host) parts.push(`Host=${host}`)
+  if (context.epochIndex !== undefined && context.epochTotal !== undefined) {
+    parts.push(`epoch=${context.epochIndex}/${context.epochTotal}`)
+  }
+  if (context.threadGeneration !== undefined) parts.push(`thread generation=${context.threadGeneration}`)
+  return parts.length > 0 ? `[${parts.join(' | ')}] ` : ''
+}
+
+function actionDescription(action: AgentProgressAction): string {
+  const name = [action.server, action.tool].filter(Boolean).join('.')
+  return `${action.label}${name ? ` [${name}]` : ''}`
+}
+
+interface ActiveAction {
+  action: AgentProgressAction
+  sequence: number
+  startedAt: number
+}
+
 export class CodexTestProgressReporter {
   private heartbeat: ReturnType<typeof setInterval> | undefined
   private currentActivity = '正在准备测试代理'
+  private currentAction: AgentProgressAction | undefined
+  private readonly activeActions = new Map<string, ActiveAction>()
+  private readonly recentEventKeys = new Map<string, number>()
+  private actionSequence = 0
+  private recoveryActive = false
+  private context: AgentTestProgressContext = {}
   private readonly startedAt = Date.now()
 
   constructor(
@@ -153,10 +275,32 @@ export class CodexTestProgressReporter {
     private readonly heartbeatIntervalMs = 20_000,
   ) {}
 
+  setContext(context: AgentTestProgressContext): void {
+    const threadChanged = context.threadGeneration !== undefined && context.threadGeneration !== this.context.threadGeneration
+    if (threadChanged) {
+      this.activeActions.clear()
+      this.recentEventKeys.clear()
+      this.currentAction = undefined
+      this.recoveryActive = false
+    }
+    this.context = { ...this.context, ...context }
+  }
+
   report(kind: CodexTestAgentProgressKind, message: string): void {
     this.currentActivity = message
+    if (kind === 'warning') this.recoveryActive = true
+    this.emit({ kind, message })
+  }
+
+  private emit(progress: CodexTestAgentProgress): void {
+    const context = Object.keys(this.context).length > 0 ? safeContext(this.context) : undefined
+    const message = `${contextPrefix(this.context)}${progress.message}`
     try {
-      this.sink?.({ kind, message })
+      this.sink?.({
+        ...progress,
+        message,
+        ...(context ? { context } : {}),
+      })
     } catch {
       // Progress reporting must never affect the test result.
     }
@@ -164,17 +308,88 @@ export class CodexTestProgressReporter {
 
   observe(event: AgentEvent | unknown): void {
     const progress = progressFromAgentEvent(event)
-    if (progress) this.report(progress.kind, progress.message)
+    if (!progress) return
+    const normalized = normalizeAgentEvent(event)
+    const enriched = progress.action ? this.enrichAction(progress, normalized) : progress
+    if (!enriched) return
+    this.currentActivity = enriched.message
+    this.currentAction = enriched.action
+    if (enriched.kind === 'warning') this.recoveryActive = true
+    if (enriched.action?.phase === 'completed') this.recoveryActive = false
+    this.emit(enriched)
+  }
+
+  // Correlate lifecycle events by call ID without retaining tool arguments or results.
+  private enrichAction(progress: CodexTestAgentProgress, event: AgentEvent): CodexTestAgentProgress | undefined {
+    const action = progress.action
+    if (!action) return progress
+    const correlationId = event.callId ?? event.id
+    const key = correlationId ? `${action.category}|${action.server ?? ''}|${action.tool ?? ''}|${correlationId}` : undefined
+    const now = Date.now()
+    if (key) {
+      const eventKey = `${event.type}|${key}`
+      if (this.recentEventKeys.has(eventKey)) return undefined
+      this.recentEventKeys.set(eventKey, now)
+      for (const [candidate, timestamp] of this.recentEventKeys) {
+        if (now - timestamp > 60_000) this.recentEventKeys.delete(candidate)
+      }
+    }
+    const started = key ? this.activeActions.get(key) : undefined
+    const sequence = started?.sequence ?? ++this.actionSequence
+    let durationMs: number | undefined
+    if (action.phase !== 'started' && started) durationMs = Math.max(0, now - started.startedAt)
+    if (action.phase === 'started') {
+      if (key) this.activeActions.set(key, { action, sequence, startedAt: now })
+    } else if (key) {
+      this.activeActions.delete(key)
+    }
+    const enrichedAction: AgentProgressAction = {
+      ...action,
+      sequence,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    }
+    let status: string
+    if (action.phase === 'started') status = '进行中'
+    else if (action.phase === 'failed') status = '失败'
+    else status = '完成'
+    const duration = durationMs === undefined ? '' : `，耗时 ${elapsedLabel(durationMs)}`
+    return {
+      ...progress,
+      action: enrichedAction,
+      message: `${progress.message}；动作 #${sequence}，状态=${status}${duration}`,
+    }
+  }
+
+  private latestActiveAction(): ActiveAction | undefined {
+    let latest: ActiveAction | undefined
+    for (const action of this.activeActions.values()) {
+      if (!latest || action.startedAt > latest.startedAt) latest = action
+    }
+    return latest
   }
 
   startHeartbeat(): void {
     if (!this.sink || this.heartbeat || this.heartbeatIntervalMs <= 0) return
     this.heartbeat = setInterval(() => {
       const elapsed = elapsedLabel(Date.now() - this.startedAt)
+      const active = this.latestActiveAction()
+      const activity = active
+        ? `当前动作：${actionDescription(active.action)}；动作 #${active.sequence}，状态=进行中，已持续 ${elapsedLabel(Date.now() - active.startedAt)}`
+        : `最近动作：${this.currentActivity}`
+      const recovery = this.recoveryActive ? '；恢复状态：进行中' : ''
       try {
         this.sink?.({
           kind: 'heartbeat',
-          message: `框架仍在运行（已持续 ${elapsed}）；最近进度：${this.currentActivity}`,
+          message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${recovery}`,
+          ...(Object.keys(this.context).length > 0 ? { context: safeContext(this.context) } : {}),
+          ...(active ? {
+            action: {
+              ...active.action,
+              phase: 'started' as const,
+              sequence: active.sequence,
+              durationMs: Math.max(0, Date.now() - active.startedAt),
+            },
+          } : this.currentAction ? { action: this.currentAction } : {}),
         })
       } catch {
         // Progress reporting must never affect the test result.
@@ -186,6 +401,8 @@ export class CodexTestProgressReporter {
   close(): void {
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.heartbeat = undefined
+    this.activeActions.clear()
+    this.recentEventKeys.clear()
   }
 }
 
