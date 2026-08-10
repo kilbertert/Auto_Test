@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
 import { basename, extname, posix, resolve } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { chmod, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { utils } from '@e965/xlsx'
 import he from 'he'
 import { redactSensitiveContent } from '../input/text.js'
@@ -418,6 +419,20 @@ export async function writeResultWorkbook(options: {
   const outputName = `${basename(options.sourceFilePath, extname(options.sourceFilePath))}-Auto-Test-结果.xlsx`
   const path = resolve(options.outputDirectory, outputName)
   const patched = replaceOoxmlPart(source, part, Buffer.from(patchWorksheet(sheet, options.manifest, options.result), 'utf8'))
-  await writeFile(path, patched, { mode: 0o600 })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, patched, { mode: 0o600 })
+    if (process.platform !== 'win32') await chmod(temporary, 0o600)
+    await rename(temporary, path)
+    const persisted = await readFile(path)
+    if (!persisted.equals(patched)) throw new Error(`Result workbook did not persist completely: ${path}`)
+    readOoxmlPart(persisted, sheetPartName(persisted, options.manifest.source.sheetName))
+    if (process.platform !== 'win32') await chmod(path, 0o600)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`结果工作簿交付失败：${path}；${detail}`, { cause: error })
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined)
+  }
   return { path, sheetName: options.manifest.source.sheetName }
 }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { read, utils, write } from '@e965/xlsx'
@@ -53,7 +53,7 @@ function result(outcome: CodexTestAgentResult['outcome']): CodexTestAgentResult 
   }
 }
 
-async function sourceWorkbook(directory: string): Promise<{ path: string; content: Buffer }> {
+async function sourceWorkbook(directory: string, fileName = 'cases.xlsx'): Promise<{ path: string; content: Buffer }> {
   const workbook = utils.book_new()
   const sheet = utils.aoa_to_sheet([
     ['用例ID', '测试步骤', '预期结果'],
@@ -67,7 +67,7 @@ async function sourceWorkbook(directory: string): Promise<{ path: string; conten
   const auxiliary = utils.aoa_to_sheet([['保留'], ['完全不改写']])
   utils.book_append_sheet(workbook, auxiliary, 'Auxiliary')
   const content = Buffer.from(write(workbook, { type: 'buffer', bookType: 'xlsx' }))
-  const path = resolve(directory, 'cases.xlsx')
+  const path = resolve(directory, fileName)
   await writeFile(path, content)
   return { path, content }
 }
@@ -147,5 +147,39 @@ describe('result workbook writeback', () => {
     expect(sheet.D1?.v).toBe('Auto-Test 状态')
     expect(sheet.D2?.v).toBe('通过')
     expect(sheet.D3?.v).toBe('通过')
+  })
+
+  it('atomically verifies a result workbook in a path with Unicode and spaces', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-result-workbook-path-'))
+    directories.push(root)
+    const directory = resolve(root, '测试 结果')
+    await mkdir(directory)
+    const source = await sourceWorkbook(directory, 'LTA 后台测试用例.xlsx')
+
+    const artifact = await writeResultWorkbook({
+      sourceFilePath: source.path,
+      outputDirectory: directory,
+      manifest: manifest(),
+      result: result('passed'),
+    })
+
+    expect(artifact.path).toBe(resolve(directory, 'LTA 后台测试用例-Auto-Test-结果.xlsx'))
+    expect(read(await readFile(artifact.path), { type: 'buffer' }).SheetNames).toContain('Cases')
+    expect((await readdir(directory)).some((name) => name.endsWith('.tmp'))).toBe(false)
+  })
+
+  it('fails with a delivery error when the output directory is not a directory', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-result-workbook-error-'))
+    directories.push(directory)
+    const source = await sourceWorkbook(directory)
+    const outputBlocker = resolve(directory, 'output-file')
+    await writeFile(outputBlocker, 'not a directory')
+
+    await expect(writeResultWorkbook({
+      sourceFilePath: source.path,
+      outputDirectory: outputBlocker,
+      manifest: manifest(),
+      result: result('passed'),
+    })).rejects.toThrow(/结果工作簿交付失败/)
   })
 })

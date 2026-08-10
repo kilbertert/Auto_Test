@@ -8,6 +8,7 @@ import {
 } from '../src/cli/agent-test.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import { environmentTargetUrls } from '../src/workflow/target-urls.js'
+import { defaultRunDirectory, defaultRunRoot } from '../src/usability/run-directory.js'
 
 function fixtureManifest(): WorkflowIntakeManifest {
   return {
@@ -41,6 +42,16 @@ function fixtureManifest(): WorkflowIntakeManifest {
 }
 
 describe('Codex agent CLI', () => {
+  it('keeps default Windows runs in durable per-user storage instead of the package drive', () => {
+    const environment = { LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local' }
+    const now = new Date(2026, 7, 10, 16, 16, 52)
+
+    expect(defaultRunRoot(environment, 'win32', 'C:\\Users\\tester'))
+      .toBe('C:\\Users\\tester\\AppData\\Local\\auto-test\\runs')
+    expect(defaultRunDirectory('E:\\portable package\\LTA 后台测试用例.xlsx', environment, 'win32', 'C:\\Users\\tester', now))
+      .toMatch(/^C:\\Users\\tester\\AppData\\Local\\auto-test\\runs\\20260810-161652-LTA-后台测试用例-/)
+  })
+
   it('requires an explicit environment URL for a new run', () => {
     expect(() => parseAgentTestArgs(['--file', 'cases.xlsx'])).toThrow(/至少提供一个 --url/)
     const options = parseAgentTestArgs([
@@ -54,7 +65,8 @@ describe('Codex agent CLI', () => {
     expect(options.slowMo).toBe(50)
     expect(options.caseLimit).toBe(12)
     expect(options.testDataAccess).toBe('direct')
-    expect(options.outputDirectory).toMatch(/artifacts[\\/]runs[\\/].*cases-/)
+    expect(options.outputDirectory.startsWith(defaultRunRoot())).toBe(true)
+    expect(options.outputDirectory.slice(defaultRunRoot().length)).toMatch(/[\\/].*cases-/)
   })
 
   it('rejects conflicting browser modes and invalid numeric limits', () => {

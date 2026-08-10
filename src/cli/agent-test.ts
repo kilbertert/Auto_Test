@@ -35,6 +35,7 @@ import {
 import { discoverWorkflowInputBundle } from '../workflow/input-bundle.js'
 import { intakeWorkflowXlsx } from '../workflow/intake.js'
 import { environmentTargetUrls } from '../workflow/target-urls.js'
+import { defaultRunDirectory } from '../usability/run-directory.js'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
 
@@ -108,24 +109,6 @@ function testDataSecrets(
     ? [adapter.login.usernameSecretRef, adapter.login.passwordSecretRef]
     : []))
   return Object.fromEntries(Object.entries(secrets).filter(([name]) => !authenticationRefs.has(name)))
-}
-
-function timestamp(): string {
-  const now = new Date()
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-    '-',
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join('')
-}
-
-function defaultAgentRunDirectory(filePath: string): string {
-  const stem = basename(filePath, extname(filePath)).replace(/[^\p{L}\p{N}._-]+/gu, '-').slice(0, 48) || 'workflow'
-  return resolve('artifacts', 'runs', `${timestamp()}-${stem}-${Date.now().toString(36).slice(-5)}`)
 }
 
 function help(): string {
@@ -240,7 +223,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
     ...(valueAfter(args, '--brief') ? { briefPath: resolve(valueAfter(args, '--brief')!) } : {}),
     ...(valueAfter(args, '--profile') ? { profileId: valueAfter(args, '--profile')! } : {}),
     profileRegistryPath: resolve(valueAfter(args, '--profile-registry') ?? defaultEnvironmentProfileRegistryPath()),
-    outputDirectory: resolve(valueAfter(args, '--output-dir') ?? defaultAgentRunDirectory(resolvedFilePath)),
+    outputDirectory: resolve(valueAfter(args, '--output-dir') ?? defaultRunDirectory(resolvedFilePath)),
     ...(valueAfter(args, '--model') ? { model: valueAfter(args, '--model')! } : {}),
     headed: args.includes('--headed'),
     resume: args.includes('--resume'),
@@ -493,6 +476,7 @@ async function writePreExecutionBlock(
   console.log(`阻断原因：${message}`)
   console.log(`结果文件：${resultPath}`)
   console.log(`测试用例结果文件：${workbookPath}`)
+  console.log('结果工作簿校验：已确认文件存在、可读取且为有效 XLSX')
   return 3
 }
 
@@ -768,6 +752,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
         result: run.result,
       })
       console.log(`测试用例结果文件：${workbookPath}`)
+      console.log('结果工作簿校验：已确认文件存在、可读取且为有效 XLSX')
     } catch (error) {
       console.error(`测试用例结果文件生成失败：${error instanceof Error ? error.message : String(error)}`)
       return 1

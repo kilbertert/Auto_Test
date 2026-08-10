@@ -4,7 +4,7 @@
 
 这份清单用于在一台 Windows 测试机上，从全新解压目录开始，验证 Auto-Test 能否仅凭测试用例、目标 URL 和一次环境注册自主完成真实测试。
 
-日常操作可以使用中文菜单；正式验收建议使用显式命令和固定输出目录，便于中断恢复和结果复核。
+日常操作可以使用中文菜单；菜单默认把 Run 保存在 `%LOCALAPPDATA%\auto-test\runs`，不会随 ZIP 解压目录、移动盘或映射盘失联。正式验收建议使用显式命令和本机固定输出目录，便于中断恢复和结果复核。
 
 ## AgentHost 宿主选择边界
 
@@ -12,11 +12,11 @@
 
 ## 1. 验收前准备
 
-- 使用当前版本的内部私有 Windows ZIP，解压到本机短路径，例如 `D:\Auto-Test`；不要直接在 ZIP、OneDrive、共享盘或 `Program Files` 中运行。
+- 使用当前版本的内部私有 Windows ZIP，解压到本机短路径，例如 `D:\Auto-Test`；不要直接在 ZIP、OneDrive、共享盘或 `Program Files` 中运行。显式 `--output-dir` 也应放在运行期间持续在线的本机卷。
 - 将测试用例 Excel 和同名 `.auto-test` 补充材料放在本机目录，例如 `D:\TestData`。Excel 内嵌图片无需单独导出。
 - 确认目标是已授权的测试环境。会创建订单、启动设备、结算或删除数据时，必须准备可安全清理的测试数据和相应权限。
 - 关闭正在编辑该 Excel 的程序，保持电脑联网并关闭自动睡眠。同一个测试环境和测试数据不要同时启动两个 Auto-Test run。
-- 私有 ZIP 含一次性模型引导凭据。完成解压和安装后，不要把 ZIP、`.agent-private`、环境 Profile 或 `%APPDATA%\auto-test` 上传到聊天、网盘或代码仓库。
+- 私有 ZIP 含一次性模型引导凭据。完成解压和安装后，不要把 ZIP、`.agent-private`、运行制品、环境 Profile 或 `%APPDATA%\auto-test` / `%LOCALAPPDATA%\auto-test` 上传到聊天、网盘或代码仓库。
 
 ## 2. 初始化并检查环境
 
@@ -130,7 +130,7 @@ $Ledger | Where-Object status -eq "pending" | Format-Table id, caseId, status
 Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
 ```
 
-结果目录中的 `原文件名-Auto-Test-结果.xlsx` 是交付给测试工程师复核的工作簿副本。它逐来源行写入状态、失败归类、摘要、证据索引和环境需求；原始 `$Cases` 不会被框架修改。结构化 JSON 仍是权威证据索引，Excel 是对同一结果的确定性回写，不会另行判断业务结论。
+结果目录中的 `原文件名-Auto-Test-结果.xlsx` 是交付给测试工程师复核的工作簿副本。它逐来源行写入状态、失败归类、摘要、证据索引和环境需求；原始 `$Cases` 不会被框架修改。框架只在工作簿原子提交、重新读取且 XLSX 结构校验通过后显示其路径；若显示“结果文件生成失败”，即使业务 outcome 已产生也不能宣称 Excel 已交付。结构化 JSON 仍是权威证据索引，Excel 是对同一结果的确定性回写，不会另行判断业务结论。
 
 只有同时满足以下条件，才算该 run 通过：
 
