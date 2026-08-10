@@ -5,13 +5,13 @@ import { createInterface } from 'node:readline'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentHostError, normalizeAgentEvent } from '../src/agent/host.js'
 import type { AgentHost, AgentHostLaunchOptions, AgentHostProviderPrepareOptions, AgentInputPart } from '../src/agent/host.js'
 import { codexSandboxMode, codexWebSearchEnabled, codexWorkspaceIsolation, startCodexSdkThread } from '../src/agent/codex-host.js'
 import { OmpAgentHost, RpcFrameDecoder } from '../src/agent/omp-host.js'
 import { availableAgentHosts, createAgentHost } from '../src/agent/host-registry.js'
-import { progressFromAgentEvent } from '../src/agent/progress.js'
+import { AgentTestProgressReporter, progressFromAgentEvent, type AgentTestProgress } from '../src/agent/progress.js'
 import { runAgentTest } from '../src/agent/runner.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
@@ -749,17 +749,64 @@ process.stdin.on('end', () => {
   })
 
   it('maps OMP-prefixed MCP tool names to the same safe progress categories', () => {
-    expect(progressFromAgentEvent({
+    const progress = progressFromAgentEvent({
       type: 'tool_execution_start',
       toolCallId: 'omp-tool-1',
       toolName: 'mcp__playwright_browser_snapshot',
-    })?.message).toContain('读取页面结构')
+      args: { password: 'must-not-be-printed', phone: '13800000000' },
+    })
+    expect(progress?.message).toContain('读取页面结构 [playwright.browser_snapshot]')
+    expect(progress?.action).toMatchObject({
+      phase: 'started', category: 'browser', server: 'playwright', tool: 'browser_snapshot',
+    })
+    expect(JSON.stringify(progress)).not.toMatch(/must-not-be-printed|13800000000/)
     expect(progressFromAgentEvent({
       type: 'tool_execution_end',
       toolCallId: 'omp-tool-2',
       toolName: 'mcp__auto_test_control_mutation_list',
       result: {},
     })?.message).toContain('核对未完成的业务写入')
+  })
+
+  it('reports contextual action lifecycles, heartbeats, failures, and duplicate events safely', () => {
+    vi.useFakeTimers()
+    try {
+      const progress: AgentTestProgress[] = []
+      const reporter = new AgentTestProgressReporter((event) => progress.push(event), 1_000)
+      reporter.setContext({ hostId: 'codex', epochIndex: 1, epochTotal: 2, threadGeneration: 3 })
+      reporter.startHeartbeat()
+      const started = {
+        type: 'item.started',
+        item: {
+          id: 'click-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click',
+          arguments: { password: 'must-not-leak', element: 'sensitive form value' },
+        },
+      }
+      reporter.observe(started)
+      reporter.observe(started)
+      vi.advanceTimersByTime(1_500)
+      reporter.observe({
+        type: 'item.completed',
+        item: { id: 'click-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', result: { ok: true } },
+      })
+      reporter.observe({
+        type: 'item.completed',
+        item: { id: 'command-1', type: 'command_execution', status: 'failed', command: 'echo must-not-leak' },
+      })
+      reporter.close()
+
+      const output = progress.map((event) => event.message).join('\n')
+      expect(progress.filter((event) => event.kind === 'activity' && event.action?.phase === 'started' && event.action.tool === 'browser_click')).toHaveLength(1)
+      expect(output).toContain('[Host=Codex | epoch=1/2 | thread generation=3]')
+      expect(output).toContain('当前动作：点击页面控件 [playwright.browser_click]')
+      expect(output).toContain('动作 #1，状态=完成，耗时 1 秒')
+      expect(output).toContain('运行测试辅助命令或脚本返回失败')
+      expect(output).toContain('[command_execution]')
+      expect(output).toContain('状态=失败')
+      expect(output).not.toMatch(/must-not-leak|sensitive form value/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('normalizes native OMP MCP calls for the shared control preflight', () => {

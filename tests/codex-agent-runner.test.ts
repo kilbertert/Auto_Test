@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { buildCodexExecutionEpochs } from '../src/agent/execution-epochs.js'
+import type { AgentTestProgress } from '../src/agent/progress.js'
 import { runCodexTestAgent } from '../src/agent/runner.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 import type { ModelProfile } from '../src/workflow/model-profile.js'
@@ -140,10 +141,12 @@ describe('adaptive Codex epochs', () => {
     const started: string[] = []
     const prompts: string[] = []
     const launches: Array<Record<string, unknown>> = []
+    const progress: AgentTestProgress[] = []
     const run = await runCodexTestAgent({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_ALIAS_KEY: 'fixture-key' },
+      onProgress: (event) => progress.push(event),
     }, {
       browserExecutablePath: files.browserPath,
       startThread: (options) => {
@@ -178,6 +181,8 @@ describe('adaptive Codex epochs', () => {
     expect(run.state.version).toBe('2.0')
     expect(run.state.threadGeneration).toBe(2)
     expect(run.state.completedCaseIds).toEqual(['case-one', 'case-two'])
+    expect(progress.some((event) => event.context?.hostId === 'codex' && event.context.epochIndex === 1 && event.context.threadGeneration === 1)).toBe(true)
+    expect(progress.some((event) => event.context?.hostId === 'codex' && event.context.epochIndex === 2 && event.context.threadGeneration === 2)).toBe(true)
     const recordsDirectory = resolve(directory, 'run', '.agent-private', 'case-results')
     expect((await readFile(resolve(recordsDirectory, 'does-not-exist'), 'utf8').catch(() => '')).length).toBe(0)
     expect((await readFile(resolve(directory, 'run', '.agent-private', 'execution-epochs', 'epoch-0001.result.json'), 'utf8')).length).toBeGreaterThan(0)

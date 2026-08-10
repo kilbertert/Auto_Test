@@ -688,6 +688,7 @@ export async function runAgentTest(
     throw new Error(`Resume agent host does not match the original run: ${state.agentHost} -> ${host.id}`)
   }
   const progress = new AgentTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
+  progress.setContext({ hostId: host.id })
   state = updateCodexTestState(state, { agentHost: host.id })
   await writePrivateJson(statePath, state)
   const redactionSecrets = secretValues(options.secrets)
@@ -901,6 +902,7 @@ export async function runAgentTest(
         await redactAgentTextArtifact(deliveryPath, redactionSecrets)
       }
       await activateExecutionEpoch(workspace, epoch)
+      progress.setContext({ epochIndex: epoch.index + 1, epochTotal: epoch.total, threadGeneration: state.threadGeneration })
       const resumingEpoch = options.resume && state.activeEpoch?.id === epoch.id
       const initialEpochStage = resumingEpoch ? state.activeEpoch!.stage : 'executing'
       const storedEpochThreadId = resumingEpoch ? state.activeEpoch?.threadId ?? threadId : undefined
@@ -949,6 +951,7 @@ export async function runAgentTest(
         ...(thread.id ? { threadId: thread.id } : {}),
       })
       await writePrivateJson(statePath, state)
+      progress.setContext({ threadGeneration: state.threadGeneration })
       const receiptRecorder = await ExecutionReceiptRecorder.create(workspace.executionReceiptsPath, epoch.caseIds, epoch.id)
       const recordUsage = async (usage: CodexTurnUsage): Promise<void> => {
         epochUsage.inputTokens = usage.inputTokens
@@ -1041,7 +1044,8 @@ export async function runAgentTest(
           ...(thread.id ? { threadId: thread.id } : {}),
         })
         await writePrivateJson(statePath, state)
-        progress.report('warning', `已保留逻辑 Run、epoch 和 Mutation Ledger，并启动 thread generation ${state.threadGeneration} 恢复现场`)
+        progress.setContext({ threadGeneration: state.threadGeneration })
+        progress.report('warning', '已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复现场')
         return invokeEpochTurn(
           hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
         )
@@ -1067,7 +1071,7 @@ export async function runAgentTest(
       }
 
       if (initialEpochStage === 'executing') {
-        progress.report('stage', `正在执行 epoch ${epoch.index + 1}/${epoch.total}（${epoch.caseIds.length} 条，thread generation ${state.threadGeneration}）`)
+        progress.report('stage', `正在执行当前 epoch（${epoch.caseIds.length} 条）`)
         const input = resumingEpoch
           ? hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
           : hostInput(host, runtime, agentTestPrompt({
@@ -1202,7 +1206,7 @@ export async function runAgentTest(
         lastUsage: { ...epochUsage },
       })
       await writePrivateJson(statePath, state)
-      progress.report('stage', `epoch ${epoch.id} 已完成，累计 ${completedCaseIds.size}/${options.manifest.phases.length} 条`)
+      progress.report('stage', `当前 epoch 已完成，累计 ${completedCaseIds.size}/${options.manifest.phases.length} 条`)
 
       if (epoch.index < epochs.length - 1) {
         const checkpointPath = resolve(checkpointDirectory, `${epoch.id}.json`)
@@ -1220,7 +1224,7 @@ export async function runAgentTest(
           },
         })
         await writePrivateJson(statePath, state)
-        progress.report('stage', `正在保存 ${epoch.id} 的 AgentHost 工作记忆 checkpoint`)
+        progress.report('stage', '正在保存当前 epoch 的 AgentHost 工作记忆 checkpoint')
         await runEpochTurn(hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []))
         const { activeEpoch: _checkpointedEpoch, ...checkpointedState } = state
         state = updateCodexTestState(checkpointedState, { stage: 'executing', checkpointPath })
