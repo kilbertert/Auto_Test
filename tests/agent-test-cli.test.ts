@@ -65,7 +65,8 @@ describe('Codex agent CLI', () => {
     expect(options.slowMo).toBe(50)
     expect(options.caseLimit).toBe(12)
     expect(options.testDataAccess).toBe('direct')
-    expect(options.outputDirectory).toMatch(/artifacts[\\/]runs[\\/].*cases-/)
+    expect(options.outputDirectory.startsWith(defaultRunRoot())).toBe(true)
+    expect(options.outputDirectory.slice(defaultRunRoot().length)).toMatch(/[\\/].*cases-/)
   })
 
   it('rejects conflicting browser modes and invalid numeric limits', () => {
