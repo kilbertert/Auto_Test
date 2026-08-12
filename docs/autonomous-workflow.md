@@ -11,7 +11,7 @@ Run 的终态只有：
 - `blocked`：输入、环境、权限、恢复状态或基础设施阻止完成；
 - `failed`：未被归类为可恢复阻断的框架异常。
 
-每个非通过 case 必须有且只有一个 `failureSource`：`product`、`agent_execution`、`input`、`environment` 或 `infrastructure`。环境阻断必须引用同一 case 的已记录环境需求和证据；Runner 不从摘要文字猜测分类。
+每个非通过 case 必须有且只有一个 `failureSource`：`product`、`agent_execution`、`input`、`environment` 或 `infrastructure`。环境阻断必须引用同一 case 的已记录环境需求和证据；Runner 不从摘要文字猜测分类。运行中的 Provider、AgentHost、浏览器、MCP 或网络异常属于独立的 `runInterruption` 事件：它说明本轮为何中断，但不能替代或覆盖已经保存的逐 case 业务结论。
 
 ## 自适应 Epoch Runtime
 
@@ -57,7 +57,7 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 ## 恢复契约
 
-`codex-agent.state.json` 使用 `version: "2.0"`，保存 `completedCaseIds`、`threadGeneration`、`activeEpoch`、`checkpointPath`、无密钥的 `sessionBindingFingerprint` 和最近一次 `turn.completed.usage`。旧版 `single_thread/case_windows`、`activeBatch`、`completedBatchIds` 和 `case-batches` 状态不再兼容；恢复旧状态会 fail closed，要求新建 Run。
+`codex-agent.state.json` 使用 `version: "2.0"`，保存 `completedCaseIds`、`threadGeneration`、`activeEpoch`、`checkpointPath`、无密钥的 `sessionBindingFingerprint`、最近一次 `turn.completed.usage`，以及可选的 `runInterruption`（稳定代码、发生阶段、人类摘要、恢复动作和时间）。旧版 `single_thread/case_windows`、`activeBatch`、`completedBatchIds` 和 `case-batches` 状态不再兼容；恢复旧状态会 fail closed，要求新建 Run。`--resume` 开始时会清除旧中断事件，避免已恢复的 Provider 故障继续污染新结果。
 
 恢复流程：
 
@@ -73,4 +73,6 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 ## 结果边界
 
-最终 `codex-agent.result.json` 是结构化权威结果，`agent-workspace/case-results.json` 是给恢复和交付使用的版本化 artifact，Excel 结果文件是同一事实的确定性投影。没有真实故障案例时，fixture、模型调用、合成数据和自适应调度测试只能证明框架行为，不能写成业务准确率或生产诊断准确率验收。
+最终 `codex-agent.result.json` 是逐 case 业务结论的结构化权威结果，`codex-agent.state.json.runInterruption` 是运行中断事实，`codex-agent.events.jsonl` 是脱敏技术事件流；Windows 控制台只确定性投影这三层事实，不另行裁决。`agent-workspace/case-results.json` 是给恢复和交付使用的版本化 artifact，Excel 结果文件是同一 case 事实的确定性投影。没有真实故障案例时，fixture、模型调用、合成数据和自适应调度测试只能证明框架行为，不能写成业务准确率或生产诊断准确率验收。
+
+该分层借鉴 [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9457) 对稳定问题类型、短摘要和实例细节的分离，以及 [OpenTelemetry Logs Data Model](https://opentelemetry.io/docs/specs/otel/logs/data-model/) 对事件正文、属性和原始记录的分离。Auto-Test 不是 HTTP Problem Details API 或 OpenTelemetry exporter：这里只映射设计语义，分别使用稳定 `runInterruption.code`、人类可读摘要、逐 case 事实和按时间排序的脱敏事件流，并由测试验证它们不会互相覆盖。
