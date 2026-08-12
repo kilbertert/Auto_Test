@@ -22,7 +22,17 @@ import { AgentTestProgressReporter, type AgentTestProgressSink } from './progres
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { agentTestStructuredOutputSchema, enforceMutationLedger, parseAgentTestCandidate } from './result.js'
 import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
-import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt, CodexTestMutationLedgerEntry } from './types.js'
+import type {
+  CodexTestAgentResult,
+  CodexTestAgentState,
+  CodexTestCaseResult,
+  CodexTestEnvironmentRequirement,
+  CodexTestExecutionReceipt,
+  CodexTestFailureKind,
+  CodexTestMutationLedgerEntry,
+  CodexTestRunInterruptionCode,
+  CodexTestRunInterruptionStage,
+} from './types.js'
 import { prepareAgentWorkspace, type AgentWorkspace } from './workspace.js'
 
 export interface AgentTestOptions {
@@ -268,82 +278,193 @@ function isMutationLedgerViolation(message: string): boolean {
   return /mutation ledger is invalid|mutation ledger is not valid json/i.test(message)
 }
 
-function infrastructureBlockDetails(message: string): { reason: string; nextAction: string } {
+function infrastructureBlockDetails(message: string): {
+  code: CodexTestRunInterruptionCode
+  reason: string
+  nextAction: string
+} {
   if (/control mcp capability preflight/i.test(message)) {
     return {
+      code: 'mcp',
       reason: 'Control MCP 能力预检未观察到唯一且合规的 test_contract 调用。',
       nextAction: '检查本地 MCP 启动、Provider 的标准 function/SSE/工具结果协议和模型工具调用能力后，使用原结果目录继续上次测试。',
     }
   }
   if (/mutation ledger/i.test(message)) {
     return {
+      code: 'filesystem',
       reason: '本次 Agent 执行破坏了 Auto-Test 的 Mutation Ledger 交付制品，核心拒绝继续判定业务结果。',
       nextAction: '检查运行目录中的 Mutation Ledger 和 Agent 事件，修复宿主执行后使用原结果目录恢复；不要重复已发生的业务写入。',
     }
   }
   if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(message)) {
     return {
+      code: 'provider_capacity',
       reason: '当前执行 epoch 超出模型上下文或单次输出容量。',
       nextAction: '在模型 Profile 中登记准确的容量参数或切换到容量更大的模型后，使用原结果目录继续上次测试。',
     }
   }
   if (/at capacity|capacity|try a different model/i.test(message)) {
     return {
+      code: 'provider_capacity',
       reason: '当前模型供应商容量不足或所选模型暂时不可用。',
       nextAction: '使用 --model-profile 切换到另一个已注册的模型供应商后，使用原结果目录继续上次测试。',
     }
   }
   if (/usage limit|quota|credit|rate.?limit|\b429\b/i.test(message)) {
     return {
+      code: 'provider_rate_limited',
       reason: '模型服务额度不足或调用频率受限。',
       nextAction: '恢复或切换可用的模型 API 额度后，使用原结果目录继续上次测试。',
     }
   }
   if (/unauthorized|forbidden|\b401\b|\b403\b/i.test(message)) {
     return {
+      code: 'provider_authentication',
       reason: '模型或本地执行依赖的身份验证失败。',
       nextAction: '修复 Provider 或执行依赖的认证配置后，使用原结果目录继续上次测试。',
     }
   }
   if (/bad gateway|upstream|\b5\d\d\b/i.test(message)) {
     return {
+      code: 'provider_unavailable',
       reason: '模型服务或上游接口暂时不可用。',
       nextAction: '等待模型服务恢复后，使用原结果目录继续上次测试。',
     }
   }
   if (/chromium executable|spawn .*enoent/i.test(message)) {
     return {
+      code: 'browser',
       reason: '浏览器或本地执行程序未正确安装，或无法启动。',
       nextAction: '运行环境检查并修复 Chromium/AgentHost CLI 后，使用原结果目录继续上次测试。',
     }
   }
   if (/agent host|agenthost|omp (?:rpc|process|session|cli)|codex (?:cli|sdk|thread|process)|(?:rpc|process|session|thread).*agenthost|不可用/i.test(message)) {
     return {
+      code: 'agent_host',
       reason: '选定的 AgentHost 或其本地可执行程序不可用。',
       nextAction: '安装或修复选定 AgentHost（Codex/OMP）后，使用原结果目录继续上次测试。',
     }
   }
   if (/mcp/i.test(message)) {
     return {
+      code: 'mcp',
       reason: '浏览器控制服务（MCP）暂时不可用。',
       nextAction: '恢复 MCP 或重启 Auto-Test 运行依赖后，使用原结果目录继续上次测试。',
     }
   }
   if (/no final response/i.test(message)) {
     return {
+      code: 'agent_host',
       reason: 'AgentHost 本轮没有返回完整执行结果。',
       nextAction: '使用原结果目录继续同一 AgentHost 线程，不要重复已验证的业务写入。',
     }
   }
   if (/reconnect|timed? out|timeout|connection|network|dns|certificate|tls/i.test(message)) {
     return {
+      code: 'network',
       reason: '模型、浏览器或本地网络连接中断。',
       nextAction: '恢复网络和运行依赖后，使用原结果目录继续上次测试。',
     }
   }
   return {
+    code: 'unknown',
     reason: 'Auto-Test 的执行依赖出现异常，测试尚未完成。',
     nextAction: '查看运行诊断并修复执行依赖后，使用原结果目录继续上次测试。',
+  }
+}
+
+function interruptionStage(state: CodexTestAgentState): CodexTestRunInterruptionStage {
+  if (state.stage === 'preparing') return 'preparation'
+  if (state.activeEpoch?.stage === 'finalizing' || state.activeEpoch?.stage === 'checkpointing' || state.stage === 'finalizing') return 'finalization'
+  if (state.stage === 'executing') return 'execution'
+  if (state.stage === 'completed') return 'delivery'
+  return 'unknown'
+}
+
+function environmentRecoveryActions(conditions: string[]): string[] {
+  return conditions.map((condition) => `补充环境前置条件：${condition}，然后使用原结果目录继续上次测试。`)
+}
+
+function blockedCaseResults(
+  manifest: WorkflowIntakeManifest,
+  fallback: {
+    summary: string
+    failureSource: 'infrastructure' | 'agent_execution'
+    failureKind: 'execution'
+    evidenceDescription: string
+  },
+  environmentRequirements: CodexTestEnvironmentRequirement[],
+  recordedCases: CodexTestCaseResult[],
+): {
+  cases: CodexTestCaseResult[]
+  environmentBlockers: string[]
+  blockers: string[]
+  productDefects: string[]
+} {
+  const recordedById = new Map(recordedCases.map((item) => [item.caseId, item]))
+  const pendingRequirements = environmentRequirements.filter((item) => item.status === 'pending' && item.evidence.length > 0)
+  const requirementsByCase = new Map<string, CodexTestEnvironmentRequirement[]>()
+  for (const requirement of pendingRequirements) {
+    for (const caseId of requirement.caseIds) {
+      const current = requirementsByCase.get(caseId) ?? []
+      current.push(requirement)
+      requirementsByCase.set(caseId, current)
+    }
+  }
+  const environmentFailureKind = (kind: CodexTestEnvironmentRequirement['kind']): CodexTestFailureKind => {
+    if (kind === 'authentication') return 'authentication'
+    if (kind === 'test_data') return 'data'
+    return 'environment'
+  }
+  const cases = manifest.phases.map((phase) => {
+    const recorded = recordedById.get(phase.id)
+    if (recorded) {
+      if (recorded.failureSource !== 'environment') return recorded
+      const recordedRequirementIds = new Set(recorded.environmentRequirementIds ?? [])
+      const stillPending = pendingRequirements.some((item) => (
+        item.caseIds.includes(phase.id) && recordedRequirementIds.has(item.id)
+      ))
+      if (stillPending) return recorded
+    }
+    const requirements = requirementsByCase.get(phase.id) ?? []
+    if (requirements.length > 0) {
+      const primary = requirements[0]!
+      return {
+        caseId: phase.id,
+        title: phase.title,
+        outcome: 'blocked' as const,
+        summary: primary.condition,
+        failureSource: 'environment' as const,
+        failureKind: environmentFailureKind(primary.kind),
+        environmentRequirementIds: requirements.map((item) => item.id),
+        evidence: requirements.flatMap((item) => item.evidence.map((path) => ({
+          kind: 'observation' as const,
+          path,
+          description: `已记录环境前置条件：${item.condition}`,
+        }))),
+      }
+    }
+    return {
+      caseId: phase.id,
+      title: phase.title,
+      outcome: 'blocked' as const,
+      summary: fallback.summary,
+      failureSource: fallback.failureSource,
+      failureKind: fallback.failureKind,
+      evidence: [{ kind: 'observation' as const, description: fallback.evidenceDescription }],
+    }
+  })
+  const representedRequirements = new Set(cases
+    .filter((item) => item.failureSource === 'environment')
+    .flatMap((item) => item.environmentRequirementIds ?? []))
+  return {
+    cases,
+    environmentBlockers: [...new Set(pendingRequirements
+      .filter((item) => representedRequirements.has(item.id))
+      .map((item) => item.condition))],
+    blockers: [...new Set(cases.filter((item) => item.outcome === 'blocked').map((item) => item.summary))].slice(0, 50),
+    productDefects: [...new Set(cases.filter((item) => item.outcome === 'product_failed').map((item) => item.summary))].slice(0, 50),
   }
 }
 
@@ -353,30 +474,35 @@ function blockedResult(
   message: string,
   ledger: CodexTestMutationLedgerEntry[],
   environmentRequirements: CodexTestEnvironmentRequirement[] = [],
+  recordedCases: CodexTestCaseResult[] = [],
 ): CodexTestAgentResult {
   const details = infrastructureBlockDetails(message)
+  const { cases, environmentBlockers, blockers, productDefects } = blockedCaseResults(manifest, {
+    summary: details.reason,
+    failureSource: 'infrastructure',
+    failureKind: 'execution',
+    evidenceDescription: 'Execution dependency failure recorded in codex-agent.events.jsonl.',
+  }, environmentRequirements, recordedCases)
   const result: CodexTestAgentResult = {
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
     outcome: 'blocked',
-    summary: details.reason,
+    summary: environmentBlockers.length > 0
+      ? '测试未完成：一个或多个用例存在已记录但尚未满足的环境前置条件。'
+      : details.reason,
     startedAt: state.startedAt,
     finishedAt: new Date().toISOString(),
-    cases: manifest.phases.map((phase) => ({
-      caseId: phase.id,
-      title: phase.title,
-      outcome: 'blocked',
-      summary: details.reason,
-      failureSource: 'infrastructure',
-      failureKind: 'execution',
-      evidence: [{ kind: 'observation', description: 'Execution dependency failure recorded in codex-agent.events.jsonl.' }],
-    })),
+    cases,
     mutations: [],
     environmentRequirements,
-    blockers: [details.reason],
-    productDefects: [],
-    nextActions: [details.nextAction],
+    // Case-scoped environment observations are user-facing causes. The
+    // provider interruption remains a separate run event on the state.
+    blockers: blockers.length > 0 ? blockers : [details.reason],
+    productDefects,
+    nextActions: environmentBlockers.length > 0
+      ? environmentRecoveryActions(environmentBlockers)
+      : [details.nextAction],
   }
   return enforceMutationLedger(result, ledger)
 }
@@ -387,7 +513,14 @@ function deliveryBlockedResult(
   message: string,
   ledger: CodexTestMutationLedgerEntry[],
   environmentRequirements: CodexTestEnvironmentRequirement[],
+  recordedCases: CodexTestCaseResult[] = [],
 ): CodexTestAgentResult {
+  const { cases, environmentBlockers, blockers, productDefects } = blockedCaseResults(manifest, {
+    summary: message,
+    failureSource: 'agent_execution',
+    failureKind: 'execution',
+    evidenceDescription: 'Structured delivery validation did not complete.',
+  }, environmentRequirements, recordedCases)
   return enforceMutationLedger({
     version: '1.0',
     workflowId: manifest.workflowId,
@@ -396,20 +529,14 @@ function deliveryBlockedResult(
     summary: 'The selected AgentHost completed execution but did not produce a complete evidence-based delivery result.',
     startedAt: state.startedAt,
     finishedAt: new Date().toISOString(),
-    cases: manifest.phases.map((phase) => ({
-      caseId: phase.id,
-      title: phase.title,
-      outcome: 'blocked',
-      summary: message,
-      failureSource: 'agent_execution',
-      failureKind: 'execution',
-      evidence: [{ kind: 'observation', description: 'Structured delivery validation did not complete.' }],
-    })),
+    cases,
     mutations: [],
     environmentRequirements,
-    blockers: [message],
-    productDefects: [],
-    nextActions: ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
+    blockers: blockers.length > 0 ? blockers : [message],
+    productDefects,
+    nextActions: environmentBlockers.length > 0
+      ? environmentRecoveryActions(environmentBlockers)
+      : ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
   }, ledger)
 }
 
@@ -643,7 +770,7 @@ export async function runAgentTest(
       throw new Error(`Completed ${state.outcome ?? 'terminal'} Codex test runs cannot be resumed`)
     }
     resumeThreadId = state.threadId
-    const { resultPath: _resultPath, outcome: _outcome, error: _error, ...unfinishedState } = state
+    const { resultPath: _resultPath, outcome: _outcome, error: _error, runInterruption: _runInterruption, ...unfinishedState } = state
     state = updateCodexTestState(unfinishedState, {
       status: 'running',
       stage: 'preparing',
@@ -662,6 +789,7 @@ export async function runAgentTest(
   let environmentRequirementsPath: string | undefined
   let executionReceiptsPath: string | undefined
   let activeThread: AgentHostSession | undefined
+  let runInterruption: CodexTestAgentState['runInterruption']
   const injectedHost = options.agentHost ?? dependencies.agentHost
   const requestedHostId = options.agentHostId ?? state.agentHost
   const selectedHostId = injectedHost?.id ?? requestedHostId ?? 'codex'
@@ -1142,6 +1270,16 @@ export async function runAgentTest(
         } catch (error) {
           const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
           deliveryProblems = [message]
+          if (isOperationalBlock(message, error)) {
+            const interruption = infrastructureBlockDetails(message)
+            runInterruption = {
+              code: interruption.code,
+              stage: interruptionStage(state),
+              summary: interruption.reason,
+              nextAction: interruption.nextAction,
+              occurredAt: new Date().toISOString(),
+            }
+          }
           if (isOperationalBlock(message, error) && !await access(deliveryPath).then(() => true, () => false)) throw error
           if (isOperationalBlock(message, error)) break
         }
@@ -1161,7 +1299,7 @@ export async function runAgentTest(
           const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts)
           epochResult = problems.length === 0
             ? enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), ledger)
-            : deliveryBlockedResult(scopedManifest, state, problems.join('; '), ledger, scopedRequirements)
+            : deliveryBlockedResult(scopedManifest, state, problems.join('; '), ledger, scopedRequirements, recovered.result.cases)
         } else {
           const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
           epochResult = deliveryBlockedResult(scopedManifest, state, deliveryProblems.join('; ') || recovered.problems.join('; ') || `epoch ${epoch.id} 没有可验证的结构化交付`, ledger, environmentRequirementsForCases(requirements, epoch.caseIds))
@@ -1190,7 +1328,10 @@ export async function runAgentTest(
         const result = redactAgentJsonArtifact(enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger), redactionSecrets)
         await writePrivateJson(resultPath, result)
         await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
-        state = updateCodexTestState(state, { status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString() })
+        state = updateCodexTestState(state, {
+          status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
+          ...(runInterruption ? { runInterruption } : {}),
+        })
         await writePrivateJson(statePath, state)
         return { state, result }
       }
@@ -1244,7 +1385,14 @@ export async function runAgentTest(
       const problems = finalResultProblems(result, options.manifest, requirements, await readExecutionReceipts(workspace.executionReceiptsPath))
       if (problems.length > 0) throw new Error(`Adaptive epoch aggregation failed deterministic validation: ${problems.join('; ')}`)
     } catch (error) {
-      result = deliveryBlockedResult(options.manifest, state, error instanceof Error ? error.message : String(error), ledger, requirements)
+      result = deliveryBlockedResult(
+        options.manifest,
+        state,
+        error instanceof Error ? error.message : String(error),
+        ledger,
+        requirements,
+        records.map((record) => record.result),
+      )
     }
     result = redactAgentJsonArtifact(result, redactionSecrets)
     await writePrivateJson(resultPath, result)
@@ -1256,6 +1404,7 @@ export async function runAgentTest(
       resultPath,
       finishedAt: new Date().toISOString(),
       completedCaseIds: [...completedCaseIds],
+      ...(runInterruption ? { runInterruption } : {}),
       ...(threadId ? { threadId } : {}),
     })
     await writePrivateJson(statePath, state)
@@ -1277,15 +1426,32 @@ export async function runAgentTest(
       const environmentRequirements = environmentRequirementsPath
         ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
         : []
+      let recordedCases: CodexTestCaseResult[] = []
+      let caseStoreError: string | undefined
+      if (mutationLedgerPath) {
+        try {
+          recordedCases = (await readCaseResultRecords(caseResultDirectory(outputDirectory), options.manifest)).map((record) => record.result)
+        } catch (caseReadError) {
+          caseStoreError = redactAgentValue(caseReadError instanceof Error ? caseReadError.message : String(caseReadError), redactionSecrets)
+        }
+      }
       const result = redactAgentJsonArtifact(
-        ledgerError || isMutationLedgerViolation(message)
-          ? deliveryBlockedResult(options.manifest, state, ledgerError ?? message, ledger, environmentRequirements)
-          : blockedResult(options.manifest, state, message, ledger, environmentRequirements),
+        ledgerError || caseStoreError || isMutationLedgerViolation(message)
+          ? deliveryBlockedResult(options.manifest, state, ledgerError ?? caseStoreError ?? message, ledger, environmentRequirements, recordedCases)
+          : blockedResult(options.manifest, state, message, ledger, environmentRequirements, recordedCases),
         redactionSecrets,
       )
       await writePrivateJson(resultPath, result)
+      const interruption = infrastructureBlockDetails(message)
       state = updateCodexTestState(state, {
         status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
+        runInterruption: {
+          code: interruption.code,
+          stage: interruptionStage(state),
+          summary: interruption.reason,
+          nextAction: interruption.nextAction,
+          occurredAt: new Date().toISOString(),
+        },
         ...(activeThread?.id ? { threadId: activeThread.id } : {}),
       })
       await writePrivateJson(statePath, state)

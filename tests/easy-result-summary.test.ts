@@ -145,10 +145,97 @@ describe('friendly autonomous result summary', () => {
       expect(summary.lines).toContain('原因类别：环境阻断（登录或认证条件不可用）')
       expect(summary.lines).toContain('直接原因：当前账号缺少审批权限。')
       expect(summary.lines.join(' ')).not.toContain('should-not-be-printed')
-      expect(summary.lines).toContain('直接原因：密码: <redacted>')
+      expect(summary.lines).not.toContain('直接原因：密码: <redacted>')
       expect(summary.lines).toContain('需要补充的环境：https://admin.example.test：需要审批权限')
       expect(summary.lines).toContain('完成情况：1/2 个用例已验证通过。')
       expect(summary.lines).toContain('业务残留：1 项 Mutation 仍为 pending，继续前必须先核对或恢复。')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('shows a case cause and a provider interruption as separate facts', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-causal-summary-'))
+    try {
+      const resultPath = resolve(directory, 'codex-agent.result.json')
+      const statePath = resolve(directory, 'codex-agent.state.json')
+      const condition = '需要可控制外部测试设备的连接状态。'
+      const result: CodexTestAgentResult = {
+        version: '1.0', workflowId: 'device-state', sourceSha256: 'f'.repeat(64), outcome: 'blocked',
+        summary: '测试存在尚未满足的环境前置条件。', startedAt: '2026-08-12T00:00:00.000Z', finishedAt: '2026-08-12T00:01:00.000Z',
+        cases: [{
+          caseId: 'connector-state', title: '设置连接状态', outcome: 'blocked', summary: condition,
+          failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['physical-control'],
+          evidence: [{ kind: 'observation', path: 'evidence/device-state.png', description: '页面没有状态控制入口。' }],
+        }],
+        mutations: [],
+        environmentRequirements: [{
+          id: 'physical-control', caseIds: ['connector-state'], kind: 'physical', origin: 'https://app.example.test',
+          condition, evidence: ['evidence/device-state.png'], status: 'pending', requestedAt: '2026-08-12T00:00:30.000Z',
+        }],
+        blockers: [condition], productDefects: [],
+        nextActions: [`补充环境前置条件：${condition}，然后使用原结果目录继续上次测试。`],
+      }
+      const agentState: CodexTestAgentState = {
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'device-state', sourceSha256: 'f'.repeat(64),
+        startedAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:01:00.000Z', threadGeneration: 1,
+        completedCaseIds: [], outcome: 'blocked', resultPath,
+        runInterruption: {
+          code: 'provider_rate_limited', stage: 'finalization', summary: '模型服务额度不足或调用频率受限。',
+          nextAction: '恢复或切换可用的模型 API 额度后，使用原结果目录继续上次测试。', occurredAt: '2026-08-12T00:00:55.000Z',
+        },
+      }
+      await writeFile(resolve(directory, 'codex-agent.events.jsonl'), '{}\n')
+      await writeFile(resultPath, JSON.stringify(result))
+      await writeFile(statePath, JSON.stringify(agentState))
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.lines).toContain(`直接原因：${condition}`)
+      expect(summary.lines).toContain('运行中断事件 [provider_rate_limited]：结果收尾阶段；模型服务额度不足或调用频率受限。')
+      expect(summary.lines).toContain(`建议操作：补充环境前置条件：${condition}，然后使用原结果目录继续上次测试。`)
+      expect(summary.lines).not.toContain('直接原因：模型服务额度不足或调用频率受限。')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('does not let unfinished infrastructure cases hide a confirmed environment cause', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-mixed-causal-summary-'))
+    try {
+      const resultPath = resolve(directory, 'codex-agent.result.json')
+      const statePath = resolve(directory, 'codex-agent.state.json')
+      const result: CodexTestAgentResult = {
+        version: '1.0', workflowId: 'mixed-cause', sourceSha256: '1'.repeat(64), outcome: 'blocked', summary: '部分用例未完成。',
+        startedAt: '2026-08-12T00:00:00.000Z', finishedAt: '2026-08-12T00:01:00.000Z',
+        cases: [
+          {
+            caseId: 'environment-case', title: '设备状态', outcome: 'blocked', summary: '缺少可控测试设备。',
+            failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['device-control'],
+            evidence: [{ kind: 'observation', description: '页面没有状态控制。' }],
+          },
+          {
+            caseId: 'unfinished-case', title: '后续筛选', outcome: 'blocked', summary: '模型服务额度不足或调用频率受限。',
+            failureSource: 'infrastructure', failureKind: 'execution', evidence: [{ kind: 'observation', description: 'Provider interruption.' }],
+          },
+        ],
+        mutations: [], environmentRequirements: [], blockers: ['缺少可控测试设备。', '模型服务额度不足或调用频率受限。'],
+        productDefects: [], nextActions: [],
+      }
+      const agentState: CodexTestAgentState = {
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'mixed-cause', sourceSha256: '1'.repeat(64),
+        startedAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:01:00.000Z', threadGeneration: 1,
+        completedCaseIds: [], outcome: 'blocked', resultPath,
+      }
+      await writeFile(resultPath, JSON.stringify(result))
+      await writeFile(statePath, JSON.stringify(agentState))
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.lines).toContain('失败位置：设备状态')
+      expect(summary.lines).toContain('原因类别：环境阻断（测试环境条件不可用）')
+      expect(summary.lines).toContain('直接原因：缺少可控测试设备。')
+      expect(summary.lines).not.toContain('直接原因：模型服务额度不足或调用频率受限。')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -209,6 +296,8 @@ describe('friendly autonomous result summary', () => {
       expect(summary.lines).toContain('用例完成情况：通过 0，产品不符预期 1，暂时阻断 1。')
       expect(summary.lines).toContain('产品或业务结果不符合预期：1 条。Expected value differs.')
       expect(summary.lines).toContain('测试环境、权限或测试数据不可用：1 条。Required test data is absent.')
+      expect(summary.lines).toContain('直接原因：Required test data is absent.')
+      expect(summary.lines).not.toContain('直接原因：Expected value differs.')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

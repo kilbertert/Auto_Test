@@ -2,6 +2,18 @@ export type CodexTestOutcome = 'passed' | 'product_failed' | 'blocked'
 export type CodexTestRisk = 'read' | 'write' | 'destructive'
 export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input' | 'infrastructure'
 export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution'
+export type CodexTestRunInterruptionCode =
+  | 'provider_capacity'
+  | 'provider_rate_limited'
+  | 'provider_authentication'
+  | 'provider_unavailable'
+  | 'agent_host'
+  | 'browser'
+  | 'mcp'
+  | 'network'
+  | 'filesystem'
+  | 'unknown'
+export type CodexTestRunInterruptionStage = 'preparation' | 'execution' | 'finalization' | 'delivery' | 'unknown'
 export type CodexTestEnvironmentRequirementKind = 'origin' | 'permission' | 'authentication' | 'test_data' | 'physical'
 export type CodexTestExecutionReceiptKind = 'interaction' | 'observation'
 
@@ -125,6 +137,14 @@ export interface CodexTestAgentState {
   resultWorkbookPath?: string
   outcome?: CodexTestOutcome
   error?: string
+  /** Runner-owned operational event; never substitutes for a case verdict. */
+  runInterruption?: {
+    code: CodexTestRunInterruptionCode
+    stage: CodexTestRunInterruptionStage
+    summary: string
+    nextAction: string
+    occurredAt: string
+  }
   completedCaseIds: string[]
   epochCount?: number
   activeEpoch?: {
@@ -177,6 +197,8 @@ export type AgentTestCaseResult = CodexTestCaseResult
 export type AgentTestEvidence = CodexTestEvidence
 export type AgentTestFailureSource = CodexTestFailureSource
 export type AgentTestFailureKind = CodexTestFailureKind
+export type AgentTestRunInterruptionCode = CodexTestRunInterruptionCode
+export type AgentTestRunInterruptionStage = CodexTestRunInterruptionStage
 export type AgentTestEnvironmentRequirement = CodexTestEnvironmentRequirement
 export type AgentTestExecutionReceipt = CodexTestExecutionReceipt
 export type AgentTestMutationLedgerEntry = CodexTestMutationLedgerEntry

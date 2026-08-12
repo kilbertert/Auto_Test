@@ -249,6 +249,67 @@ describe('adaptive Codex epochs', () => {
     expect(await readFile(firstRecordPath, 'utf8')).toBe(firstRecordBefore)
   })
 
+  it('keeps case-scoped environment facts separate from a later provider interruption', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-diagnostic-causality-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const condition = '需要可控制测试设备状态'
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        let turn = 0
+        return {
+          id: 'thread-diagnostic',
+          runStreamed: async (_input, options) => {
+            turn += 1
+            if (turn === 1) {
+              await mkdir(resolve(outputDirectory, 'agent-workspace', 'evidence'), { recursive: true })
+              await writeFile(resolve(outputDirectory, 'agent-workspace', 'evidence', 'device-state.png'), 'fixture')
+              await writeFile(resolve(outputDirectory, '.agent-private', 'environment-requirements.json'), JSON.stringify([{
+                id: 'environment-physical-case-one', caseIds: ['case-one'], kind: 'physical',
+                origin: 'https://tasks.example.test', condition,
+                evidence: ['evidence/device-state.png'], status: 'pending', requestedAt: '2026-08-12T00:00:00.000Z',
+              }]))
+              return eventStream('environment prerequisite recorded', 'thread-diagnostic')
+            }
+            if (options?.outputSchema) {
+              return failedEventStream('provider quota exceeded', 'thread-diagnostic', JSON.stringify({
+                version: '1.0', kind: 'case-results', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+                generatedAt: '2026-08-12T00:00:30.000Z',
+                cases: [{
+                  caseId: 'case-one', title: '第一条', outcome: 'blocked', summary: condition,
+                  failureSource: 'environment', failureKind: 'environment',
+                  environmentRequirementIds: ['environment-physical-case-one'], evidencePaths: ['evidence/device-state.png'],
+                }],
+                mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+              }))
+            }
+            return eventStream('unreachable', 'thread-diagnostic')
+          },
+        }
+      },
+    })
+
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({
+      caseId: 'case-one', outcome: 'blocked', failureSource: 'environment', failureKind: 'environment',
+      environmentRequirementIds: ['environment-physical-case-one'], summary: condition,
+    })
+    expect(run.result?.blockers).toEqual([condition])
+    expect(run.result?.productDefects).toEqual([])
+    expect(run.result?.nextActions).toEqual([`补充环境前置条件：${condition}，然后使用原结果目录继续上次测试。`])
+    expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited', stage: 'finalization' })
+  })
+
   it('rotates one incompatible physical session while preserving the logical run and pending Ledger', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rotation-'))
     directories.push(directory)

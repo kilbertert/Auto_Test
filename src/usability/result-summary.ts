@@ -68,16 +68,26 @@ function failedCases(result: CodexTestAgentResult): CodexTestCaseResult[] {
   return result.cases.filter((item) => item.outcome !== 'passed')
 }
 
+function terminalCauseCases(result: CodexTestAgentResult): CodexTestCaseResult[] {
+  const failures = failedCases(result)
+  const matchingOutcome = failures.filter((item) => item.outcome === result.outcome)
+  const scoped = matchingOutcome.length > 0 ? matchingOutcome : failures
+  const nonInfrastructure = scoped.filter((item) => item.failureSource !== 'infrastructure')
+  return nonInfrastructure.length > 0 ? nonInfrastructure : scoped
+}
+
 function resultFailureSources(result: CodexTestAgentResult): CodexTestFailureSource[] {
-  const sources = failedCases(result).flatMap((item) => item.failureSource ? [item.failureSource] : [])
+  const sources = terminalCauseCases(result).flatMap((item) => item.failureSource ? [item.failureSource] : [])
   if (sources.length === 0 && result.outcome === 'product_failed') sources.push('product')
   if (sources.length === 0 && result.environmentRequirements.some((item) => item.status === 'pending')) sources.push('environment')
   return [...new Set(sources)]
 }
 
 function failureCategory(result: CodexTestAgentResult): string {
-  const failures = failedCases(result)
-  const sources = resultFailureSources(result)
+  const failures = terminalCauseCases(result)
+  const sources = [...new Set(failures.flatMap((item) => item.failureSource ? [item.failureSource] : []))]
+  if (sources.length === 0 && result.outcome === 'product_failed') sources.push('product')
+  if (sources.length === 0 && result.environmentRequirements.some((item) => item.status === 'pending')) sources.push('environment')
   const sourceLabel = sources.length > 0
     ? sources.map((source) => failureSourceLabels[source]).join('、')
     : '未分类阻断'
@@ -89,7 +99,7 @@ function failureCategory(result: CodexTestAgentResult): string {
 }
 
 function failureLocation(result: CodexTestAgentResult): string {
-  const failures = failedCases(result)
+  const failures = terminalCauseCases(result)
   if (failures.length === 0) {
     return result.environmentRequirements.some((item) => item.status === 'pending') ? '环境准备' : '测试执行'
   }
@@ -122,6 +132,13 @@ function defaultNextAction(result: CodexTestAgentResult): string {
   if (sources.includes('agent_execution')) return '使用原结果目录继续同一 AgentHost 线程，不要重复已验证的业务写入。'
   if (sources.includes('product')) return '修复产品问题或确认预期结果后，使用相同输入重新验收。'
   return '查看详细结果和运行诊断后处理。'
+}
+
+function blockedDirectReasons(result: CodexTestAgentResult): string[] {
+  const failures = terminalCauseCases(result)
+  return failures.length > 0
+    ? failures.map((item) => item.summary)
+    : result.blockers.length > 0 ? result.blockers : [result.summary]
 }
 
 async function readJson<T>(path: string): Promise<T> {
@@ -165,6 +182,21 @@ function agentRunDetails(result: CodexTestAgentResult, state?: CodexTestAgentSta
   return lines
 }
 
+function runInterruptionLines(state?: CodexTestAgentState): string[] {
+  if (!state?.runInterruption) return []
+  const stage = ({
+    preparation: '准备阶段',
+    execution: '业务执行阶段',
+    finalization: '结果收尾阶段',
+    delivery: '交付阶段',
+    unknown: '未知阶段',
+  } as const)[state.runInterruption.stage]
+  return [
+    `运行中断事件 [${state.runInterruption.code}]：${stage}；${cleanLine(state.runInterruption.summary)}`,
+    `中断恢复：${cleanLine(state.runInterruption.nextAction)}`,
+  ]
+}
+
 async function codexAgentSummary(statePath: string, state: CodexTestAgentState): Promise<FriendlyRunSummary> {
   const result = state.resultPath
     ? await readJson<CodexTestAgentResult>(state.resultPath).catch(() => undefined)
@@ -190,6 +222,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
         ...labeledLines('直接原因', result.productDefects.length > 0 ? result.productDefects : [result.summary]),
+        ...runInterruptionLines(state),
         ...labeledLines('建议操作', result.nextActions.length > 0 ? result.nextActions : [defaultNextAction(result)]),
         `完成情况：${result.cases.filter((item) => item.outcome === 'passed').length}/${result.cases.length} 个用例已验证通过。`,
         mutationStatusLine(result.mutations),
@@ -206,10 +239,11 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
         ...agentRunDetails(result, state),
         `失败位置：${failureLocation(result)}`,
         `原因类别：${failureCategory(result)}`,
-        ...labeledLines('直接原因', result.blockers.length > 0 ? result.blockers : [result.summary]),
+        ...labeledLines('直接原因', blockedDirectReasons(result)),
         ...labeledLines('需要补充的环境', result.environmentRequirements
           .filter((item) => item.status === 'pending')
           .map((item) => `${item.origin ?? item.kind}：${item.condition}`)),
+        ...runInterruptionLines(state),
         ...labeledLines('同时发现的产品问题', result.productDefects),
         ...labeledLines('建议操作', result.nextActions.length > 0 ? result.nextActions : [defaultNextAction(result)]),
         `完成情况：${result.cases.filter((item) => item.outcome === 'passed').length}/${result.cases.length} 个用例已验证通过。`,
