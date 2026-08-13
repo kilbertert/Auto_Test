@@ -8,7 +8,7 @@
 
 ## 生成快速回归 spec
 
-成功运行后可用 `npm run compile:replay -- --events <Run>\codex-agent.events.jsonl --result <Run>\codex-agent.result.json --output artifacts\compiled\regression.spec.ts` 生成回归脚本和隔离 config，再执行命令打印的 `playwright test --config ...`。session ref、观察调用和 `browser_run_code_unsafe` 不会被重放。
+成功运行会自动在 `<Run>\agent-workspace\replay\` 生成逐 case Playwright spec、config 和 `replay-manifest.json`。只读 case 自动独立回放并标记 `verified`；写入或破坏性 case 只标记 `candidate`，必须在隔离回归数据上显式验证。session ref、探索性 `browser_run_code_unsafe` 和失败 attempt 不会进入最终脚本。
 
 ## 第一次使用
 

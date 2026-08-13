@@ -64,7 +64,7 @@ npm run agent:test -- \
 
 ## 从 MCP 轨迹生成 Playwright 回归脚本
 
-成功 run 可编译为确定性 spec：`npm run compile:replay -- --events <run>/codex-agent.events.jsonl --result <run>/codex-agent.result.json --output artifacts/compiled/regression.spec.ts`。命令同时生成隔离的 `regression.config.ts` 并打印可直接执行的 `playwright test --config ...` 命令。只编译 `passed` case 和 MCP 返回的标准 Playwright code；session ref、观察调用和 `browser_run_code_unsafe` 不会进入产物。秘密只生成 `process.env.AUTO_TEST_VALUE_*` 引用。该 spec 是探索成功后的回归资产，不替代首次探索。
+每个成功 Run 会自动在 `agent-workspace/replay/` 为 passed case 生成独立 Playwright spec、config 和 `replay-manifest.json`。Agent 可在探索后提交多个 case attempt；Core 只选择最后一个完整、无不确定工具且含断言的 attempt。只读 case 会在新 BrowserContext 中自动回放，成功后标记 `verified`；write/destructive case 只标记 `candidate`，避免自动重复业务副作用，需在隔离回归数据上显式验证。无法安全编译的 case 标记 `not_replayable`，不会篡改首次业务结果。`npm run compile:replay` 仍可用于历史 Run 的手工迁移。
 
 ## 核心约束
 

@@ -15,6 +15,8 @@ export interface CompiledMcpReplay {
   diagnostics: ReplayDiagnostic[]
 }
 
+interface ReplayAttempt { caseId: string; code: string[]; diagnostics: ReplayDiagnostic[]; complete: boolean }
+
 const ignoredTools = /(?:snapshot|screenshot|network_requests|console_messages|close)$/
 const unsafeTools = /(?:run_code|evaluate)/
 
@@ -42,16 +44,18 @@ function makeReplayable(code: string): string {
 }
 
 export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<string>): CompiledMcpReplay {
-  const cases = new Map<string, string[]>()
+  const attempts = new Map<string, ReplayAttempt[]>()
   const diagnostics: ReplayDiagnostic[] = []
   let activeCaseId: string | undefined
+  let activeAttempt: ReplayAttempt | undefined
   const hasCaseBoundaries = events.some((value) => {
     const event = normalizeAgentEvent(value)
     return event.type === 'tool_completed' && event.server === 'auto-test-control' && (event.tool === 'case_execution_begin' || event.tool === 'case_execution_end')
   })
   if (!hasCaseBoundaries && passedCaseIds && passedCaseIds.size === 1) {
     activeCaseId = [...passedCaseIds][0]
-    cases.set(activeCaseId!, [])
+    activeAttempt = { caseId: activeCaseId!, code: [], diagnostics: [], complete: true }
+    attempts.set(activeCaseId!, [activeAttempt])
   }
   else if (!hasCaseBoundaries && passedCaseIds && passedCaseIds.size > 1) diagnostics.push({ severity: 'error', code: 'case_boundaries_missing', message: 'Multiple passed cases require case_execution_begin/end attribution' })
 
@@ -61,34 +65,43 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
     if (event.server === 'auto-test-control' && event.tool === 'case_execution_begin') {
       const caseId = (event.arguments as { caseId?: unknown } | undefined)?.caseId
       activeCaseId = typeof caseId === 'string' ? caseId : undefined
-      if (activeCaseId && (!passedCaseIds || passedCaseIds.has(activeCaseId))) cases.set(activeCaseId, cases.get(activeCaseId) ?? [])
+      activeAttempt = activeCaseId && (!passedCaseIds || passedCaseIds.has(activeCaseId))
+        ? { caseId: activeCaseId, code: [], diagnostics: [], complete: false }
+        : undefined
+      if (activeAttempt) attempts.set(activeCaseId!, [...(attempts.get(activeCaseId!) ?? []), activeAttempt])
       continue
     }
     if (event.server === 'auto-test-control' && event.tool === 'case_execution_end') {
       const endedCaseId = (event.arguments as { caseId?: unknown } | undefined)?.caseId
-      if (activeCaseId && endedCaseId !== activeCaseId) diagnostics.push({ severity: 'error', code: 'case_boundary_mismatch', message: 'case_execution_end does not match the active case', caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      if (activeCaseId && endedCaseId !== activeCaseId) activeAttempt?.diagnostics.push({ severity: 'error', code: 'case_boundary_mismatch', message: 'case_execution_end does not match the active case', caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      else if (activeAttempt) activeAttempt.complete = true
       activeCaseId = undefined
+      activeAttempt = undefined
       continue
     }
     if (event.server !== 'playwright' || !event.tool?.startsWith('browser_') || ignoredTools.test(event.tool)) continue
     if (!activeCaseId || (passedCaseIds && !passedCaseIds.has(activeCaseId))) continue
     if (unsafeTools.test(event.tool)) {
-      diagnostics.push({ severity: 'error', code: 'unsafe_tool', message: `${event.tool} cannot be replayed deterministically`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      activeAttempt?.diagnostics.push({ severity: 'error', code: 'unsafe_tool', message: `${event.tool} cannot be replayed deterministically`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
       continue
     }
     const code = playwrightCode(resultText(event.result))
     if (!code) {
-      diagnostics.push({ severity: 'error', code: 'generated_code_missing', message: `${event.tool} did not return Playwright code`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      activeAttempt?.diagnostics.push({ severity: 'error', code: 'generated_code_missing', message: `${event.tool} did not return Playwright code`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
       continue
     }
-    cases.get(activeCaseId)!.push(makeReplayable(code))
+    activeAttempt?.code.push(makeReplayable(code))
   }
 
+  const cases = new Map<string, string[]>()
   for (const caseId of passedCaseIds ?? []) {
-    if (!cases.has(caseId)) diagnostics.push({ severity: 'error', code: 'case_events_missing', message: 'Passed case has no replayable execution block', caseId })
-  }
-  for (const [caseId, code] of cases) {
-    if (!code.some((line) => /\bexpect\s*\(/.test(line))) diagnostics.push({ severity: 'error', code: 'assertion_missing', message: 'Passed case has no replayable Playwright assertion', caseId })
+    const candidates = (attempts.get(caseId) ?? []).filter((attempt) => attempt.complete)
+    const selected = candidates.findLast((attempt) => attempt.diagnostics.length === 0 && attempt.code.some((line) => /\bexpect\s*\(/.test(line)))
+    if (selected) cases.set(caseId, selected.code)
+    else {
+      diagnostics.push(...(candidates.at(-1)?.diagnostics ?? []))
+      diagnostics.push({ severity: 'error', code: candidates.length ? 'replayable_attempt_missing' : 'case_events_missing', message: candidates.length ? 'Passed case has no complete replayable attempt with an assertion' : 'Passed case has no complete execution attempt', caseId })
+    }
   }
   if (diagnostics.some((item) => item.severity === 'error')) return { source: '', caseIds: [...cases.keys()], diagnostics }
 

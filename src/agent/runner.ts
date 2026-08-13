@@ -35,6 +35,7 @@ import type {
   CodexTestRunInterruptionStage,
 } from './types.js'
 import { prepareAgentWorkspace, type AgentWorkspace } from './workspace.js'
+import { generateReplayAssets } from './replay-assets.js'
 
 export interface AgentTestOptions {
   outputDirectory: string
@@ -1413,6 +1414,16 @@ export async function runAgentTest(
     result = redactAgentJsonArtifact(result, redactionSecrets)
     await writePrivateJson(resultPath, result)
     await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
+    try {
+      await generateReplayAssets({
+        outputDirectory, eventsPath, result, manifest: options.manifest,
+        storageStatePath: workspace.storageStatePath, initPagePath: workspace.initPagePath,
+        secretsPath: workspace.playwrightSecretsPath,
+        verifyReadOnly: true,
+      })
+    } catch (error) {
+      progress.report('warning', `Playwright 回归资产生成失败：${redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)}`)
+    }
     state = updateCodexTestState(state, {
       status: 'completed',
       stage: 'completed',

@@ -42,6 +42,8 @@ export interface AgentWorkspace {
   manifestPath: string
   playwrightConfigPath: string
   playwrightSecretsPath: string
+  storageStatePath: string
+  initPagePath: string
   controlConfigPath: string
   mutationLedgerPath: string
   environmentRequirementsPath: string
@@ -377,6 +379,8 @@ export async function prepareAgentWorkspace(options: {
     manifestPath,
     playwrightConfigPath,
     playwrightSecretsPath,
+    storageStatePath,
+    initPagePath,
     controlConfigPath,
     mutationLedgerPath,
     environmentRequirementsPath,

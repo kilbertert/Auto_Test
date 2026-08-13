@@ -12,7 +12,7 @@
 
 ## 快速回归脚本
 
-探索成功后可将同一运行的 MCP 轨迹编译为确定性 spec，再使用 `playwright test` 回归。编译器只使用 `passed` case 和标准 Playwright code，不从脱敏事件恢复密码；无法确定性翻译的调用会使编译失败。
+探索成功后应自动出现 `agent-workspace\replay\replay-manifest.json`。验收只读 case 时必须确认状态为 `verified`、verification exitCode 为 0，并且生成 spec 来自最后一个完整 case attempt；`candidate` 只表示脚本已生成，不代表已回放通过。写入或破坏性 case 不自动重复执行，需准备隔离回归数据后单独验证。
 
 ## 1. 验收前准备
 
