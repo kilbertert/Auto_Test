@@ -159,6 +159,8 @@ oracle 只记录已独立验证的 outcome 和必要失败分类，不从待评�
 
 固定回归任务集由 `src/eval/eval-suite.ts` 的 `canonicalEvalSuite()` 声明为版本化清单（canary、本地 fixture、Windows 验收、中断恢复），并保证八类失败模式每类至少被一个任务覆盖。AgentHost、Prompt、Model Profile 或 checkpoint 变更时，用这套固定任务集比较业务 outcome、证据完整性、Ledger 终态、失败来源、token/时间以及重试恢复次数；比较仍通过 `agent:compare` 完成，不引入新服务。
 
+`npm run eval:suite -- --run <baseline-run> --run <candidate-run> ...` 是这份任务集的薄聚合入口：它按 `canonicalEvalSuite()` 逐个跑 `agent:compare` 并汇总门禁结果。第一个 `--run` 是 baseline，其后是候选；任一 `requiresOracleMatch` 任务有候选未完整命中 oracle 即返回非零。oracle 是业务专属 ground truth（和真实 xlsx 一样私有），放在 gitignored 的 `evals/` 下、按 `templates/eval-oracle.example.json` 的格式人工编写；未编写的任务会被 `eval:suite` 跳过而非报错。
+
 ## 7. 结果边界
 
 - `passed`：每条 case 的操作、预期和最终状态均有具体证据；

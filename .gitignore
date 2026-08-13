@@ -40,6 +40,10 @@ Auto-Test.private-provider.json
 !templates/**/*.xlsx
 !tests/fixtures/**/*.xlsx
 
+# Eval oracles are business-specific ground truth (like real xlsx), private.
+# The format is documented in templates/eval-oracle.example.json.
+evals/
+
 # Editors and OS files
 .DS_Store
 .idea/
