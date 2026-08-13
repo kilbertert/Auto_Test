@@ -253,6 +253,33 @@ async function promptPayload(input: AgentInputPart[], promptId: string, maxFrame
   return payload
 }
 
+/**
+ * Launch arguments for the OMP RPC session. The `--config` overlay is what
+ * makes OMP load the run-scoped MCP servers (`.omp/mcp.json`) and disable its
+ * built-in browser in favor of the injected Playwright MCP; omitting it leaves
+ * the session with only built-in tools and the Control MCP preflight fails.
+ */
+export function ompSessionLaunchArgs(options: {
+  workspaceDirectory: string
+  sessionDirectory: string
+  model?: string
+  reasoningEffort?: string
+  serviceTier?: string
+  resumeId?: string
+}): string[] {
+  return [
+    '--mode', 'rpc',
+    '--no-title',
+    '--approval-mode', 'yolo',
+    '--session-dir', options.sessionDirectory,
+    '--config', resolve(options.workspaceDirectory, '.omp', 'config.yml'),
+    ...(options.model ? ['--model', options.model] : []),
+    ...(options.reasoningEffort ? ['--thinking', options.reasoningEffort] : []),
+    ...(options.serviceTier ? ['--service-tier', options.serviceTier] : []),
+    ...(options.resumeId ? ['--resume', options.resumeId] : []),
+  ]
+}
+
 class OmpRpcSession implements AgentHostSession {
   private readonly pending = new Map<string, PendingRequest>()
   private readonly decoder = new RpcFrameDecoder()
@@ -276,16 +303,14 @@ class OmpRpcSession implements AgentHostSession {
     spawnProcess: typeof spawn = crossSpawn as typeof spawn,
   ) {
     const sessionDirectory = resolve(options.runtime.agentHome, 'sessions')
-    const args = [
-      '--mode', 'rpc',
-      '--no-title',
-      '--approval-mode', 'yolo',
-      '--session-dir', sessionDirectory,
-      ...(options.runtime.model ? ['--model', options.runtime.model] : []),
-      ...(options.runtime.provider?.reasoningEffort ? ['--thinking', options.runtime.provider.reasoningEffort] : []),
-      ...(options.runtime.provider?.serviceTier ? ['--service-tier', options.runtime.provider.serviceTier] : []),
-      ...(options.resumeId ? ['--resume', options.resumeId] : []),
-    ]
+    const args = ompSessionLaunchArgs({
+      workspaceDirectory: options.workspaceDirectory,
+      sessionDirectory,
+      ...(options.runtime.model !== undefined ? { model: options.runtime.model } : {}),
+      ...(options.runtime.provider?.reasoningEffort !== undefined ? { reasoningEffort: options.runtime.provider.reasoningEffort } : {}),
+      ...(options.runtime.provider?.serviceTier !== undefined ? { serviceTier: options.runtime.provider.serviceTier } : {}),
+      ...(options.resumeId !== undefined ? { resumeId: options.resumeId } : {}),
+    })
     const env: NodeJS.ProcessEnv = {
       ...options.runtime.environment,
       PI_CODING_AGENT_DIR: options.runtime.agentHome,
