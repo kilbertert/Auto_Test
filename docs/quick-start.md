@@ -6,7 +6,7 @@ Auto-Test 的默认入口是一个逻辑 Agent Run。Runner 是薄运行外壳�
 
 ## 生成快速回归 spec
 
-成功运行后可用 `npm run compile:replay -- --events <run>/codex-agent.events.jsonl --result <run>/codex-agent.result.json --output artifacts/compiled/regression.spec.ts` 生成回归脚本，再运行 `playwright test artifacts/compiled/regression.spec.ts`。编译器拒绝无法确定性翻译的调用，敏感输入通过 `AUTO_TEST_VALUE_*` 环境变量提供。
+成功运行后可用 `npm run compile:replay -- --events <run>/codex-agent.events.jsonl --result <run>/codex-agent.result.json --output artifacts/compiled/regression.spec.ts` 生成回归脚本和隔离 config，再执行命令打印的 `playwright test --config ...`。编译器拒绝无法确定性翻译的调用，敏感输入通过 `AUTO_TEST_VALUE_*` 环境变量提供。
 
 ## 1. 首次准备
 

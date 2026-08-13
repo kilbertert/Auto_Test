@@ -45,6 +45,15 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
   const cases = new Map<string, string[]>()
   const diagnostics: ReplayDiagnostic[] = []
   let activeCaseId: string | undefined
+  const hasCaseBoundaries = events.some((value) => {
+    const event = normalizeAgentEvent(value)
+    return event.type === 'tool_completed' && event.server === 'auto-test-control' && (event.tool === 'case_execution_begin' || event.tool === 'case_execution_end')
+  })
+  if (!hasCaseBoundaries && passedCaseIds && passedCaseIds.size === 1) {
+    activeCaseId = [...passedCaseIds][0]
+    cases.set(activeCaseId!, [])
+  }
+  else if (!hasCaseBoundaries && passedCaseIds && passedCaseIds.size > 1) diagnostics.push({ severity: 'error', code: 'case_boundaries_missing', message: 'Multiple passed cases require case_execution_begin/end attribution' })
 
   for (const value of events) {
     const event = normalizeAgentEvent(value)

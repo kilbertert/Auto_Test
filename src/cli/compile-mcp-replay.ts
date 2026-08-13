@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { compileMcpReplay, readJsonLines } from '../compiler/mcp-replay.js'
 
 function valueAfter(args: string[], name: string): string | undefined {
@@ -28,10 +28,14 @@ async function main(): Promise<void> {
   for (const item of compiled.diagnostics) console.error(`[${item.severity}] ${item.code}${item.caseId ? ` (${item.caseId})` : ''}: ${item.message}`)
   if (!compiled.source) throw new Error('Replay compilation failed')
   const output = resolve(valueAfter(args, '--output') ?? 'artifacts/compiled/mcp-replay.spec.ts')
+  const configOutput = output.endsWith('.spec.ts') ? output.replace(/\.spec\.ts$/, '.config.ts') : `${output}.config.ts`
   await mkdir(dirname(output), { recursive: true, mode: 0o750 })
   await writeFile(output, compiled.source, { encoding: 'utf8', mode: 0o640 })
+  await writeFile(configOutput, `import { defineConfig } from '@playwright/test'\n\nexport default defineConfig({ testDir: '.', testMatch: ${JSON.stringify(basename(output))}, workers: 1, use: { browserName: 'chromium' } })\n`, { encoding: 'utf8', mode: 0o640 })
   if (process.platform !== 'win32') await chmod(output, 0o640)
+  if (process.platform !== 'win32') await chmod(configOutput, 0o640)
   console.log(`Compiled ${compiled.caseIds.length} passed case(s): ${output}`)
+  console.log(`Run: playwright test --config ${configOutput}`)
 }
 
 void main().catch((error: unknown) => {

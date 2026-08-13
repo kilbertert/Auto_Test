@@ -41,4 +41,14 @@ describe('MCP replay compiler', () => {
     expect(result.source).toBe('')
     expect(result.diagnostics[0]?.code).toBe('assertion_missing')
   })
+
+  it('attributes an older single-case run without explicit case boundaries', () => {
+    const result = compileMcpReplay([
+      event('1', 'playwright', 'browser_navigate', { url: 'https://example.test' }, "### Ran Playwright code\n```js\nawait page.goto('https://example.test');\n```"),
+      event('2', 'playwright', 'browser_verify_text_visible', { text: 'Home' }, "### Ran Playwright code\n```js\nawait expect(page.getByText('Home')).toBeVisible();\n```"),
+    ], new Set(['case-1']))
+
+    expect(result.caseIds).toEqual(['case-1'])
+    expect(result.source).toContain('page.getByText')
+  })
 })

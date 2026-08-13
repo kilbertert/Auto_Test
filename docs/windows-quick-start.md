@@ -8,7 +8,7 @@
 
 ## 生成快速回归 spec
 
-成功运行后可用 `npm run compile:replay -- --events <Run>\codex-agent.events.jsonl --result <Run>\codex-agent.result.json --output artifacts\compiled\regression.spec.ts` 生成回归脚本，再运行 `playwright test artifacts\compiled\regression.spec.ts`。session ref、观察调用和 `browser_run_code_unsafe` 不会被重放。
+成功运行后可用 `npm run compile:replay -- --events <Run>\codex-agent.events.jsonl --result <Run>\codex-agent.result.json --output artifacts\compiled\regression.spec.ts` 生成回归脚本和隔离 config，再执行命令打印的 `playwright test --config ...`。session ref、观察调用和 `browser_run_code_unsafe` 不会被重放。
 
 ## 第一次使用
 
