@@ -4,6 +4,7 @@ import { basename, resolve } from 'node:path'
 import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
 import type { CodexTestControlConfig } from './control-types.js'
+import { DEFAULT_AGENT_FANOUT_POLICY } from './fanout-policy.js'
 import type { CodexTestRisk } from './types.js'
 import { writePrivateJson } from './state.js'
 import { agentProcessEnvironment, copyPrivateFile, writePrivateText } from './provider-runtime.js'
@@ -361,6 +362,7 @@ export async function prepareAgentWorkspace(options: {
     fieldCompositionPath,
     secretValuesPath: playwrightSecretsPath,
     testDataAccess: options.testDataAccess ?? 'direct',
+    fanoutPolicy: DEFAULT_AGENT_FANOUT_POLICY,
   }
   await writePrivateJson(controlConfigPath, controlConfig)
 

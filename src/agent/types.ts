@@ -1,7 +1,23 @@
 export type CodexTestOutcome = 'passed' | 'product_failed' | 'blocked'
 export type CodexTestRisk = 'read' | 'write' | 'destructive'
 export type CodexTestFailureSource = 'product' | 'agent_execution' | 'environment' | 'input' | 'infrastructure'
-export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution'
+export type CodexTestFailureKind = 'assertion' | 'validation' | 'authentication' | 'environment' | 'data' | 'execution' | 'locator' | 'mutation'
+
+/**
+ * Standardized failure-mode grouping used by eval scorecards and outcome
+ * contracts. It is a derived taxonomy over failureSource/failureKind, not a
+ * new raw result field: Agent, Core, report, and eval all map to the same
+ * eight buckets so pass-rate is never the only comparison dimension.
+ */
+export type AgentTestFailureMode =
+  | 'input'
+  | 'authentication'
+  | 'environment'
+  | 'locator_navigation'
+  | 'business_assertion'
+  | 'mutation_cleanup'
+  | 'agent_execution'
+  | 'infrastructure'
 export type CodexTestRunInterruptionCode =
   | 'provider_capacity'
   | 'provider_rate_limited'

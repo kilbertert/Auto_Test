@@ -2,6 +2,7 @@ import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import type { AgentExecutionEpoch } from './execution-epochs.js'
 import type { AgentSecretAlias } from './workspace.js'
 import { environmentTargetUrls } from '../workflow/target-urls.js'
+import { selectSkillBriefs, skillBriefContext } from './skill-brief.js'
 
 function executionEpochContext(window?: AgentExecutionEpoch): string {
   if (!window) return [
@@ -46,6 +47,7 @@ export function agentTestPrompt(options: {
   const canary = options.maxIterations === undefined
     ? 'Execute the full data set described by the test material.'
     : `Canary limit: for repeated or list-driven data, execute at most ${options.maxIterations} item(s) while preserving cleanup and final assertions.`
+  const selectedBriefs = selectSkillBriefs(options.manifest)
 
   if (!fullAgentAccess) {
     return `You are the execution agent for a real web application test. This run uses the restricted compatibility mode.
@@ -64,6 +66,9 @@ Required protocol:
 ${canary}
 
 ${executionEpochContext(options.executionEpoch)}
+
+Scenario experience briefs (loaded on demand; protocol stays in Core):
+${skillBriefContext(selectedBriefs)}
 
 Prior working-memory checkpoint: ${options.checkpointPath ?? '(none; first physical thread)'}
 
@@ -97,7 +102,7 @@ Execution principles:
 3. Build and revise your own working plan from live evidence. Native host todo lists, notes, or scripts are valid; test_plan_update is optional.
 4. Prefer accessible page evidence, but use browser_evaluate or browser_run_code_unsafe when direct Playwright code is the clearest reliable method.
 5. A click, fill, request, or script completing without an exception is not a passed test. Verify the expected page and business state.
-6. Expected results in the test material are immutable. Do not weaken an assertion to make execution pass.
+6. Each active case has an outcome contract derived from the same source row: observable postconditions, required evidence kinds, and cleanup expectations. Treat it as the concise definition of done, then confirm its full meaning against the raw source. Expected results are immutable; do not weaken an assertion to make execution pass.
 7. Match mutable business entities by identifiers created, selected, or observed in this run. Do not blindly operate on the newest or first row.
 8. Use auto-test-control.mutation_begin before an externally persisted business operation and auto-test-control.mutation_resolve only after its retained or compensated terminal state is verified. Those tools are the authoritative Mutation Ledger. A local JSON file, note, script, screenshot, or final-result claim with a similar name does not register or resolve a mutation. One entry may cover one coherent business operation; ordinary navigation, reads, and field entry do not need entries.
 9. Before finishing, inspect pending ledger entries and verify cleanup or the explicitly expected retained state. Do not repeat a prior write merely because the browser restarted.
@@ -135,6 +140,9 @@ ${materialUrls.map((url) => `- ${url}`).join('\n') || '- (none)'}
 Known starting origins (context, not a browser network allowlist):
 ${registeredOrigins.map((origin) => `- ${origin}`).join('\n') || '- (none)'}
 
+Scenario experience briefs (loaded on demand; protocol stays in Core):
+${skillBriefContext(selectedBriefs)}
+
 Parsed active case manifest (use as an index; read the raw source for complete business meaning):
 ${JSON.stringify(options.manifest, null, 2)}
 `
@@ -171,6 +179,7 @@ Requirements:
 - Preserve the exact workflowId, sourceSha256, and case IDs from the immutable test contract.
 - Include every test case exactly once.
 - Mark passed only when the requested operation and observable expected result were verified.
+- For cases with an outcome contract, cover every observable postcondition, cite concrete observation evidence, and include a same-case interaction receipt when the contract requires it. Cleanup expectations remain subject to the authoritative Mutation Ledger.
 - Include executionReceiptIds from the passive auto-test-control.execution_receipts summary when same-case attribution is available. Use the minimum recommended IDs, normally one interaction and one observation, rather than copying the full receipt log. Receipts are audit evidence, not a substitute for business reasoning or a prerequisite for browser work. A passed or product_failed case must still cite concrete case-specific evidence; when receipt attribution is available, do not reuse a receipt from another case. An environment-blocked case needs live observation and a recorded environment requirement.
 - Use product_failed only for an observed product or business mismatch after the intended test action was correctly executed.
 - Use blocked for missing environment, authentication, test data, authority, ambiguous identity, incomplete execution, or unrecovered state.

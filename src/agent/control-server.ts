@@ -7,6 +7,7 @@ import * as z from 'zod/v4'
 import { writePrivateJson } from './state.js'
 import { readEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from './environment-requirements.js'
 import type { CodexTestControlConfig } from './control-types.js'
+import { DEFAULT_AGENT_FANOUT_POLICY, fanoutPolicyProblems } from './fanout-policy.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
 import { readExecutionReceipts, summarizeExecutionReceipts } from './execution-receipts.js'
 import { validateFieldCompositionGate } from './field-composition.js'
@@ -61,6 +62,11 @@ async function main(): Promise<void> {
   const configPath = process.argv[2]
   if (!configPath) throw new Error('Control server requires a config path')
   const config = JSON.parse(await readFile(configPath, 'utf8')) as CodexTestControlConfig
+  const fanoutPolicy = config.fanoutPolicy ?? DEFAULT_AGENT_FANOUT_POLICY
+  const fanoutProblems = fanoutPolicyProblems(fanoutPolicy)
+  if (fanoutProblems.length > 0) {
+    throw new Error(`fanout policy is invalid: ${fanoutProblems.join('; ')}`)
+  }
   const environmentRequirementsPath = config.environmentRequirementsPath
     ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'environment-requirements.json')
   const fieldCompositionPath = config.fieldCompositionPath
@@ -91,6 +97,7 @@ async function main(): Promise<void> {
     caseIds: [...caseIds],
     totalCaseCount: config.caseIds.length,
     testDataAccess: config.testDataAccess ?? 'opaque',
+    fanoutPolicy,
   }))
 
   server.registerTool('test_value_get', {
@@ -321,7 +328,7 @@ async function main(): Promise<void> {
       blockers: z.array(z.string().min(1)).default([]),
       productDefects: z.array(z.string().min(1)).default([]),
       failureSource: z.enum(['product', 'agent_execution', 'environment', 'input', 'infrastructure']).optional(),
-      failureKind: z.enum(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution']).optional(),
+      failureKind: z.enum(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', 'locator', 'mutation']).optional(),
       environmentRequirementIds: z.array(z.string().min(1)).default([]),
       executionReceiptIds: z.array(z.string().min(1)).default([]),
       fieldGateIds: z.array(z.string().min(1)).default([]),

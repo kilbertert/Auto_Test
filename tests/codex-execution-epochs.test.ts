@@ -34,6 +34,7 @@ describe('Codex execution epoch planning', () => {
     const limited = limitManifestToCases(manifest(), 1)
     expect(limited.phases.map((phase) => phase.id)).toEqual(['case-1'])
     expect(limited.embeddedImages.map((image) => image.id)).toEqual(['image-1'])
+    expect(limited.materialIndex?.map((item) => item.caseId)).toEqual(['case-1', 'case-2', 'case-3'])
     expect(limited.source.sha256).toBe('a'.repeat(64))
   })
 
@@ -54,5 +55,14 @@ describe('Codex execution epoch planning', () => {
     expect(() => manifestForExecutionEpoch(manifest(), {
       id: 'epoch-unknown', index: 0, total: 1, caseIds: ['missing-case'], estimatedInputTokens: 500, estimatedOutputTokens: 900,
     })).toThrow(/outside the immutable manifest/)
+  })
+
+  it('keeps only active case details while retaining a compact run-wide material index', () => {
+    const scoped = manifestForExecutionEpoch(manifest(), {
+      id: 'epoch-0002', index: 1, total: 3, caseIds: ['case-2'], estimatedInputTokens: 500, estimatedOutputTokens: 900,
+    })
+    expect(scoped.phases.map((phase) => phase.id)).toEqual(['case-2'])
+    expect(scoped.materialIndex?.map((item) => item.caseId)).toEqual(['case-1', 'case-2', 'case-3'])
+    expect(JSON.stringify(scoped)).not.toContain('image-1.png')
   })
 })

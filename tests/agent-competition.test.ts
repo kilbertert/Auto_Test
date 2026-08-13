@@ -88,6 +88,15 @@ describe('AgentHost competition contract', () => {
     expect(report.verdict).toBe('oracle_winner')
     expect(report.winnerHostId).toBe('codex')
     expect(report.caseDifferences).toHaveLength(1)
+    expect(report.candidates[0]).toMatchObject({ oracleMatchedCases: 1, oracleMatchRate: 1 })
+    expect(report.candidates[1]).toMatchObject({
+      oracleMatchedCases: 0,
+      oracleMatchRate: 0,
+      failureSources: { product: 1 },
+      failureKinds: { execution: 1 },
+      failureModes: { business_assertion: 1 },
+      baselineDelta: { evidenceCount: 0, citedReceiptCount: 0, mutationCount: 0, oracleMatchedCases: -1 },
+    })
   })
 
   it('rejects candidates from different immutable test contracts', async () => {
@@ -146,6 +155,32 @@ describe('AgentHost competition contract', () => {
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
     expect(report.contractProblems.some((problem) => problem.includes('environment Profile/权限合同不一致'))).toBe(true)
+  })
+
+  it('aggregates token and recovery metrics from the run artifacts', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-metrics-'))
+    directories.push(root)
+    const expected = result()
+    const codex = await makeRun(root, 'codex', expected)
+    const omp = await makeRun(root, 'omp', expected)
+    await writeFile(resolve(codex, 'codex-agent.events.jsonl'), [
+      JSON.stringify({ type: 'turn_completed', usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2 } }),
+      JSON.stringify({ type: 'turn_completed', usage: { inputTokens: 30, cachedInputTokens: 6, outputTokens: 8 } }),
+    ].join('\n'))
+    const statePath = resolve(codex, 'codex-agent.state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as CodexTestAgentState
+    state.threadGeneration = 3
+    state.epochCount = 3
+    await writeFile(statePath, JSON.stringify(state))
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.candidates[0]).toMatchObject({
+      inputTokens: 40,
+      cachedInputTokens: 10,
+      outputTokens: 10,
+      threadGeneration: 3,
+      epochCount: 3,
+      recoveryCount: 2,
+    })
   })
 
   it('rejects duplicate hosts and an oracle that is not bound to the input contract', async () => {

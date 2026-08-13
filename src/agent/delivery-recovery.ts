@@ -28,7 +28,7 @@ interface AgentDeliveryArtifact {
 }
 
 const failureSources = new Set<CodexTestFailureSource>(['product', 'agent_execution', 'environment', 'input', 'infrastructure'])
-const failureKinds = new Set<CodexTestFailureKind>(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'])
+const failureKinds = new Set<CodexTestFailureKind>(['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', 'locator', 'mutation'])
 
 function outcomeForCases(cases: CodexTestCaseResult[]): CodexTestAgentResult['outcome'] {
   if (cases.some((item) => item.outcome === 'blocked')) return 'blocked'

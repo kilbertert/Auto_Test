@@ -8,6 +8,7 @@ import { readWorkbookCases, type RawCaseRow, type WorkbookReadResult } from '../
 import { normalizeText, redactSensitiveContent, slugify, splitNumberedItems } from '../input/text.js'
 import type {
   WorkflowCapability,
+  WorkflowFailureMode,
   WorkflowIntakeManifest,
   WorkflowIntakeResult,
   WorkflowPhaseDraft,
@@ -183,6 +184,25 @@ function instructionParts(value: string): { summary?: string; steps: string[] } 
   }
 }
 
+/**
+ * Default allowable failure modes for an outcome. Mutation cleanup is only a
+ * legitimate classification for cases that can write; read-only cases never
+ * carry it. The remaining seven modes apply to every live-UI case.
+ */
+function failureModesFor(risk: WorkflowRisk): WorkflowFailureMode[] {
+  const modes: WorkflowFailureMode[] = [
+    'input',
+    'authentication',
+    'environment',
+    'locator_navigation',
+    'business_assertion',
+    'agent_execution',
+    'infrastructure',
+  ]
+  if (risk !== 'read') modes.push('mutation_cleanup')
+  return modes
+}
+
 function riskFor(value: string): WorkflowRisk {
   if (/(删除|清空|重置|回滚|撤销|终止|停止|关停|强制|结算|支付|退款|remove|delete|reset|rollback|force\s*stop|settlement)/i.test(value)) return 'destructive'
   if (/(保存|提交|创建|新增|修改|编辑|启用|禁用|启动|开始|上传|导入|发布|审核|授权|触发|执行|登录|save|submit|create|update|edit|enable|disable|start|upload|import|publish|approve)/i.test(value)) return 'write'
@@ -283,6 +303,13 @@ function fallbackPhaseFromRow(
       sourceRow,
       risk: explicitRisk(row.values.risk) ?? riskFor(raw),
       ...(precondition.text ? { summary: precondition.text } : {}),
+      outcome: {
+        action: splitNumberedItems(steps.text),
+        observable: expected.text ? splitNumberedItems(expected.text) : [],
+        evidence: ['interaction', 'observation'],
+        cleanup: cleanup.text ? splitNumberedItems(cleanup.text) : [],
+        failureModes: failureModesFor(explicitRisk(row.values.risk) ?? riskFor(raw)),
+      },
       steps: splitNumberedItems(steps.text).map((step, index) => ({ id: `${phaseId}-step-${index + 1}`, sourceText: step, confidence: 0.5 })),
       resources,
       secretBindings: bindings,
@@ -495,6 +522,13 @@ async function intakeStandardTestCases(
       sourceRow,
       risk: explicitRisk(source.values.risk) ?? testCase.risk,
       ...(testCase.preconditions?.length ? { summary: testCase.preconditions.join('；') } : {}),
+      outcome: {
+        action: splitNumberedItems(steps.text),
+        observable: expected.text ? splitNumberedItems(expected.text) : testCase.assertions.map((assertion) => assertion.sourceText),
+        evidence: ['interaction', 'observation'],
+        cleanup: cleanup.text ? splitNumberedItems(cleanup.text) : [],
+        failureModes: failureModesFor(explicitRisk(source.values.risk) ?? testCase.risk),
+      },
       steps: splitNumberedItems(steps.text).map((step, index) => ({ id: `${phaseId}-step-${index + 1}`, sourceText: step, confidence: 0.85 })),
       resources,
       secretBindings,
@@ -648,6 +682,13 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
       sourceRow: source.sourceRow,
       risk: riskFor(raw),
       ...(parts.summary ? { summary: parts.summary } : {}),
+      outcome: {
+        action: parts.steps,
+        observable: parts.summary ? [parts.summary] : [],
+        evidence: ['interaction', 'observation'],
+        cleanup: [],
+        failureModes: failureModesFor(riskFor(raw)),
+      },
       steps: parts.steps.map((step, stepIndex) => ({ id: `phase-${phaseIndex + 1}-step-${stepIndex + 1}`, sourceText: step, confidence: 0.7 })),
       resources,
       secretBindings: uniqueBindings,

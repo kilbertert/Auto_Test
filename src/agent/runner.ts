@@ -20,7 +20,8 @@ import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { agentTestStructuredOutputSchema, enforceMutationLedger, parseAgentTestCandidate } from './result.js'
+import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
+import { failureModeFor } from './failure-mode.js'
 import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
@@ -143,7 +144,7 @@ async function runTurn(
   }
 }
 
-function finalResultProblems(
+export function finalResultProblems(
   result: CodexTestAgentResult,
   manifest: WorkflowIntakeManifest,
   recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
@@ -158,6 +159,7 @@ function finalResultProblems(
   for (const caseId of requiredCases) if (!returnedCases.includes(caseId)) problems.push(`missing final case result for ${caseId}`)
   for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case result for ${caseId}`)
   for (const item of result.cases) {
+    const phase = manifest.phases.find((candidate) => candidate.id === item.caseId)
     if (item.evidence.length === 0) problems.push(`case ${item.caseId} has no execution evidence`)
     if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`passed case ${item.caseId} contains a failure classification`)
     if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
@@ -169,6 +171,20 @@ function finalResultProblems(
     }
     if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
       problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
+    }
+    if (item.outcome !== 'blocked' && phase?.outcome) {
+      if (phase.outcome.evidence.includes('observation') && !item.evidence.some((evidence) => evidence.kind === 'observation')) {
+        problems.push(`case ${item.caseId} does not satisfy its outcome observation evidence requirement`)
+      }
+      if (phase.outcome.evidence.includes('interaction') && !caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
+        problems.push(`case ${item.caseId} does not satisfy its outcome interaction receipt requirement`)
+      }
+    }
+    if (item.outcome !== 'passed' && phase?.outcome && (phase.outcome.failureModes?.length ?? 0) > 0) {
+      const mode = failureModeFor(item.failureSource, item.failureKind)
+      if (!phase.outcome.failureModes!.includes(mode)) {
+        problems.push(`case ${item.caseId} failure mode ${mode} is not allowed by its outcome contract`)
+      }
     }
     // Receipts are passively captured audit evidence. They are validated when
     // the agent cites them, but missing optional case bookkeeping must not

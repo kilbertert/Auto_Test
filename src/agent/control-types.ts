@@ -1,4 +1,5 @@
 import type { CodexTestRisk } from './types.js'
+import type { AgentFanoutPolicy } from './fanout-policy.js'
 
 export interface AgentTestControlConfig {
   version: '1.0'
@@ -21,6 +22,8 @@ export interface AgentTestControlConfig {
   fieldCompositionPath?: string
   secretValuesPath?: string
   testDataAccess?: 'direct' | 'opaque'
+  /** Core-owned bounded fan-out limit; absent only in legacy control configs. */
+  fanoutPolicy?: AgentFanoutPolicy
 }
 
 /** Historical Codex-prefixed name remains source-compatible. */

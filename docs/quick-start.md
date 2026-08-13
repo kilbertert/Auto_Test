@@ -28,6 +28,12 @@ npm run easy
 
 每条来源行都会建立稳定的 case ID。Excel 应提供操作步骤、可观察预期、业务实体匹配规则、写入后的清理要求和必要的环境前置条件。新 AgentHost Run 必须用 `--url` 明确提供本次被测环境入口；Excel 中出现的其他链接仍保留给 Agent 理解和探索，但不会仅因出现在单元格中就成为 Environment Profile 的预执行覆盖要求。内嵌图片和补充图片会进入同一 Run 工作区。
 
+新 intake 会为每条 case 同源生成 `outcome`：`action` 是必须执行的操作，`observable` 是必须观察到的业务结果，`evidence` 声明交互和观察证据，`cleanup` 保留来源清理要求，`failureModes` 声明该 case 允许被归入的失败模式。它是 Agent、结果交付和 eval 共用的完成定义，不是第二套 Planner DSL；完整业务含义仍以原 Excel、brief 和图片为准。
+
+失败模式统一为八类：`input`、`authentication`、`environment`、`locator_navigation`、`business_assertion`、`mutation_cleanup`、`agent_execution`、`infrastructure`。结果校验会把非 passed case 的 `failureSource`/`failureKind` 映射到同一八类，若不在该 case 的 `failureModes` 合同内则拒绝；只读 case 不允许 `mutation_cleanup`。
+
+最终校验会拒绝 outcome 的假通过：非阻断 case 必须有具体观察证据，并在合同要求时引用同 case 的 interaction 回执。`blocked` 可以发生在交互之前，因此不强制 interaction；写入清理仍只由权威 Mutation Ledger 判定，避免出现第二套相互冲突的清理状态。
+
 ## 4. 执行
 
 命令行：
@@ -99,6 +105,12 @@ OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工
   -> immutable-order deterministic aggregate
 ```
 
+每个 epoch 的 manifest 只保留当前 case 的完整步骤、资源和图片，同时携带全 Run 的紧凑 `materialIndex`（case ID、标题、来源行、风险和图片数量）。Agent 可据此按需回看原始材料，不需要把其他 case 的正文和图片全部放入当前上下文。
+
+经验性知识（站点技巧、异步等待、表格实体识别、跨域会话等）按需加载为场景 Skill/brief，不永久塞进通用 Prompt；它们由 `requiredCapabilities` 等来源信号选择。安全和结果协议（Mutation Ledger、认证状态、outcome 合同、交付合同）继续留在 Core，不随 brief 变化。
+
+Core 拥有 bounded fan-out 策略（`fanoutPolicy`），通过 Control MCP `test_contract` 以单一来源暴露给 Agent：默认只读、并发上限为 1。该策略是 Core 声明并由 Agent 遵守的单一来源（Core 不拦截 Agent 内部的 sub-agent 调用，故不提供逐任务确定性门禁）；真实写入型测试不会被拆成默认并行 agent。
+
 选定的 AgentHost 始终是真实测试执行主体。Runner 不解释业务语义，不生成第二份 Execution Plan，也不要求 `case_execution_begin/end`、`case_result_record` 或环境审计 turn 才允许浏览器工作。Control MCP 回执是可选审计信息，只有宿主在结果中引用的回执才会被确定性校验。
 
 对外部业务写入使用 Mutation Ledger 记录完整业务操作。恢复时选定的 AgentHost 必须先重新观察真实状态；只要存在 `pending` Mutation，最终结果就只能是 `blocked`，不会继续调度后续 epoch。
@@ -131,6 +143,21 @@ npm run easy -- run \
 恢复会校验 workflow/source 身份和 Ledger。已写入逐 case store 的 case 不会重跑；active epoch 通常恢复原 thread，容量轮换后的新 epoch 会从 checkpoint 和原工作区继续。若基础设施恢复需要切换模型 Profile，逻辑 Run、active epoch、工作区和 Ledger 保持不变，但与新 AgentHost/Provider/模型绑定不兼容的物理 session 会被下一代 thread 替换；新 thread 必须先执行 resume 协议并核对 pending Mutation。早期 v2 状态没有绑定指纹时，Runner 只在宿主明确报告 session 不兼容后轮换一次；普通执行错误不会触发轮换。旧版 `version: 1.0` 状态、`activeBatch`、`completedBatchIds` 等状态不再兼容，恢复会 fail closed 并要求新建 Run。
 
 需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据和 Ledger，不启动新的 Agent，也不重复业务写入。两个 Run 必须同时提供 immutable `test-manifest.json`、一致的 `workflowId`/`sourceSha256`、Excel 与同名 sidecar/image 的 `input-bundle.json`、Manifest hash、Environment selection hash、平台、架构、Auto-Test 包版本、commit 和 `agent-host-selection.json`。缺少或不一致的任一合同输入时，比较器会 fail closed，结果为 `invalid`，不会继续给出宿主等价性结论。
+
+把第一个 `--run` 固定为已验证 baseline，并提供绑定同一 immutable input 的 oracle，即可得到最小 eval scorecard：逐 case 命中率、八类失败模式分布、证据/回执/Mutation 数量、耗时、聚合 token（输入/缓存输入/输出）、线程代数/恢复次数/epoch 数，以及相对 baseline 的 delta。CI 或故障 probe 使用 `--require-oracle-match`；任何候选没有完整命中 oracle（包括“本应 blocked/product_failed 却返回 passed”）都会返回非零：
+
+```bash
+npm run agent:compare -- \
+  --run artifacts/runs/baseline \
+  --run artifacts/runs/candidate \
+  --oracle evals/readonly-canary.oracle.json \
+  --require-oracle-match \
+  --output artifacts/evals/readonly-canary.json
+```
+
+oracle 只记录已独立验证的 outcome 和必要失败分类，不从待评估 Run 自身生成。写入型真实场景不得为了比较而在同一业务实体上盲目重复执行；优先使用只读 canary、隔离测试数据或已经完成的 Run 制品。
+
+固定回归任务集由 `src/eval/eval-suite.ts` 的 `canonicalEvalSuite()` 声明为版本化清单（canary、本地 fixture、Windows 验收、中断恢复），并保证八类失败模式每类至少被一个任务覆盖。AgentHost、Prompt、Model Profile 或 checkpoint 变更时，用这套固定任务集比较业务 outcome、证据完整性、Ledger 终态、失败来源、token/时间以及重试恢复次数；比较仍通过 `agent:compare` 完成，不引入新服务。
 
 ## 7. 结果边界
 

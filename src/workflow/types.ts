@@ -2,6 +2,21 @@ import type { Diagnostic } from '../core/types.js'
 
 export type WorkflowRisk = 'read' | 'write' | 'destructive'
 
+/**
+ * Allowed failure-mode taxonomy for a case outcome. Mirrors the eval taxonomy
+ * so an outcome contract, a result classification, and an eval report all
+ * speak the same eight buckets without a second classifier.
+ */
+export type WorkflowFailureMode =
+  | 'input'
+  | 'authentication'
+  | 'environment'
+  | 'locator_navigation'
+  | 'business_assertion'
+  | 'mutation_cleanup'
+  | 'agent_execution'
+  | 'infrastructure'
+
 export type WorkflowCapability =
   | 'embeddedImageUnderstanding'
   | 'multiOrigin'
@@ -31,6 +46,30 @@ export interface WorkflowStepDraft {
   confidence: number
 }
 
+export interface WorkflowOutcomeContract {
+  /** The actions the case must perform, derived from the same source row as steps. */
+  action?: string[]
+  /** Must-be-observed business postconditions. */
+  observable: string[]
+  /** Required evidence: 'interaction' is an execution-receipt kind; 'observation' is a case-evidence kind. */
+  evidence: Array<'interaction' | 'observation'>
+  cleanup: string[]
+  /**
+   * Failure modes this case is allowed to be classified into. When non-empty,
+   * a non-passed result whose derived mode is outside this set is a taxonomy
+   * violation, not merely an unexpected outcome.
+   */
+  failureModes?: WorkflowFailureMode[]
+}
+
+export interface WorkflowMaterialIndexEntry {
+  caseId: string
+  title: string
+  sourceRow: number
+  risk: WorkflowRisk
+  imageCount: number
+}
+
 export interface WorkflowPhaseDraft {
   id: string
   sourceCaseId?: string
@@ -38,6 +77,7 @@ export interface WorkflowPhaseDraft {
   sourceRow: number
   risk: WorkflowRisk
   summary?: string
+  outcome?: WorkflowOutcomeContract
   steps: WorkflowStepDraft[]
   resources: WorkflowResource[]
   secretBindings: WorkflowSecretBinding[]
@@ -86,6 +126,7 @@ export interface WorkflowIntakeManifest {
   declaredTargetUrls?: string[]
   requiredCapabilities: WorkflowCapability[]
   phases: WorkflowPhaseDraft[]
+  materialIndex?: WorkflowMaterialIndexEntry[]
   embeddedImages: WorkflowEmbeddedImage[]
   supplementalImages: WorkflowSupplementalImage[]
   review: {
