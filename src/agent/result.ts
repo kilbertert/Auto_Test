@@ -21,7 +21,7 @@ export const codexTestResultSchema = {
           outcome: { type: 'string', enum: ['passed', 'product_failed', 'blocked'] },
           summary: { type: 'string' },
           failureSource: { type: ['string', 'null'], enum: ['product', 'agent_execution', 'environment', 'input', 'infrastructure', null] },
-          failureKind: { type: ['string', 'null'], enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', null] },
+          failureKind: { type: ['string', 'null'], enum: ['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', 'locator', 'mutation', null] },
           environmentRequirementIds: { type: ['array', 'null'], items: { type: 'string' } },
           executionReceiptIds: { type: ['array', 'null'], items: { type: 'string' } },
           fieldGateIds: { type: ['array', 'null'], items: { type: 'string' } },

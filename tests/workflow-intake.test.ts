@@ -22,6 +22,12 @@ describe('workflow xlsx intake', () => {
 
     expect(result.manifest.phases).toHaveLength(2)
     expect(result.manifest.phases[0]).toMatchObject({ id: 'test-001', title: '正确账号密码验证码登录成功' })
+    expect(result.manifest.phases[0]?.outcome).toMatchObject({
+      action: expect.arrayContaining([expect.any(String)]),
+      observable: expect.arrayContaining([expect.any(String)]),
+      evidence: ['interaction', 'observation'],
+    })
+    expect(result.manifest.phases[0]?.outcome?.failureModes).toEqual(expect.arrayContaining(['input', 'business_assertion', 'agent_execution', 'infrastructure']))
     expect(result.manifest.requiredCapabilities).toEqual(expect.arrayContaining(['multiOrigin', 'otpOrCaptcha']))
     expect(result.manifest.phases[0]?.resources.some((resource) => resource.text.startsWith('预期结果：'))).toBe(true)
     expect(result.manifest.phases[0]?.secretBindings.map((binding) => binding.secretRef)).toEqual(expect.arrayContaining([

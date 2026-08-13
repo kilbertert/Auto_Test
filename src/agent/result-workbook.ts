@@ -354,14 +354,16 @@ function sourceLabel(source: CodexTestCaseResult['failureSource']): string {
 }
 
 function kindLabel(kind: CodexTestCaseResult['failureKind']): string {
-  const labels = {
+  const labels: Record<NonNullable<CodexTestCaseResult['failureKind']>, string> = {
     assertion: '断言',
     validation: '校验',
     authentication: '认证',
     environment: '环境',
     data: '测试数据',
     execution: '执行',
-  } as const
+    locator: '定位/导航',
+    mutation: '写入/清理',
+  }
   return kind ? labels[kind] : ''
 }
 

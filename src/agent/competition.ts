@@ -5,6 +5,7 @@ import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import type {
   AgentTestCaseResult,
   AgentTestFailureKind,
+  AgentTestFailureMode,
   AgentTestFailureSource,
   AgentTestOutcome,
   AgentTestResult,
@@ -13,6 +14,7 @@ import type {
   CodexTestMutationLedgerEntry,
 } from './types.js'
 import { parseAgentTestResult } from './result.js'
+import { failureModeCounts } from './failure-mode.js'
 import { writePrivateJson } from './state.js'
 
 export interface AgentCompetitionOracleCase {
@@ -52,6 +54,30 @@ export interface AgentCompetitionCandidateSummary {
   inputBundleSha256?: string
   durationMs?: number
   oracleMatchedCases?: number
+  oracleMatchRate?: number
+  failureSources: Partial<Record<AgentTestFailureSource, number>>
+  failureKinds: Partial<Record<AgentTestFailureKind, number>>
+  failureModes: Partial<Record<AgentTestFailureMode, number>>
+  /** Aggregated token usage across the run's completed turns. */
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  /** Physical AgentHost threads used; the first thread is generation 1. */
+  threadGeneration?: number
+  epochCount?: number
+  /** Number of recovered/replacement threads beyond the first. */
+  recoveryCount?: number
+  interruptionCode?: string
+  baselineDelta?: {
+    durationMs?: number
+    evidenceCount: number
+    citedReceiptCount: number
+    mutationCount: number
+    oracleMatchedCases?: number
+    inputTokens?: number
+    cachedInputTokens?: number
+    outputTokens?: number
+  }
 }
 
 export interface AgentCompetitionCaseDifference {
@@ -263,6 +289,64 @@ function caseCounts(cases: AgentTestCaseResult[]): AgentCompetitionCandidateSumm
     product_failed: cases.filter((item) => item.outcome === 'product_failed').length,
     blocked: cases.filter((item) => item.outcome === 'blocked').length,
   }
+}
+
+function countValues<T extends string>(values: Array<T | undefined>): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {}
+  for (const value of values) if (value) counts[value] = (counts[value] ?? 0) + 1
+  return counts
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+interface AggregateTokenUsage {
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+}
+
+/**
+ * Sum token usage from every completed agent turn in the run's event log.
+ * Returns undefined when the log is absent or contains no completed turns, so
+ * callers can fall back to the state's last-epoch snapshot.
+ */
+export async function readAggregateTokenUsage(runDirectory: string): Promise<AggregateTokenUsage | undefined> {
+  let text: string
+  try {
+    text = await readFile(resolve(runDirectory, 'codex-agent.events.jsonl'), 'utf8')
+  } catch {
+    return undefined
+  }
+  const usage: AggregateTokenUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }
+  let sawUsage = false
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let event: unknown
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const record = recordValue(event)
+    // The event log stores the host's raw terminal-turn event: Codex emits
+    // `turn.completed` with snake_case usage fields. Accept the normalized
+    // `turn_completed` spelling too so the reader is not silently tied to one
+    // host's wire format.
+    if (record?.type !== 'turn.completed' && record?.type !== 'turn_completed') continue
+    const turnUsage = recordValue(record.usage)
+    if (!turnUsage) continue
+    const inputTokens = numberField(turnUsage.input_tokens ?? turnUsage.inputTokens)
+    const cachedInputTokens = numberField(turnUsage.cached_input_tokens ?? turnUsage.cachedInputTokens)
+    const outputTokens = numberField(turnUsage.output_tokens ?? turnUsage.outputTokens)
+    if (inputTokens === undefined && cachedInputTokens === undefined && outputTokens === undefined) continue
+    sawUsage = true
+    if (inputTokens !== undefined) usage.inputTokens += inputTokens
+    if (cachedInputTokens !== undefined) usage.cachedInputTokens += cachedInputTokens
+    if (outputTokens !== undefined) usage.outputTokens += outputTokens
+  }
+  return sawUsage ? usage : undefined
 }
 
 function oracleScore(result: AgentTestResult, oracle: AgentCompetitionOracle | undefined): number | undefined {
@@ -496,7 +580,7 @@ function validateOracle(
     if (outcome === 'passed' && failureSource) problems.push(`oracle passed case ${caseId} 不能声明 failureSource`)
     if (outcome === 'product_failed' && failureSource && failureSource !== 'product') problems.push(`oracle product_failed case ${caseId} 必须是 product 来源`)
     if (outcome === 'blocked' && failureSource === 'product') problems.push(`oracle blocked case ${caseId} 不能是 product 来源`)
-    if (failureKind !== undefined && !['assertion', 'validation', 'authentication', 'environment', 'data', 'execution'].includes(String(failureKind))) {
+    if (failureKind !== undefined && !['assertion', 'validation', 'authentication', 'environment', 'data', 'execution', 'locator', 'mutation'].includes(String(failureKind))) {
       problems.push(`oracle case ${caseId} 的 failureKind 无效`)
     }
     if (outcome === 'passed' && failureKind) problems.push(`oracle passed case ${caseId} 不能声明 failureKind`)
@@ -593,6 +677,15 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
   const resultDurationMs = durationMs(result)
   const matchedCases = oracleScore(result, oracle)
   const hostId = stringField(selection.id) ?? `<invalid:${candidateLabel}>`
+  const aggregateTokenUsage = await readAggregateTokenUsage(runDirectory)
+  const tokenUsage = aggregateTokenUsage ?? state.lastUsage
+  const inputTokens = tokenUsage ? numberField(tokenUsage.inputTokens) : undefined
+  const cachedInputTokens = tokenUsage ? numberField(tokenUsage.cachedInputTokens) : undefined
+  const outputTokens = tokenUsage ? numberField(tokenUsage.outputTokens) : undefined
+  const threadGeneration = numberField(state.threadGeneration)
+  const epochCount = numberField(state.epochCount)
+  const recoveryCount = threadGeneration !== undefined && threadGeneration >= 1 ? threadGeneration - 1 : undefined
+  const interruptionCode = state.runInterruption?.code
   const summary: AgentCompetitionCandidateSummary = {
     runDirectory,
     hostId,
@@ -614,6 +707,19 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
     ...(isSha256(inputBundle?.bundleSha256) ? { inputBundleSha256: inputBundle.bundleSha256 } : {}),
     ...(resultDurationMs !== undefined ? { durationMs: resultDurationMs } : {}),
     ...(matchedCases !== undefined ? { oracleMatchedCases: matchedCases } : {}),
+    ...(matchedCases !== undefined && oracle?.cases.length
+      ? { oracleMatchRate: matchedCases / oracle.cases.length }
+      : {}),
+    failureSources: countValues(cases.map((item) => item.failureSource)),
+    failureKinds: countValues(cases.map((item) => item.failureKind)),
+    failureModes: failureModeCounts(cases),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(threadGeneration !== undefined ? { threadGeneration } : {}),
+    ...(epochCount !== undefined ? { epochCount } : {}),
+    ...(recoveryCount !== undefined ? { recoveryCount } : {}),
+    ...(interruptionCode ? { interruptionCode } : {}),
   }
   validationProblems.push(...inputBundleProblems(inputBundle, hostId, inputBundleArtifact.exists))
   const candidate: LoadedCandidate = {
@@ -732,6 +838,32 @@ export async function compareAgentRuns(options: {
     verdict = caseDifferences.length === 0 ? 'equivalent' : 'different'
   }
   const first = candidates[0]!
+  const baseline = first.summary
+  const summaries = candidates.map(({ summary }) => ({
+    ...summary,
+    ...(summary === baseline ? {} : {
+      baselineDelta: {
+        ...(summary.durationMs !== undefined && baseline.durationMs !== undefined
+          ? { durationMs: summary.durationMs - baseline.durationMs }
+          : {}),
+        evidenceCount: summary.evidenceCount - baseline.evidenceCount,
+        citedReceiptCount: summary.citedReceiptCount - baseline.citedReceiptCount,
+        mutationCount: summary.mutationCount - baseline.mutationCount,
+        ...(summary.oracleMatchedCases !== undefined && baseline.oracleMatchedCases !== undefined
+          ? { oracleMatchedCases: summary.oracleMatchedCases - baseline.oracleMatchedCases }
+          : {}),
+        ...(summary.inputTokens !== undefined && baseline.inputTokens !== undefined
+          ? { inputTokens: summary.inputTokens - baseline.inputTokens }
+          : {}),
+        ...(summary.cachedInputTokens !== undefined && baseline.cachedInputTokens !== undefined
+          ? { cachedInputTokens: summary.cachedInputTokens - baseline.cachedInputTokens }
+          : {}),
+        ...(summary.outputTokens !== undefined && baseline.outputTokens !== undefined
+          ? { outputTokens: summary.outputTokens - baseline.outputTokens }
+          : {}),
+      },
+    }),
+  }))
   return {
     version: '1.0',
     kind: 'agent-competition',
@@ -740,7 +872,7 @@ export async function compareAgentRuns(options: {
     sourceSha256: stringField(first.result.sourceSha256) ?? '',
     contractStatus: problems.length === 0 ? 'valid' : 'invalid',
     contractProblems: problems,
-    candidates: candidates.map((candidate) => candidate.summary),
+    candidates: summaries,
     caseDifferences,
     verdict,
     ...(winnerHostId ? { winnerHostId } : {}),

@@ -69,5 +69,6 @@ describe('AgentHost test prompt safety rules', () => {
     expect(prompt).toContain('/run/test-manifest.json')
     expect(prompt).toContain('/run/case-results.epoch-0002.json')
     expect(prompt).toContain('Do not execute them, classify them, or create placeholder outcomes')
+    expect(prompt).toContain('outcome contract derived from the same source row')
   })
 })

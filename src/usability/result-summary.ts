@@ -47,6 +47,8 @@ const failureKindLabels: Record<CodexTestFailureKind, string> = {
   environment: '测试环境条件不可用',
   data: '测试数据缺失或不完整',
   execution: '操作或验证未完成',
+  locator: '定位或导航未完成',
+  mutation: '写入或清理未完成',
 }
 
 function cleanLine(value: string): string {

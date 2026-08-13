@@ -88,6 +88,13 @@ export function manifestForAgentExecutionEpoch(
   return {
     ...manifest,
     phases,
+    materialIndex: manifest.materialIndex ?? manifest.phases.map((phase) => ({
+      caseId: phase.id,
+      title: phase.title,
+      sourceRow: phase.sourceRow,
+      risk: phase.risk,
+      imageCount: phase.imageIds.length,
+    })),
     targetUrls: targetUrlsForManifestCases(manifest, phases),
     embeddedImages: manifest.embeddedImages.filter((image) => imageIds.has(image.id)),
     supplementalImages: manifest.supplementalImages.filter((image) => imageIds.has(image.id)),
@@ -101,6 +108,13 @@ export function limitManifestToCases(manifest: WorkflowIntakeManifest, limit: nu
   return {
     ...manifest,
     phases,
+    materialIndex: manifest.materialIndex ?? manifest.phases.map((phase) => ({
+      caseId: phase.id,
+      title: phase.title,
+      sourceRow: phase.sourceRow,
+      risk: phase.risk,
+      imageCount: phase.imageIds.length,
+    })),
     targetUrls: targetUrlsForManifestCases(manifest, phases),
     embeddedImages: manifest.embeddedImages.filter((image) => imageIds.has(image.id)),
     supplementalImages: manifest.supplementalImages.filter((image) => imageIds.has(image.id)),
