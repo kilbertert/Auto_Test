@@ -14,8 +14,9 @@ import type {
   AgentHostSession,
   AgentHostStream,
   AgentInputPart,
+  AgentUsage,
 } from './host.js'
-import { AgentHostError, normalizeAgentEvent, resolveHostExecutable } from './host.js'
+import { AgentHostError, normalizeAgentEvent, resolveHostExecutable, usageFrom } from './host.js'
 import { OmpModelProviderAdapter } from './omp-provider.js'
 
 interface OmpResponse {
@@ -196,6 +197,8 @@ interface ActiveRun {
   queue: AsyncEventQueue<AgentEvent>
   promptId: string
   lastAssistantText?: string
+  /** Accumulated per-turn token usage; attached to the terminal turn_completed. */
+  usage: AgentUsage
 }
 
 function mimeType(path: string): string {
@@ -347,7 +350,7 @@ class OmpRpcSession implements AgentHostSession {
     if (this.activeRun) throw new AgentHostError('omp', 'OMP session already has an active prompt', 'process')
     const queue = new AsyncEventQueue<AgentEvent>()
     const promptId = `autotest-${randomUUID()}`
-    this.activeRun = { queue, promptId }
+    this.activeRun = { queue, promptId, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 } }
     try {
       const prompt = await promptPayload(input, promptId, this.maxFrameBytes)
       const response = await this.request(prompt)
@@ -474,6 +477,22 @@ class OmpRpcSession implements AgentHostSession {
     if (frame.type === 'message_start' || frame.type === 'message_update' || frame.type === 'tool_execution_update') return
     const active = this.activeRun
     if (!active) return
+    // OMP reports per-turn token usage nested in turn_end.message.usage; the
+    // terminal agent_end carries none. Accumulate here so the emitted
+    // turn_completed carries the run's total usage for the live lastUsage
+    // snapshot (the events-file reader sums turn_end frames independently).
+    if (frame.type === 'turn_end') {
+      const message = frame.message
+      const usageRecord = message && typeof message === 'object' && !Array.isArray(message)
+        ? (message as Record<string, unknown>).usage
+        : undefined
+      const turnUsage = usageFrom(usageRecord)
+      if (turnUsage) {
+        active.usage.inputTokens += turnUsage.inputTokens
+        active.usage.cachedInputTokens += turnUsage.cachedInputTokens
+        active.usage.outputTokens += turnUsage.outputTokens
+      }
+    }
     const event = normalizeAgentEvent(frame)
     if (event.type === 'agent_message' && event.text) active.lastAssistantText = event.text
     // OMP normally emits the complete assistant message as message_end and
@@ -487,6 +506,7 @@ class OmpRpcSession implements AgentHostSession {
         active.queue.push({ type: 'agent_message', text: finalText, raw: frame })
       }
     }
+    if (event.type === 'turn_completed') event.usage = active.usage
     active.queue.push(event)
     if (frame.type === 'agent_end' && frame.isTerminal !== false) {
       this.activeRun = undefined

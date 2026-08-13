@@ -15,6 +15,7 @@ import type {
 } from './types.js'
 import { parseAgentTestResult } from './result.js'
 import { failureModeCounts } from './failure-mode.js'
+import { usageFrom } from './host.js'
 import { writePrivateJson } from './state.js'
 
 export interface AgentCompetitionOracleCase {
@@ -330,21 +331,24 @@ export async function readAggregateTokenUsage(runDirectory: string): Promise<Agg
       continue
     }
     const record = recordValue(event)
-    // The event log stores the host's raw terminal-turn event: Codex emits
-    // `turn.completed` with snake_case usage fields. Accept the normalized
-    // `turn_completed` spelling too so the reader is not silently tied to one
-    // host's wire format.
-    if (record?.type !== 'turn.completed' && record?.type !== 'turn_completed') continue
-    const turnUsage = recordValue(record.usage)
+    if (!record) continue
+    // The event log stores the host's raw turn events. Codex emits
+    // `turn.completed` with top-level usage; OMP emits per-turn usage nested
+    // under `message.usage` on its `turn_end` frames. Normalize both through
+    // the shared usageFrom mapper so the reader is not coupled to one host.
+    let turnUsage: ReturnType<typeof usageFrom>
+    if (record.type === 'turn.completed' || record.type === 'turn_completed') {
+      turnUsage = usageFrom(record.usage)
+    } else if (record.type === 'turn_end') {
+      turnUsage = usageFrom(recordValue(record.message)?.usage)
+    } else {
+      continue
+    }
     if (!turnUsage) continue
-    const inputTokens = numberField(turnUsage.input_tokens ?? turnUsage.inputTokens)
-    const cachedInputTokens = numberField(turnUsage.cached_input_tokens ?? turnUsage.cachedInputTokens)
-    const outputTokens = numberField(turnUsage.output_tokens ?? turnUsage.outputTokens)
-    if (inputTokens === undefined && cachedInputTokens === undefined && outputTokens === undefined) continue
     sawUsage = true
-    if (inputTokens !== undefined) usage.inputTokens += inputTokens
-    if (cachedInputTokens !== undefined) usage.cachedInputTokens += cachedInputTokens
-    if (outputTokens !== undefined) usage.outputTokens += outputTokens
+    usage.inputTokens += turnUsage.inputTokens
+    usage.cachedInputTokens += turnUsage.cachedInputTokens
+    usage.outputTokens += turnUsage.outputTokens
   }
   return sawUsage ? usage : undefined
 }
