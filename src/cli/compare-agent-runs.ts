@@ -70,8 +70,10 @@ export async function runAgentComparisonCli(args: string[]): Promise<number> {
 }
 
 if (process.argv[1] && resolve(process.argv[1]).endsWith('compare-agent-runs.ts')) {
-  void runAgentComparisonCli(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error))
-    process.exitCode = 1
-  })
+  void runAgentComparisonCli(process.argv.slice(2))
+    .then((exitCode) => { process.exitCode = exitCode })
+    .catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exitCode = 1
+    })
 }

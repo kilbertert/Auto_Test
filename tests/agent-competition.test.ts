@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -350,5 +351,25 @@ describe('AgentHost competition contract', () => {
     expect(report.contractStatus).toBe('invalid')
     expect(report.contractProblems.some((problem) => problem.includes('不存在或越界证据'))).toBe(true)
     expect(report.contractProblems.some((problem) => problem.includes('缺少有效 workspaceIsolation 能力'))).toBe(true)
+  })
+
+  it('propagates the --require-oracle-match gate into a non-zero process exit code', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-exit-'))
+    directories.push(root)
+    const baseline = await makeRun(root, 'baseline', result('passed'))
+    const candidate = await makeRun(root, 'candidate', result('blocked'))
+    const matching = await makeRun(root, 'matching', result('passed'))
+    const oraclePath = resolve(root, 'oracle.json')
+    await writeFile(oraclePath, JSON.stringify({
+      version: '1.0', workflowId: 'competition-fixture', sourceSha256: 'b'.repeat(64),
+      cases: [{ caseId: 'case-one', outcome: 'passed' }],
+    }))
+    const script = resolve('src', 'cli', 'compare-agent-runs.ts')
+    const mismatch = spawnSync(process.execPath, ['--import', 'tsx', script,
+      '--run', baseline, '--run', candidate, '--oracle', oraclePath, '--require-oracle-match', '--output', resolve(root, 'report.json')], { encoding: 'utf8' })
+    expect(mismatch.status).toBe(1)
+    const matched = spawnSync(process.execPath, ['--import', 'tsx', script,
+      '--run', baseline, '--run', matching, '--oracle', oraclePath, '--require-oracle-match', '--output', resolve(root, 'report-ok.json')], { encoding: 'utf8' })
+    expect(matched.status).toBe(0)
   })
 })
