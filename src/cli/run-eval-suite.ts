@@ -36,6 +36,7 @@ export async function runEvalSuiteCli(args: string[]): Promise<number> {
   const run = await runEvalSuite({ baselineDirectory, candidateDirectories })
 
   for (const problem of run.suiteProblems) console.log(`套件问题：${problem}`)
+  if (run.skipped.length > 0) console.log(`跳过（oracle 未接线或未编写）：${run.skipped.join('、')}`)
   if (run.tasks.length === 0) {
     console.log('没有可运行的 oracle 任务（其余任务尚未接线到可运行 oracle）')
     return run.failed ? 1 : 0

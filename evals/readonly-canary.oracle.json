@@ -1,8 +1,0 @@
-{
-  "version": "1.0",
-  "workflowId": "lta后台测试用例-3f28b443",
-  "sourceSha256": "3f28b44320c0facd568a58a8bbe1cda4058c18ce3b753b24e016f93b7673f85e",
-  "cases": [
-    { "caseId": "test-001", "outcome": "passed" }
-  ]
-}

@@ -25,6 +25,8 @@ export interface EvalSuiteTaskResult {
 export interface EvalSuiteRun {
   suiteProblems: string[]
   tasks: EvalSuiteTaskResult[]
+  /** Task ids that were skipped because their oracle is not authored or wired yet. */
+  skipped: string[]
   /** True when any required oracle gate failed. */
   failed: boolean
 }
@@ -32,22 +34,37 @@ export interface EvalSuiteRun {
 /**
  * Run the fixed eval suite's oracle-bound tasks against one baseline and its
  * candidate runs. This is a thin aggregator over `compareAgentRuns`, not a new
- * service: each task just declares which committed oracle gates its comparison.
- * Tasks whose input contract is not yet wired to a runnable oracle are skipped.
+ * service: each task declares which committed/private oracle gates its
+ * comparison. A task whose oracle file is missing is skipped, not failed —
+ * oracles are business-specific ground truth authored locally (see
+ * templates/eval-oracle.example.json), not checked in.
  */
 export async function runEvalSuite(options: {
   baselineDirectory: string
   candidateDirectories: string[]
+  /** Override a task's oracle path; tests inject a synthetic oracle here. */
+  oracleOverrides?: Partial<Record<string, string>>
 }): Promise<EvalSuiteRun> {
   const suite = canonicalEvalSuite()
   const suiteProblems = evalSuiteProblems(suite)
-  if (suiteProblems.length > 0) return { suiteProblems, tasks: [], failed: true }
+  if (suiteProblems.length > 0) return { suiteProblems, tasks: [], skipped: [], failed: true }
 
   const runDirectories = [options.baselineDirectory, ...options.candidateDirectories]
   const tasks: EvalSuiteTaskResult[] = []
+  const skipped: string[] = []
   for (const task of suite.tasks) {
-    if (task.inputContract.kind !== 'oracle') continue
-    const oracle = JSON.parse(await readFile(resolve(task.inputContract.path), 'utf8')) as AgentCompetitionOracle
+    if (task.inputContract.kind !== 'oracle') {
+      skipped.push(task.id)
+      continue
+    }
+    const oraclePath = options.oracleOverrides?.[task.id] ?? task.inputContract.path
+    let oracle: AgentCompetitionOracle
+    try {
+      oracle = JSON.parse(await readFile(resolve(oraclePath), 'utf8')) as AgentCompetitionOracle
+    } catch {
+      skipped.push(task.id)
+      continue
+    }
     const report = await compareAgentRuns({ runDirectories, oracle })
     const candidates: EvalSuiteCandidateResult[] = report.candidates.map((candidate) => ({
       hostId: candidate.hostId,
@@ -58,7 +75,7 @@ export async function runEvalSuite(options: {
     const gateFailed = task.requiresOracleMatch && candidates.some((candidate) => candidate.oracleMatchRate !== 1)
     tasks.push({
       taskId: task.id,
-      oraclePath: task.inputContract.path,
+      oraclePath,
       requiresOracleMatch: task.requiresOracleMatch,
       verdict: report.verdict,
       contractStatus: report.contractStatus,
@@ -66,5 +83,5 @@ export async function runEvalSuite(options: {
       gateFailed,
     })
   }
-  return { suiteProblems: [], tasks, failed: tasks.some((task) => task.gateFailed) }
+  return { suiteProblems: [], tasks, skipped, failed: tasks.some((task) => task.gateFailed) }
 }

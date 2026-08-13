@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "workflowId": "synthetic-readonly-canary-v1",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "cases": [
+    { "caseId": "case-1", "outcome": "passed" }
+  ]
+}
