@@ -91,6 +91,8 @@ npm run easy -- run \
 
 OMP 使用 `omp --mode rpc` 启动持久 JSONL 会话。Auto-Test 会在 run 工作区生成 `.omp/mcp.json`，把同一套 Playwright 与 Control MCP 注入 OMP；native provider 配置可用通用 `--agent-home <dir>` 或 `AUTO_TEST_AGENT_HOME` 指定，`--omp-home` / `AUTO_TEST_OMP_HOME` 仍兼容。OMP 适配器只复制 provider/auth 白名单到私有 agent 目录，不复制用户 MCP 或历史 session。需要环境变量认证时，可用 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出要转发的变量。`agent-host-selection.json` 会记录实际宿主与供应商绑定，恢复时宿主身份必须保持一致。
 
+> **⚠️ 已知问题（OMP 支线暂缓）**：OMP 宿主的 MCP 挂载目前非确定——真实 canary 中时而挂载成功、时而 agent 报「No MCP tool is mounted」或工具名不匹配（OMP 用 `mcp__auto_test_control_test_contract` 而非 Codex 的 `auto-test-control.test_contract`），导致 `test_contract` 预检抖动失败。当前**统一使用 Codex CLI 作为 AgentHost**，OMP 待彻查启动时序后再启用。
+
 ## 5. 运行机制
 
 一次运行的核心状态如下：
