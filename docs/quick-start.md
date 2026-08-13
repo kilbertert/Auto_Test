@@ -4,6 +4,10 @@ Auto-Test 的默认入口是一个逻辑 Agent Run。Runner 是薄运行外壳�
 
 长用例集不会要求工程师手工切分。Runner 根据模型 Profile 的上下文窗口和输出上限自动规划 execution epoch（执行纪元），每个 epoch 只交付有限 case；epoch 之间用 checkpoint 传递站点模型和恢复笔记，必要时启动新的物理 AgentHost thread。所有 epoch 仍属于同一个 Run。
 
+## 生成快速回归 spec
+
+成功运行后可用 `npm run compile:replay -- --events <run>/codex-agent.events.jsonl --result <run>/codex-agent.result.json --output artifacts/compiled/regression.spec.ts` 生成回归脚本，再运行 `playwright test artifacts/compiled/regression.spec.ts`。编译器拒绝无法确定性翻译的调用，敏感输入通过 `AUTO_TEST_VALUE_*` 环境变量提供。
+
 ## 1. 首次准备
 
 ```bash

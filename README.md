@@ -62,6 +62,10 @@ npm run agent:test -- \
 
 需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取两份 Run 的不可变输入合同、结构化结果、证据、回执和 Ledger，不会再次调用模型或重复业务写入。合同缺失或不一致时只返回 `invalid`。
 
+## 从 MCP 轨迹生成 Playwright 回归脚本
+
+成功 run 可编译为确定性 spec：`npm run compile:replay -- --events <run>/codex-agent.events.jsonl --result <run>/codex-agent.result.json --output artifacts/compiled/regression.spec.ts`，再运行 `playwright test artifacts/compiled/regression.spec.ts`。只编译 `passed` case 和 MCP 返回的标准 Playwright code；session ref、观察调用和 `browser_run_code_unsafe` 不会进入产物。秘密只生成 `process.env.AUTO_TEST_VALUE_*` 引用。该 spec 是探索成功后的回归资产，不替代首次探索。
+
 ## 核心约束
 
 - 测试工程师定义的预期结果不可由 Agent 修改。

@@ -48,6 +48,8 @@ URL + Excel
 
 ## 2. 最终结论先行
 
+成功的 Codex-native run 可通过 `npm run compile:replay` 投影为 Playwright Test spec。编译器按 case 执行边界分组，只接受 MCP 返回的标准 Playwright code，保留 role/text/test-id locator；session ref、观察工具和 `browser_run_code_unsafe` 不会进入回归资产。该投影用于回归加速，不重新引入低智能 Runtime 作为首次执行主体。
+
 本次实践的最终结论不是“自动化测试框架没有价值”，也不是“IR 和 Runtime 完全没有价值”。更准确的结论是：
 
 1. IR、验证器和确定性 Runtime 适合已经理解清楚、已经探索成功、业务语义稳定的回归资产。
