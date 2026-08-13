@@ -33,6 +33,14 @@ describe('readAggregateTokenUsage', () => {
     await expect(readAggregateTokenUsage(directory)).resolves.toEqual({ inputTokens: 100, cachedInputTokens: 40, outputTokens: 10 })
   })
 
+  it('sums OMP turn_end frames with nested message.usage', async () => {
+    const directory = await makeEventsDirectory([
+      JSON.stringify({ type: 'turn_end', message: { usage: { input: 100, output: 20, cacheRead: 40 } } }),
+      JSON.stringify({ type: 'turn_end', message: { usage: { input: 50, output: 5, cacheRead: 10 } } }),
+    ])
+    await expect(readAggregateTokenUsage(directory)).resolves.toEqual({ inputTokens: 150, cachedInputTokens: 50, outputTokens: 25 })
+  })
+
   it('returns undefined when the log is missing or has no completed turn with usage', async () => {
     await expect(readAggregateTokenUsage('/definitely/missing')).resolves.toBeUndefined()
     const empty = await makeEventsDirectory([JSON.stringify({ type: 'agent_message', text: 'no usage here' })])

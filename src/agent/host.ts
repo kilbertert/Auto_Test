@@ -236,12 +236,12 @@ function eventWithRaw(event: AgentEvent, raw: unknown): AgentEvent {
   return { ...event, raw }
 }
 
-function usageFrom(value: unknown): AgentUsage | undefined {
+export function usageFrom(value: unknown): AgentUsage | undefined {
   const record = recordValue(value)
   if (!record) return undefined
-  const inputTokens = record.inputTokens ?? record.input_tokens
-  const cachedInputTokens = record.cachedInputTokens ?? record.cached_input_tokens
-  const outputTokens = record.outputTokens ?? record.output_tokens
+  const inputTokens = record.inputTokens ?? record.input_tokens ?? record.input
+  const cachedInputTokens = record.cachedInputTokens ?? record.cached_input_tokens ?? record.cacheRead
+  const outputTokens = record.outputTokens ?? record.output_tokens ?? record.output
   if (![inputTokens, cachedInputTokens, outputTokens].every((item) => typeof item === 'number')) return undefined
   return { inputTokens: inputTokens as number, cachedInputTokens: cachedInputTokens as number, outputTokens: outputTokens as number }
 }
