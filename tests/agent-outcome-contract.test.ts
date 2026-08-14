@@ -122,4 +122,10 @@ describe('Agent outcome contract validation', () => {
     }
     expect(finalResultProblems(result(), sparse, [], [receipt])).toEqual([])
   })
+
+  it('rejects a passed case when its replay episode has no compiled assertion', () => {
+    expect(finalResultProblems(result(), manifest(), [], [receipt], [
+      'case case-one replay contract replayable_attempt_missing: Passed case has no complete replayable attempt with an assertion',
+    ])).toEqual(expect.arrayContaining([expect.stringContaining('case case-one replay contract replayable_attempt_missing')]))
+  })
 })

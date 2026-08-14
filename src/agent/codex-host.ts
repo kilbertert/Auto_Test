@@ -83,7 +83,7 @@ function restrictedPlaywrightTools(fullAgentAccess: boolean): string[] | undefin
     'browser_file_upload', 'browser_fill_form', 'browser_find', 'browser_handle_dialog', 'browser_hover',
     'browser_navigate', 'browser_navigate_back', 'browser_navigate_forward', 'browser_network_request',
     'browser_network_requests', 'browser_press_key', 'browser_reload', 'browser_resize', 'browser_select_option',
-    'browser_snapshot', 'browser_tabs', 'browser_take_screenshot', 'browser_type', 'browser_uncheck', 'browser_verify_element_visible',
+    'browser_snapshot', 'browser_tabs', 'browser_take_screenshot', 'browser_type', 'browser_uncheck', 'browser_evaluate', 'browser_storage_state', 'browser_verify_element_visible',
     'browser_verify_list_visible', 'browser_verify_text_visible', 'browser_verify_value', 'browser_wait_for',
     'browser_cookie_clear', 'browser_localstorage_clear', 'browser_sessionstorage_clear', 'browser_set_storage_state',
   ]
