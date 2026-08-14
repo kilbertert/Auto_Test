@@ -14,7 +14,7 @@ import type { CodexTestControlConfig } from './control-types.js'
 import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
-import { AgentHostError } from './host.js'
+import { AgentHostError, normalizeAgentEvent } from './host.js'
 import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostRuntime, AgentHostSession, AgentInputPart } from './host.js'
 import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
@@ -34,8 +34,9 @@ import type {
   CodexTestRunInterruptionCode,
   CodexTestRunInterruptionStage,
 } from './types.js'
-import { prepareAgentWorkspace, type AgentWorkspace } from './workspace.js'
+import { prepareAgentWorkspace, promoteReplayBrowserState, REPLAY_SESSION_STORAGE_CAPTURE_FILENAME, type AgentWorkspace } from './workspace.js'
 import { generateReplayAssets } from './replay-assets.js'
+import { compileMcpReplay, readJsonLines } from '../compiler/mcp-replay.js'
 
 export interface AgentTestOptions {
   outputDirectory: string
@@ -150,6 +151,7 @@ export function finalResultProblems(
   manifest: WorkflowIntakeManifest,
   recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
   executionReceipts: CodexTestExecutionReceipt[] = [],
+  replayProblems: string[] = [],
 ): string[] {
   const problems: string[] = []
   if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
@@ -241,7 +243,60 @@ export function finalResultProblems(
   if (result.outcome === 'passed' && (result.blockers.length > 0 || result.productDefects.length > 0)) problems.push('passed result contains blockers or product defects')
   if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
   if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
+  problems.push(...replayProblems)
   return problems
+}
+
+async function replayProblemsForResult(eventsPath: string, result: CodexTestAgentResult): Promise<string[]> {
+  const passedCaseIds = new Set(result.cases.filter((item) => item.outcome === 'passed').map((item) => item.caseId))
+  if (passedCaseIds.size === 0) return []
+  const events = await readJsonLines(eventsPath)
+  const compiled = compileMcpReplay(events, passedCaseIds)
+  const storageCaptured = events.some((value) => {
+    const event = normalizeAgentEvent(value)
+    return event.type === 'tool_completed' && event.status === 'completed' &&
+      event.server === 'playwright' && event.tool === 'browser_storage_state'
+  })
+  const sessionCaptured = events.some((value) => {
+    const event = normalizeAgentEvent(value)
+    const arguments_ = event.arguments as { filename?: unknown } | undefined
+    return event.type === 'tool_completed' && event.status === 'completed' && event.server === 'playwright' &&
+      event.tool === 'browser_evaluate' && arguments_?.filename === REPLAY_SESSION_STORAGE_CAPTURE_FILENAME
+  })
+  return [
+    ...(!storageCaptured ? ['passed cases have no completed browser_storage_state replay setup capture'] : []),
+    ...(!sessionCaptured ? ['passed cases have no completed browser_evaluate replay sessionStorage capture'] : []),
+    ...compiled.diagnostics
+    .filter((item) => item.severity === 'error')
+    .map((item) => `case ${item.caseId ?? 'unknown'} replay contract ${item.code}: ${item.message}`),
+  ]
+}
+
+async function replayVerificationProblems(options: {
+  outputDirectory: string
+  eventsPath: string
+  result: CodexTestAgentResult
+  manifest: WorkflowIntakeManifest
+  workspace: AgentWorkspace
+  profile: EnvironmentProfile
+}): Promise<string[]> {
+  const verifyAll = !options.profile.policy.allowWrite && !options.profile.policy.allowDestructive
+  const assets = await generateReplayAssets({
+    outputDirectory: options.outputDirectory,
+    eventsPath: options.eventsPath,
+    result: options.result,
+    manifest: options.manifest,
+    storageStatePath: options.workspace.replayStorageStatePath,
+    initPagePath: options.workspace.initPagePath,
+    secretsPath: options.workspace.playwrightSecretsPath,
+    verifyReadOnly: true,
+    verifyAll,
+  })
+  return assets.cases.flatMap((item) => {
+    const risk = options.manifest.phases.find((phase) => phase.id === item.caseId)?.risk
+    if ((!verifyAll && risk !== 'read') || item.status === 'verified') return []
+    return [`case ${item.caseId} independent Playwright replay ${item.status}: ${item.verification?.output.slice(-2_000) ?? item.diagnostics.map((diagnostic) => diagnostic.message).join('; ')}`]
+  })
 }
 
 function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
@@ -864,6 +919,7 @@ export async function runAgentTest(
       testDataAccess: options.testDataAccess ?? 'direct',
       ...(options.resume ? { resume: true } : {}),
     })
+    await promoteReplayBrowserState(workspace, options.profile.origins)
     const runtime = await host.modelProvider.prepare({
       workspaceDirectory: workspace.workspaceDirectory,
       privateDirectory: workspace.privateDirectory,
@@ -926,13 +982,18 @@ export async function runAgentTest(
             recovered.result.cases,
           )
           const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+          const replayProblems = await replayProblemsForResult(eventsPath, recovered.result)
           const recoveryProblems = finalResultProblems(
             recovered.result,
             options.manifest,
             environmentRequirements,
             executionReceipts,
+            replayProblems,
           )
-          if (recoveryProblems.length === 0) {
+          const replayVerification = recoveryProblems.length === 0
+            ? await replayVerificationProblems({ outputDirectory, eventsPath, result: recovered.result, manifest: options.manifest, workspace, profile: options.profile })
+            : []
+          if (recoveryProblems.length === 0 && replayVerification.length === 0) {
             const result = redactAgentJsonArtifact(enforceMutationLedger(
               enforceEnvironmentRequirements(recovered.result, environmentRequirements),
               ledger,
@@ -1043,6 +1104,7 @@ export async function runAgentTest(
       const scopedManifest = manifestForAgentExecutionEpoch(options.manifest, epoch)
       const deliveryPath = epochDeliveryPath(workspace, epoch)
       const scrubEpochArtifacts = async (): Promise<void> => {
+        await promoteReplayBrowserState(workspace, options.profile.origins)
         await scrubGeneratedArtifacts()
         await redactAgentTextArtifact(deliveryPath, redactionSecrets)
       }
@@ -1280,7 +1342,17 @@ export async function runAgentTest(
             mutations: [],
             environmentRequirements: scopedRequirements,
           }
-          deliveryProblems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts)
+          const replayProblems = await replayProblemsForResult(eventsPath, normalized)
+          deliveryProblems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+          if (deliveryProblems.length > 0) continue
+          deliveryProblems = await replayVerificationProblems({
+            outputDirectory,
+            eventsPath,
+            result: normalized,
+            manifest: scopedManifest,
+            workspace,
+            profile: options.profile,
+          })
           if (deliveryProblems.length > 0) continue
           epochResult = enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
           break
@@ -1313,10 +1385,14 @@ export async function runAgentTest(
           const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
           const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
           const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
-          const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts)
-          epochResult = problems.length === 0
+          const replayProblems = await replayProblemsForResult(eventsPath, normalized)
+          const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+          const replayVerification = problems.length === 0
+            ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
+            : []
+          epochResult = problems.length === 0 && replayVerification.length === 0
             ? enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), ledger)
-            : deliveryBlockedResult(scopedManifest, state, problems.join('; '), ledger, scopedRequirements, recovered.result.cases)
+            : deliveryBlockedResult(scopedManifest, state, [...problems, ...replayVerification].join('; '), ledger, scopedRequirements, recovered.result.cases)
         } else {
           const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
           epochResult = deliveryBlockedResult(scopedManifest, state, deliveryProblems.join('; ') || recovered.problems.join('; ') || `epoch ${epoch.id} 没有可验证的结构化交付`, ledger, environmentRequirementsForCases(requirements, epoch.caseIds))
@@ -1399,7 +1475,13 @@ export async function runAgentTest(
     let result: CodexTestAgentResult
     try {
       result = enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }), requirements), ledger)
-      const problems = finalResultProblems(result, options.manifest, requirements, await readExecutionReceipts(workspace.executionReceiptsPath))
+      const problems = finalResultProblems(
+        result,
+        options.manifest,
+        requirements,
+        await readExecutionReceipts(workspace.executionReceiptsPath),
+        await replayProblemsForResult(eventsPath, result),
+      )
       if (problems.length > 0) throw new Error(`Adaptive epoch aggregation failed deterministic validation: ${problems.join('; ')}`)
     } catch (error) {
       result = deliveryBlockedResult(
@@ -1414,16 +1496,6 @@ export async function runAgentTest(
     result = redactAgentJsonArtifact(result, redactionSecrets)
     await writePrivateJson(resultPath, result)
     await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
-    try {
-      await generateReplayAssets({
-        outputDirectory, eventsPath, result, manifest: options.manifest,
-        storageStatePath: workspace.storageStatePath, initPagePath: workspace.initPagePath,
-        secretsPath: workspace.playwrightSecretsPath,
-        verifyReadOnly: true,
-      })
-    } catch (error) {
-      progress.report('warning', `Playwright 回归资产生成失败：${redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)}`)
-    }
     state = updateCodexTestState(state, {
       status: 'completed',
       stage: 'completed',

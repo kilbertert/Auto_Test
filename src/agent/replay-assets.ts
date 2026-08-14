@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { slugify } from '../input/text.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
@@ -35,8 +35,10 @@ export async function generateReplayAssets(options: {
   initPagePath: string
   secretsPath: string
   verifyReadOnly?: boolean
+  verifyAll?: boolean
 }): Promise<ReplayAssetManifest> {
   const directory = resolve(options.outputDirectory, 'agent-workspace', 'replay')
+  const manifestPath = resolve(directory, 'replay-manifest.json')
   const playwrightTestPath = packageFilePath('@playwright/test', 'index.js')
   await mkdir(directory, { recursive: true, mode: 0o750 })
   await writeFile(resolve(directory, 'package.json'), '{"type":"module"}\n', { encoding: 'utf8', mode: 0o640 })
@@ -70,14 +72,16 @@ export async function generateReplayAssets(options: {
       'export default defineConfig({',
       "  testDir: '.',",
       `  testMatch: ${JSON.stringify(basename(specPath))},`,
+      '  timeout: 180_000,',
+      '  expect: { timeout: 10_000 },',
       '  workers: 1,',
-      `  use: { browserName: 'chromium', storageState: ${JSON.stringify(options.storageStatePath)} },`,
+      `  use: { browserName: 'chromium', storageState: ${JSON.stringify(options.storageStatePath)}, actionTimeout: 15_000, navigationTimeout: 90_000 },`,
       '})',
       '',
     ].join('\n'), { encoding: 'utf8', mode: 0o640 })
     if (process.platform !== 'win32') await Promise.all([chmod(specPath, 0o640), chmod(configPath, 0o640)])
     const risk = options.manifest.phases.find((phase) => phase.id === item.caseId)?.risk
-    const verification = options.verifyReadOnly && risk === 'read'
+    const verification = options.verifyAll || (options.verifyReadOnly && risk === 'read')
       ? await runPlaywright(configPath, options.outputDirectory)
       : undefined
     cases.push({
@@ -86,11 +90,15 @@ export async function generateReplayAssets(options: {
       specPath, configPath, diagnostics: compiled.diagnostics, ...(verification ? { verification } : {}),
     })
   }
+  const currentCaseIds = new Set(options.result.cases.map((item) => item.caseId))
+  const previousCases = await readFile(manifestPath, 'utf8')
+    .then((value) => (JSON.parse(value) as ReplayAssetManifest).cases.filter((item) => !currentCaseIds.has(item.caseId)))
+    .catch((): ReplayAssetEntry[] => [])
   const replayManifest: ReplayAssetManifest = {
     version: '1.0', kind: 'playwright-replay-assets', workflowId: options.result.workflowId,
-    sourceSha256: options.result.sourceSha256, generatedAt: new Date().toISOString(), cases,
+    sourceSha256: options.result.sourceSha256, generatedAt: new Date().toISOString(), cases: [...previousCases, ...cases],
   }
-  await writePrivateJson(resolve(directory, 'replay-manifest.json'), replayManifest)
+  await writePrivateJson(manifestPath, replayManifest)
   return replayManifest
 }
 

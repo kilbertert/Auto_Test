@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
-import { prepareCodexAgentWorkspace, type AgentWorkspace } from '../src/agent/workspace.js'
+import { prepareCodexAgentWorkspace, promoteReplayBrowserState, type AgentWorkspace } from '../src/agent/workspace.js'
 import { CodexAgentHost } from '../src/agent/codex-host.js'
 import { OmpAgentHost } from '../src/agent/omp-host.js'
 import { agentTestPrompt, agentTestResumePrompt } from '../src/agent/prompt.js'
@@ -214,6 +214,37 @@ describe('Codex agent workspace', () => {
       expect((await stat(workspace.playwrightSecretsPath)).mode & 0o777).toBe(0o600)
       await chmod(workspace.playwrightSecretsPath, 0o600)
     }
+  })
+
+  it('promotes cookies, localStorage, and sessionStorage into private replay state', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-replay-auth-'))
+    directories.push(directory)
+    const origin = 'https://tasks.example.test'
+    const workspace = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest([origin]),
+      profile: { id: 'fixture', origins: [origin], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, headed: false, browserExecutablePath: '/verified/chromium', environment: { PATH: '/usr/bin' },
+    })
+    await writeFile(workspace.replayStorageCapturePath, JSON.stringify({
+      cookies: [], origins: [{ origin, localStorage: [{ name: 'theme', value: 'dark' }] }],
+    }))
+    await writeFile(workspace.replaySessionStorageCapturePath, JSON.stringify({
+      origin, entries: { 'fixture-access-token': 'private-session-value' },
+    }))
+
+    await promoteReplayBrowserState(workspace, [origin])
+
+    const storageState = JSON.parse(await readFile(workspace.replayStorageStatePath, 'utf8'))
+    const sessionState = JSON.parse(await readFile(workspace.replaySessionStoragePath, 'utf8'))
+    expect(storageState.origins[0].localStorage).toEqual(expect.arrayContaining([
+      { name: 'theme', value: 'dark' },
+      { name: '__auto_test_session_seed__', value: '1' },
+    ]))
+    expect(sessionState.byOrigin[origin]).toEqual({ 'fixture-access-token': 'private-session-value' })
+    expect(await readFile(workspace.initPagePath, 'utf8')).toContain('private-session-value')
+    await expect(access(workspace.replayStorageCapturePath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(workspace.replaySessionStorageCapturePath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('refreshes ephemeral browser configuration without resetting persisted recovery state', async () => {

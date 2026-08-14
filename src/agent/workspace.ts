@@ -19,6 +19,12 @@ interface StorageState {
 }
 
 const SESSION_STORAGE_SEED_MARKER = '__auto_test_session_seed__'
+export const REPLAY_SESSION_STORAGE_CAPTURE_FILENAME = 'replay-session-storage.json'
+
+interface ReplaySessionStorageState {
+  version: '1.0'
+  byOrigin: Record<string, Record<string, string>>
+}
 
 export interface AgentSecretAlias {
   secretRef: string
@@ -43,6 +49,10 @@ export interface AgentWorkspace {
   playwrightConfigPath: string
   playwrightSecretsPath: string
   storageStatePath: string
+  replayStorageStatePath: string
+  replayStorageCapturePath: string
+  replaySessionStoragePath: string
+  replaySessionStorageCapturePath: string
   initPagePath: string
   controlConfigPath: string
   mutationLedgerPath: string
@@ -105,6 +115,79 @@ async function sessionStorageByOrigin(profile: EnvironmentProfile): Promise<Reco
     if (value.origin && value.entries && Object.keys(value.entries).length > 0) result[value.origin] = value.entries
   }
   return result
+}
+
+function sessionStorageInitPage(byOrigin: Record<string, Record<string, string>>): string {
+  return `module.exports.default = async ({ page }) => {\n  const byOrigin = ${JSON.stringify(byOrigin)};\n  const marker = ${JSON.stringify(SESSION_STORAGE_SEED_MARKER)};\n  await page.addInitScript(({ byOrigin, marker }) => {\n    const entries = byOrigin[location.origin];\n    if (!entries || localStorage.getItem(marker) !== '1') return;\n    for (const [key, value] of Object.entries(entries)) sessionStorage.setItem(key, value);\n    localStorage.removeItem(marker);\n  }, { byOrigin, marker });\n};\n`
+}
+
+function applySessionStorageMarkers(state: StorageState, byOrigin: Record<string, Record<string, string>>): void {
+  const origins = state.origins ??= []
+  for (const item of origins) {
+    item.localStorage = (item.localStorage ?? []).filter((entry) => entry.name !== SESSION_STORAGE_SEED_MARKER)
+  }
+  for (const origin of Object.keys(byOrigin).filter((value) => Object.keys(byOrigin[value]!).length > 0)) {
+    const item = origins.find((entry) => entry.origin === origin) ?? { origin, localStorage: [] }
+    if (!origins.includes(item)) origins.push(item)
+    item.localStorage ??= []
+    item.localStorage.push({ name: SESSION_STORAGE_SEED_MARKER, value: '1' })
+  }
+}
+
+async function readReplaySessionStorage(path: string, fallback: Record<string, Record<string, string>>): Promise<ReplaySessionStorageState> {
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8')) as ReplaySessionStorageState
+    if (value.version !== '1.0' || !value.byOrigin || typeof value.byOrigin !== 'object' || Array.isArray(value.byOrigin)) {
+      throw new Error('Private replay sessionStorage state has an invalid shape')
+    }
+    return value
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: '1.0', byOrigin: fallback }
+    throw error
+  }
+}
+
+export async function promoteReplayBrowserState(workspace: AgentWorkspace, allowedOrigins: string[]): Promise<void> {
+  const storageCapture = await readFile(workspace.replayStorageCapturePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  const sessionCapture = await readFile(workspace.replaySessionStorageCapturePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (storageCapture === undefined && sessionCapture === undefined) return
+
+  try {
+    const state = storageCapture === undefined
+      ? JSON.parse(await readFile(workspace.replayStorageStatePath, 'utf8')) as StorageState
+      : JSON.parse(storageCapture) as StorageState
+    if (!Array.isArray(state.cookies) || !Array.isArray(state.origins)) {
+      throw new Error('Captured replay storage state must contain cookies and origins arrays')
+    }
+
+    const sessionState = await readReplaySessionStorage(workspace.replaySessionStoragePath, {})
+    if (sessionCapture !== undefined) {
+      const value = JSON.parse(sessionCapture) as { origin?: unknown; entries?: unknown }
+      if (typeof value.origin !== 'string' || !allowedOrigins.includes(value.origin) ||
+        !value.entries || typeof value.entries !== 'object' || Array.isArray(value.entries) ||
+        !Object.values(value.entries).every((entry) => typeof entry === 'string')) {
+        throw new Error('Captured replay sessionStorage must contain an allowed origin and string entries')
+      }
+      const entries = value.entries as Record<string, string>
+      if (Object.keys(entries).length > 0) sessionState.byOrigin[value.origin] = entries
+      else delete sessionState.byOrigin[value.origin]
+      await writePrivateJson(workspace.replaySessionStoragePath, sessionState)
+      await writePrivateText(workspace.initPagePath, sessionStorageInitPage(sessionState.byOrigin))
+    }
+    applySessionStorageMarkers(state, sessionState.byOrigin)
+    await writePrivateJson(workspace.replayStorageStatePath, state)
+  } finally {
+    await Promise.all([
+      rm(workspace.replayStorageCapturePath, { force: true }),
+      rm(workspace.replaySessionStorageCapturePath, { force: true }),
+    ])
+  }
 }
 
 function riskFor(profile: EnvironmentProfile): CodexTestRisk {
@@ -259,25 +342,31 @@ export async function prepareAgentWorkspace(options: {
     }
   }
 
-  const sessionMap = await sessionStorageByOrigin(options.profile)
+  const registeredSessionMap = await sessionStorageByOrigin(options.profile)
+  const replaySessionStoragePath = resolve(privateDirectory, 'replay-session-storage.json')
+  const replaySessionState = await readReplaySessionStorage(replaySessionStoragePath, registeredSessionMap)
+  if (!await access(replaySessionStoragePath).then(() => true, () => false)) {
+    await writePrivateJson(replaySessionStoragePath, replaySessionState)
+  }
+  const sessionMap = replaySessionState.byOrigin
   const storageState = await mergeStorageStates(
     options.profile.auth.flatMap((adapter) => adapter.storageStatePath ? [adapter.storageStatePath] : []),
   )
   // Inject registered sessionStorage once. Clearing localStorage removes the
   // marker, so an authentication case can establish a genuinely clean reload.
-  const storageOrigins = storageState.origins ??= []
-  for (const origin of Object.keys(sessionMap)) {
-    const state = storageOrigins.find((entry) => entry.origin === origin) ?? { origin, localStorage: [] }
-    if (!storageOrigins.includes(state)) storageOrigins.push(state)
-    state.localStorage ??= []
-    const marker = state.localStorage.find((item) => item.name === SESSION_STORAGE_SEED_MARKER)
-    if (marker) marker.value = '1'
-    else state.localStorage.push({ name: SESSION_STORAGE_SEED_MARKER, value: '1' })
-  }
+  applySessionStorageMarkers(storageState, sessionMap)
   const storageStatePath = resolve(privateDirectory, 'merged-storage-state.json')
+  const replayStorageStatePath = resolve(privateDirectory, 'replay-storage-state.json')
+  // Playwright MCP may write only below its workspace cwd/output roots.
+  // Keep the capture in the run workspace, then promote it to private storage.
+  const replayStorageCapturePath = resolve(workspaceDirectory, 'replay-storage-state.json')
+  const replaySessionStorageCapturePath = resolve(workspaceDirectory, REPLAY_SESSION_STORAGE_CAPTURE_FILENAME)
   await writePrivateJson(storageStatePath, storageState)
+  if (!await access(replayStorageStatePath).then(() => true, () => false)) {
+    await writePrivateJson(replayStorageStatePath, storageState)
+  }
   const initPagePath = resolve(privateDirectory, 'init-page.cjs')
-  await writePrivateText(initPagePath, `module.exports.default = async ({ page }) => {\n  const byOrigin = ${JSON.stringify(sessionMap)};\n  const marker = ${JSON.stringify(SESSION_STORAGE_SEED_MARKER)};\n  await page.addInitScript(({ byOrigin, marker }) => {\n    const entries = byOrigin[location.origin];\n    if (!entries || localStorage.getItem(marker) !== '1') return;\n    for (const [key, value] of Object.entries(entries)) sessionStorage.setItem(key, value);\n    localStorage.removeItem(marker);\n  }, { byOrigin, marker });\n};\n`)
+  await writePrivateText(initPagePath, sessionStorageInitPage(sessionMap))
 
   const bindings = options.manifest.phases.flatMap((phase) => phase.secretBindings)
   const aliases: AgentSecretAlias[] = []
@@ -314,7 +403,7 @@ export async function prepareAgentWorkspace(options: {
         ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
       },
       contextOptions: {
-        storageState: storageStatePath,
+        storageState: replayStorageStatePath,
         viewport: { width: 1440, height: 900 },
       },
       initPage: [initPagePath],
@@ -380,6 +469,10 @@ export async function prepareAgentWorkspace(options: {
     playwrightConfigPath,
     playwrightSecretsPath,
     storageStatePath,
+    replayStorageStatePath,
+    replayStorageCapturePath,
+    replaySessionStoragePath,
+    replaySessionStorageCapturePath,
     initPagePath,
     controlConfigPath,
     mutationLedgerPath,
