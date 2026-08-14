@@ -4,6 +4,10 @@ Auto-Test 的默认入口是一个逻辑 Agent Run。Runner 是薄运行外壳�
 
 长用例集不会要求工程师手工切分。Runner 根据模型 Profile 的上下文窗口和输出上限自动规划 execution epoch（执行纪元），每个 epoch 只交付有限 case；epoch 之间用 checkpoint 传递站点模型和恢复笔记，必要时启动新的物理 AgentHost thread。所有 epoch 仍属于同一个 Run。
 
+## 生成快速回归 spec
+
+成功运行会自动生成 `agent-workspace/replay/replay-manifest.json` 和逐 case spec/config。探索线程在 case episode 外捕获 cookies/localStorage 和 sessionStorage，Core 将临时文件提升到 `.agent-private/` 后删除工作区原件。Environment Profile 上限为 `read` 时，所有 passed case 都使用这份认证前置在新 BrowserContext 中实际回放，通过后才标记 `verified`，不受 intake 的单 case 风险推断影响；允许 `write`/`destructive` 的 Profile 只自动回放被判定为 `read` 的 case，其余只生成 `candidate`，避免再次制造副作用。生成 config 的测试超时为 180 秒、导航超时为 90 秒，可覆盖合法的 30 秒以上业务等待。缺少认证态捕获、完整断言或独立回放通过时，passed 交付会回到同一 Agent 线程修正。编译器只采用最后一个完整、可重放且含断言的 case attempt；历史 Run 仍可用 `npm run compile:replay` 手工迁移。敏感输入从同一 Run 的私有 `AUTO_TEST_VALUE_*` 文件加载，不写入 spec。
+
 ## 1. 首次准备
 
 ```bash

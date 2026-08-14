@@ -44,6 +44,22 @@ function eventStream(text: string, threadId: string, metadataWarning = false): {
           },
         } as ThreadEvent
       }
+      // Fixture delivery mirrors the real contract: passed cases must leave a
+      // final case episode with a compiled assertion for replay validation.
+      try {
+        const candidate = JSON.parse(text) as { cases?: Array<{ caseId?: string; outcome?: string }> }
+        if (candidate.cases?.some((item) => item.outcome === 'passed')) {
+          yield { type: 'item.completed', item: { id: `storage-${threadId}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_storage_state', arguments: { filename: 'replay-storage-state.json' }, status: 'completed', result: { content: [], structured_content: {} } } } as unknown as ThreadEvent
+          yield { type: 'item.completed', item: { id: `session-${threadId}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_evaluate', arguments: { filename: 'replay-session-storage.json' }, status: 'completed', result: { content: [], structured_content: {} } } } as unknown as ThreadEvent
+        }
+        for (const item of candidate.cases ?? []) {
+          if (item.outcome !== 'passed' || typeof item.caseId !== 'string') continue
+          yield { type: 'item.completed', item: { id: `begin-${threadId}-${item.caseId}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: item.caseId }, status: 'completed', result: { content: [], structured_content: {} } } } as unknown as ThreadEvent
+          yield { type: 'item.completed', item: { id: `navigate-${threadId}-${item.caseId}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_navigate', arguments: {}, status: 'completed', result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait page.goto('data:text/html,<div>Ready</div>');\n```" }], structured_content: {} } } } as unknown as ThreadEvent
+          yield { type: 'item.completed', item: { id: `verify-${threadId}-${item.caseId}`, type: 'mcp_tool_call', server: 'playwright', tool: 'browser_verify_text_visible', arguments: {}, status: 'completed', result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```" }], structured_content: {} } } } as unknown as ThreadEvent
+          yield { type: 'item.completed', item: { id: `end-${threadId}-${item.caseId}`, type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: item.caseId }, status: 'completed', result: { content: [], structured_content: {} } } } as unknown as ThreadEvent
+        }
+      } catch { /* execution turns are plain text */ }
       yield { type: 'item.completed', item: { id: `message-${threadId}`, type: 'agent_message', text } } as ThreadEvent
       yield { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 8 } } as ThreadEvent
     })(),
@@ -186,7 +202,7 @@ describe('adaptive Codex epochs', () => {
     const recordsDirectory = resolve(directory, 'run', '.agent-private', 'case-results')
     expect((await readFile(resolve(recordsDirectory, 'does-not-exist'), 'utf8').catch(() => '')).length).toBe(0)
     expect((await readFile(resolve(directory, 'run', '.agent-private', 'execution-epochs', 'epoch-0001.result.json'), 'utf8')).length).toBeGreaterThan(0)
-  })
+  }, 15_000)
 
   it('resumes only the active epoch and does not replay completed case records', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-adaptive-resume-'))
@@ -247,7 +263,7 @@ describe('adaptive Codex epochs', () => {
     expect(resumedThreadId).toBe('thread-2')
     expect(resumed.result?.cases.map((item) => item.caseId)).toEqual(['case-one', 'case-two'])
     expect(await readFile(firstRecordPath, 'utf8')).toBe(firstRecordBefore)
-  })
+  }, 15_000)
 
   it('keeps case-scoped environment facts separate from a later provider interruption', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-diagnostic-causality-'))

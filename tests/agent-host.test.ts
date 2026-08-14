@@ -508,6 +508,14 @@ process.stdin.on('end', () => {
         return {
           events: (async function* () {
             yield { type: 'thread_started' as const, threadId: 'portable-session' }
+            if (text.startsWith('{')) {
+              yield { type: 'tool_completed' as const, server: 'playwright', tool: 'browser_storage_state', arguments: { filename: 'replay-storage-state.json' }, status: 'completed' as const }
+              yield { type: 'tool_completed' as const, server: 'playwright', tool: 'browser_evaluate', arguments: { filename: 'replay-session-storage.json' }, status: 'completed' as const }
+              yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'case-one' }, status: 'completed' as const }
+              yield { type: 'tool_completed' as const, server: 'playwright', tool: 'browser_navigate', arguments: {}, status: 'completed' as const, result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait page.goto('data:text/html,<div>Ready</div>');\n```" }] } }
+              yield { type: 'tool_completed' as const, server: 'playwright', tool: 'browser_verify_text_visible', arguments: {}, status: 'completed' as const, result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```" }] } }
+              yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'case-one' }, status: 'completed' as const }
+            }
             yield { type: 'agent_message' as const, text }
           })(),
         }
@@ -885,6 +893,14 @@ process.stdin.on('end', () => {
       send({ type: 'agent_start' })
       if (promptIndex === 0) {
         send({ type: 'tool_completed', server: 'auto-test-control', tool: 'test_contract', status: 'completed' })
+      }
+      if (promptIndex > 1) {
+        send({ type: 'tool_completed', server: 'playwright', tool: 'browser_storage_state', arguments: { filename: 'replay-storage-state.json' }, status: 'completed' })
+        send({ type: 'tool_completed', server: 'playwright', tool: 'browser_evaluate', arguments: { filename: 'replay-session-storage.json' }, status: 'completed' })
+        send({ type: 'tool_completed', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'case-one' }, status: 'completed' })
+        send({ type: 'tool_completed', server: 'playwright', tool: 'browser_navigate', arguments: {}, result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait page.goto('data:text/html,<div>Ready</div>');\n```" }] }, status: 'completed' })
+        send({ type: 'tool_completed', server: 'playwright', tool: 'browser_verify_text_visible', arguments: {}, result: { content: [{ type: 'text', text: "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```" }] }, status: 'completed' })
+        send({ type: 'tool_completed', server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'case-one' }, status: 'completed' })
       }
       const text = promptIndex <= 1 ? 'fixture execution complete' : JSON.stringify(result)
       send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } })
