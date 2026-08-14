@@ -644,11 +644,18 @@ async function readMutationLedger(path: string): Promise<CodexTestMutationLedger
   return parsed as CodexTestMutationLedgerEntry[]
 }
 
-const controlMcpPreflightPrompt = [
-  'This is a read-only Auto-Test capability preflight.',
-  'Call auto-test-control.test_contract exactly once and do not call any other tool.',
-  'After the tool returns, reply with a short confirmation only.',
-].join(' ')
+/** Tool name the host's agent must invoke to read the immutable test contract. */
+export function controlContractToolName(hostId: AgentHostId): string {
+  return hostId === 'omp' ? 'mcp__auto_test_control_test_contract' : 'auto-test-control.test_contract'
+}
+
+function controlMcpPreflightPrompt(hostId: AgentHostId): string {
+  return [
+    'This is a read-only Auto-Test capability preflight.',
+    `Call ${controlContractToolName(hostId)} exactly once and do not call any other tool.`,
+    'After the tool returns, reply with a short confirmation only.',
+  ].join(' ')
+}
 
 function isCompletedControlContractCall(event: AgentEvent): boolean {
   return event.type === 'tool_completed' &&
@@ -1180,7 +1187,7 @@ export async function runAgentTest(
         await runTurn(
           thread,
           host.id,
-          [{ type: 'text', text: controlMcpPreflightPrompt }],
+          [{ type: 'text', text: controlMcpPreflightPrompt(host.id) }],
           eventsPath,
           redactionSecrets,
           progress,
