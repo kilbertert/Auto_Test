@@ -10,6 +10,10 @@
 
 当前默认宿主是 Codex。PR #28 后的 Linux x64 验收已证明 Codex 与 OMP 能以同一 Manifest 分别完成一次真实写入型充电 canary，并共享结果、证据、回执和 Mutation Ledger 合同；它不能替代 Windows 平台的业务复验。Windows 私有包自动安装 Codex；OMP 二进制需要在测试机单独安装，但可以消费同一个私有包默认 Provider 或显式 Model Profile，且其 workspace isolation 仍是 `prompt_only`。Provider 探针和安装检查只证明启动层，必须以 Windows 实际 Manifest、逐 case 证据、结果工作簿和 `pending=0` 的 Ledger 才能声明业务通过。
 
+## 快速回归脚本
+
+探索成功后应自动出现 `agent-workspace\replay\replay-manifest.json`。Environment Profile 上限为 `read` 时，验收每个 passed case 都必须确认状态为 `verified`、verification exitCode 为 0，并且生成 spec 来自最后一个完整 case attempt；该门禁不受 intake 的单 case 风险推断影响。允许 `write`/`destructive` 的 Profile 只自动回放被判定为 `read` 的 case；`candidate` 只表示脚本已生成，不代表已回放通过。回放使用 Run 私有的 cookies/localStorage 与 sessionStorage 捕获；工作区临时文件应已被 Core 删除，只保留 `.agent-private` 原件。生成 config 的测试超时为 180 秒、导航超时为 90 秒；缺少任一认证态捕获或独立回放失败时不能宣称快速回归可用。写入或破坏性 case 不自动重复执行，需准备隔离回归数据后单独验证。动态验证码登录用例需另有可重复的认证 setup，不能把一次性验证码写进 spec。
+
 ## 1. 验收前准备
 
 - 使用当前版本的内部私有 Windows ZIP，解压到本机短路径，例如 `D:\Auto-Test`；不要直接在 ZIP、OneDrive、共享盘或 `Program Files` 中运行。显式 `--output-dir` 也应放在运行期间持续在线的本机卷。

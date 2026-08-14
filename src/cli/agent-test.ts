@@ -743,6 +743,9 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   console.log(`测试结果：${run.result?.outcome ?? 'failed'}`)
   console.log(`状态文件：${resolve(options.outputDirectory, 'codex-agent.state.json')}`)
   if (run.result) console.log(`结果文件：${resolve(options.outputDirectory, 'codex-agent.result.json')}`)
+  if (run.result?.cases.some((item) => item.outcome === 'passed')) {
+    console.log(`Playwright 回归资产：${resolve(options.outputDirectory, 'agent-workspace', 'replay', 'replay-manifest.json')}`)
+  }
   if (run.result) {
     try {
       const workbookPath = await writeResultWorkbookDelivery({

@@ -62,6 +62,10 @@ npm run agent:test -- \
 
 需要比较 Codex 与 OMP 时，分别用同一输入包执行两个独立目录，再运行 `npm run agent:compare -- --run <dir> --run <dir>`；比较器只读取两份 Run 的不可变输入合同、结构化结果、证据、回执和 Ledger，不会再次调用模型或重复业务写入。合同缺失或不一致时只返回 `invalid`。
 
+## 从 MCP 轨迹生成 Playwright 回归脚本
+
+每个成功 Run 会自动在 `agent-workspace/replay/` 为 passed case 生成独立 Playwright spec、config 和 `replay-manifest.json`。Agent 可在探索后提交多个 case attempt；Core 只选择最后一个完整、无不确定工具且含断言的 attempt。探索线程在 case episode 外分别捕获 cookies/localStorage 和 sessionStorage，Core 校验后移入 `.agent-private/`，并在新的 BrowserContext 中注入。Environment Profile 上限为 `read` 时，所有 passed case 都必须独立回放通过后才标记 `verified`，不受 intake 的单 case 风险推断影响；允许 `write`/`destructive` 的 Profile 只自动回放被判定为 `read` 的 case，其余只标记 `candidate`，避免重复业务副作用，需在隔离回归数据上显式验证。生成的 config 使用 180 秒测试超时和 90 秒导航超时，避免合法的 30 秒以上业务等待被 Playwright 默认测试超时截断。缺少认证态捕获或独立回放失败时不会把 passed case 当作可交付回归资产；动态验证码登录等认证转换仍需要可重复的验证码适配器。无法安全编译的 case 标记 `not_replayable`，不会篡改首次业务结果。`npm run compile:replay` 仍可用于历史 Run 的手工迁移。
+
 ## 核心约束
 
 - 测试工程师定义的预期结果不可由 Agent 修改。

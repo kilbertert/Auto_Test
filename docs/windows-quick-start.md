@@ -6,6 +6,10 @@
 
 需要从 Linux/WSL 重新生成私有 ZIP 时，只看[Windows 私有包快速打包](windows-package-quick-start.md)；本文不重复打包命令。
 
+## 生成快速回归 spec
+
+成功运行会自动在 `<Run>\agent-workspace\replay\` 生成逐 case Playwright spec、config 和 `replay-manifest.json`。探索线程会在 case episode 外捕获 cookies/localStorage 和 sessionStorage，Core 私下保存并在新的 BrowserContext 中注入。Environment Profile 上限为 `read` 时，所有 passed case 都必须独立回放通过后才标记 `verified`，不受 intake 的单 case 风险推断影响；允许 `write`/`destructive` 的 Profile 只自动回放被判定为 `read` 的 case，其余只标记 `candidate`，必须在隔离回归数据上显式验证。生成 config 使用 180 秒测试超时和 90 秒导航超时，可覆盖合法的 30 秒以上业务等待。session ref、探索性 `browser_run_code_unsafe`、认证态保存调用和失败 attempt 不会进入最终脚本。动态验证码登录用例没有可重复验证码适配器时仍会被阻断，不会被伪装成 deterministic replay。
+
 ## 第一次使用
 
 直接双击仓库根目录的 `Auto-Test.cmd`。
