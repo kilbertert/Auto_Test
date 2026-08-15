@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { codexTestAgentPrompt } from '../src/agent/prompt.js'
+import { agentTestFinalPrompt, codexTestAgentPrompt } from '../src/agent/prompt.js'
+import { codexTestResultSchema } from '../src/agent/result.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 function manifest(): WorkflowIntakeManifest {
@@ -73,5 +74,18 @@ describe('AgentHost test prompt safety rules', () => {
     expect(prompt).toContain('/run/case-results.epoch-0002.json')
     expect(prompt).toContain('Do not execute them, classify them, or create placeholder outcomes')
     expect(prompt).toContain('outcome contract derived from the same source row')
+  })
+
+  it('spells out the strict final-result keys for schema-loose providers', () => {
+    const prompt = agentTestFinalPrompt()
+    const topLevelKeys = Object.keys(codexTestResultSchema.properties).join(', ')
+    const caseKeys = Object.keys(codexTestResultSchema.properties.cases.items.properties).join(', ')
+    const evidenceKeys = Object.keys(codexTestResultSchema.properties.cases.items.properties.evidence.items.properties).join(', ')
+
+    expect(prompt).toContain(`Use only these top-level keys: ${topLevelKeys}.`)
+    expect(prompt).toContain('Do not add caseIds, epoch, or mutationLedger')
+    expect(prompt).toContain(`Use only these keys in every case: ${caseKeys}.`)
+    expect(prompt).toContain('Do not add case-level blockers, productDefects, or nextActions')
+    expect(prompt).toContain(`Every evidence item must contain exactly ${evidenceKeys}.`)
   })
 })
