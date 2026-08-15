@@ -191,6 +191,9 @@ Requirements:
 - Include concise user-facing blockers, product defects, and next actions without secrets. Use the test engineer's input language when practical.
 - Report the current Mutation Ledger and environment requirements exactly as returned by auto-test-control.environment_requirements; the harness independently checks their recorded identity, case linkage, evidence, and pending state.
 - The provider-facing strict schema uses an empty string for an optional scalar and an empty array for an optional array when that field does not apply. These are transport sentinels normalized by the Core; do not invent a failure classification, environment origin, receipt, or artifact path.
+- Use only these top-level keys: version, workflowId, sourceSha256, outcome, summary, startedAt, finishedAt, cases, mutations, environmentRequirements, blockers, productDefects, nextActions. Do not add caseIds, epoch, or mutationLedger.
+- Use only these keys in every case: caseId, title, outcome, summary, failureSource, failureKind, environmentRequirementIds, executionReceiptIds, fieldGateIds, evidence. Do not add case-level blockers, productDefects, or nextActions. Include every listed key; use the transport sentinels above when it does not apply.
+- Every evidence item must contain exactly kind, path, description. Use an empty path when no artifact path exists. Top-level blockers, productDefects, and nextActions are arrays of strings.
 
 ${executionEpochContext(executionEpoch)}
 
