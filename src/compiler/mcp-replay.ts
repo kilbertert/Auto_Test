@@ -42,7 +42,21 @@ function environmentExpression(name: string): string {
 function makeReplayable(code: string): string {
   return code
     .replace(/(['"])<secret>(AUTO_TEST_VALUE_\d+(?:_\d+)?)<\/secret>\1/g, (_match, _quote, name: string) => environmentExpression(name))
-    .replace(/(['"])<redacted-secret>\1/g, () => environmentExpression('AUTO_TEST_REPLAY_SECRET'))
+}
+
+function replayCode(attempt: ReplayAttempt): string[] | undefined {
+  if (attempt.diagnostics.length > 0) return undefined
+  const navigationIndex = attempt.code.findIndex((line) => /\bpage\.goto\s*\(/.test(line))
+  if (navigationIndex < 0) {
+    attempt.diagnostics.push({ severity: 'error', code: 'navigation_missing', message: 'Replay attempt must start from a deterministic page.goto navigation', caseId: attempt.caseId })
+    return undefined
+  }
+  if (attempt.code.slice(0, navigationIndex).some((line) => !/^\s*await expect\s*\(/.test(line))) {
+    attempt.diagnostics.push({ severity: 'error', code: 'action_before_navigation', message: 'Replay attempt contains a business action before its first page.goto navigation', caseId: attempt.caseId })
+    return undefined
+  }
+  const code = attempt.code.slice(navigationIndex)
+  return code.some((line) => /\bexpect\s*\(/.test(line)) ? code : undefined
 }
 
 export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<string>): CompiledMcpReplay {
@@ -63,7 +77,14 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
 
   for (const value of events) {
     const event = normalizeAgentEvent(value)
-    if (event.type !== 'tool_completed' || event.status !== 'completed') continue
+    if (event.type !== 'tool_completed') continue
+    if (event.status !== 'completed') {
+      if (activeCaseId && (!passedCaseIds || passedCaseIds.has(activeCaseId)) &&
+          event.server === 'playwright' && event.tool?.startsWith('browser_') && !ignoredTools.test(event.tool)) {
+        activeAttempt?.diagnostics.push({ severity: 'error', code: 'tool_failed', message: `${event.tool} did not complete successfully`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      }
+      continue
+    }
     if (event.server === 'auto-test-control' && event.tool === 'case_execution_begin') {
       const caseId = (event.arguments as { caseId?: unknown } | undefined)?.caseId
       activeCaseId = typeof caseId === 'string' ? caseId : undefined
@@ -92,20 +113,19 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
       activeAttempt?.diagnostics.push({ severity: 'error', code: 'generated_code_missing', message: `${event.tool} did not return Playwright code`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
       continue
     }
-    activeAttempt?.code.push(makeReplayable(code))
+    const replayable = makeReplayable(code)
+    if (/<(?:\/?secret|redacted(?:-[^>]+)?)>/i.test(replayable)) {
+      activeAttempt?.diagnostics.push({ severity: 'error', code: 'redacted_runtime_value', message: `${event.tool} contains a runtime value that cannot be recovered from redacted events`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
+      continue
+    }
+    activeAttempt?.code.push(replayable)
   }
 
   const cases = new Map<string, string[]>()
   for (const caseId of passedCaseIds ?? []) {
     const candidates = (attempts.get(caseId) ?? []).filter((attempt) => attempt.complete)
-    const selected = candidates.findLast((attempt) => attempt.diagnostics.length === 0 && attempt.code.some((line) => /\bexpect\s*\(/.test(line)))
-    if (selected) {
-      const navigationIndex = selected.code.findIndex((line) => /\bpage\.goto\s*\(/.test(line))
-      const code = navigationIndex > 0 && selected.code.slice(0, navigationIndex).every((line) => /^\s*await expect\s*\(/.test(line))
-        ? selected.code.slice(navigationIndex)
-        : selected.code
-      cases.set(caseId, code)
-    }
+    const selected = candidates.map((attempt) => replayCode(attempt)).findLast((code) => code !== undefined)
+    if (selected) cases.set(caseId, selected)
     else {
       diagnostics.push(...(candidates.at(-1)?.diagnostics ?? []))
       diagnostics.push({ severity: 'error', code: candidates.length ? 'replayable_attempt_missing' : 'case_events_missing', message: candidates.length ? 'Passed case has no complete replayable attempt with an assertion' : 'Passed case has no complete execution attempt', caseId })

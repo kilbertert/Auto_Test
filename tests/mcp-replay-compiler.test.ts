@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { compileMcpReplay } from '../src/compiler/mcp-replay.js'
 
-function event(id: string, server: string, tool: string, args: object, text = ''): object {
-  return { type: 'item.completed', item: { id, type: 'mcp_tool_call', server, tool, arguments: args, result: { content: [{ type: 'text', text }] }, status: 'completed' } }
+function event(id: string, server: string, tool: string, args: object, text = '', status = 'completed'): object {
+  return { type: 'item.completed', item: { id, type: 'mcp_tool_call', server, tool, arguments: args, result: { content: [{ type: 'text', text }] }, status } }
 }
 
 describe('MCP replay compiler', () => {
@@ -26,9 +26,10 @@ describe('MCP replay compiler', () => {
   it('preserves indexed aliases for list-valued secrets', () => {
     const result = compileMcpReplay([
       event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
-      event('2', 'playwright', 'browser_type', {}, "### Ran Playwright code\n```js\nawait page.getByRole('textbox').fill('<secret>AUTO_TEST_VALUE_001_02</secret>');\n```"),
-      event('3', 'playwright', 'browser_verify_value', {}, "### Ran Playwright code\n```js\nawait expect(page.getByRole('textbox')).toHaveValue('<secret>AUTO_TEST_VALUE_001_02</secret>');\n```"),
-      event('4', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test');\n```"),
+      event('3', 'playwright', 'browser_type', {}, "### Ran Playwright code\n```js\nawait page.getByRole('textbox').fill('<secret>AUTO_TEST_VALUE_001_02</secret>');\n```"),
+      event('4', 'playwright', 'browser_verify_value', {}, "### Ran Playwright code\n```js\nawait expect(page.getByRole('textbox')).toHaveValue('<secret>AUTO_TEST_VALUE_001_02</secret>');\n```"),
+      event('5', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
     ], new Set(['case-1']))
 
     expect(result.diagnostics).toEqual([])
@@ -47,6 +48,19 @@ describe('MCP replay compiler', () => {
     expect(result.diagnostics.map((item) => item.code)).toEqual(['unsafe_tool', 'replayable_attempt_missing', 'case_events_missing'])
   })
 
+  it('rejects an attempt containing a failed Playwright action', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test');\n```"),
+      event('3', 'playwright', 'browser_click', {}, '', 'failed'),
+      event('4', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```"),
+      event('5', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+    ], new Set(['case-1']))
+
+    expect(result.source).toBe('')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['tool_failed', 'replayable_attempt_missing'])
+  })
+
   it('rejects action-only passed cases', () => {
     const result = compileMcpReplay([
       event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
@@ -55,7 +69,56 @@ describe('MCP replay compiler', () => {
     ], new Set(['case-1']))
 
     expect(result.source).toBe('')
-    expect(result.diagnostics[0]?.code).toBe('replayable_attempt_missing')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['navigation_missing', 'replayable_attempt_missing'])
+  })
+
+  it('rejects assertions that depend on an ambient page without navigation', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```"),
+      event('3', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+    ], new Set(['case-1']))
+
+    expect(result.source).toBe('')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['navigation_missing', 'replayable_attempt_missing'])
+  })
+
+  it('rejects business actions before the deterministic navigation', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_click', {}, "### Ran Playwright code\n```js\nawait page.getByRole('button', { name: 'Save' }).click();\n```"),
+      event('3', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test');\n```"),
+      event('4', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```"),
+      event('5', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+    ], new Set(['case-1']))
+
+    expect(result.source).toBe('')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['action_before_navigation', 'replayable_attempt_missing'])
+  })
+
+  it('rejects redacted runtime values instead of inventing replay secrets', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test/orders/<redacted-number>');\n```"),
+      event('3', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```"),
+      event('4', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+    ], new Set(['case-1']))
+
+    expect(result.source).toBe('')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['redacted_runtime_value', 'replayable_attempt_missing'])
+  })
+
+  it('does not invent a generic environment variable for redacted secrets', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),
+      event('2', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test');\n```"),
+      event('3', 'playwright', 'browser_type', {}, "### Ran Playwright code\n```js\nawait page.getByRole('textbox').fill('<redacted-secret>');\n```"),
+      event('4', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Ready')).toBeVisible();\n```"),
+      event('5', 'auto-test-control', 'case_execution_end', { caseId: 'case-1' }),
+    ], new Set(['case-1']))
+
+    expect(result.source).toBe('')
+    expect(result.diagnostics.map((item) => item.code)).toEqual(['redacted_runtime_value', 'replayable_attempt_missing'])
   })
 
   it('ignores browser_find and network inspection in a replay episode', () => {
