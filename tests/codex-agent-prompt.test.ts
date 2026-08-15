@@ -34,6 +34,7 @@ describe('AgentHost test prompt safety rules', () => {
 
     expect(prompt).toContain('primary test engineer')
     expect(prompt).toContain('shell commands')
+    expect(prompt).not.toContain('subagents')
     expect(prompt).toContain('browser_run_code_unsafe')
     expect(prompt).toContain('/run/input/original/fixture.xlsx')
     expect(prompt).toContain('/run/input/run-values.json')

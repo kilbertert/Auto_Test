@@ -150,7 +150,7 @@ export function startCodexSdkThread(
         shell_tool: options.fullAgentAccess,
         apps: false,
         plugins: false,
-        multi_agent: options.fullAgentAccess,
+        multi_agent: false,
         remote_plugin: false,
         hooks: false,
         memories: false,

@@ -289,6 +289,7 @@ process.stdin.on('end', () => {
     expect(sandboxIndex).toBeGreaterThanOrEqual(0)
     expect(args[sandboxIndex + 1]).toBe('danger-full-access')
     expect(args).toContain('features.plugins=false')
+    expect(args).toContain('features.multi_agent=false')
   })
 
   it('classifies host errors so only operational transport classes are retryable', () => {
