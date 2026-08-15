@@ -66,6 +66,8 @@ npm run agent:test -- \
 
 Provider 选择在 AgentHost 边界完成。Core 只传递 `AgentModelProviderDescriptor`（`providerId`、`model`、`baseUrl`、统一 `api`、输入模态、推理/容量能力和环境变量引用），再调用选中 Host 的 `modelProvider.prepare()`；适配器负责原生文件、selector、启动参数和隔离环境。Codex 当前声明只支持 `openai-responses`，并映射为 `wire_api = "responses"`。受管 Profile 的 `models.json` 以当前安装版 Codex CLI 的 bundled model catalog 为模板，保留该版本原生 agent instructions 和必需 schema，再只覆盖 Profile 声明的模型、推理、搜索、输入模态和容量能力；模板不可读取或生成文件不能由真实 CLI 解析时会在模型请求前 fail closed。这样既避免第三方模型落入错误的 fallback metadata，也不会用框架自制的弱提示替换 Codex 原生执行框架。Codex Web Search 只有在 Profile 明确声明 `supportsSearchTool: true` 时启用。OMP 声明支持 OMP catalog 的协议集合，并把同一 descriptor 写成 `models.yml`。因此 `openai-completions` 等 Profile 可以被 OMP 消费，但会在 Codex 适配器准备阶段明确拒绝，而不是让 Runner 解析 Codex 字段。第三方 Host 只需实现相同接口；已有合成 Host 契约测试证明它不需要在 Runner 增加 ID 分支。自定义模型应声明真实上下文窗口、输出上限和输入模态，避免错误调度或把不支持的图片发送给 Provider；仅 native 配置且没有目录元数据时，Codex 才可能保留 fallback metadata 警告。
 
+Auto-Test 的 Codex 测试线程固定由单一主代理执行，不启用 Codex 多代理工具。页面写入、Mutation Ledger 和回放 episode 因此始终由同一线程排序；只读材料分析仍可由主代理使用工作区脚本完成。
+
 仓库提供两个无密钥内置 Profile：
 
 | Profile | Model | Base URL | `envKey` | 备注 |

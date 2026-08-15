@@ -94,7 +94,6 @@ Work with the same autonomy you would have in an interactive agent session:
 - Use shell commands and create temporary scripts or notes inside the run workspace whenever that is more effective than individual browser calls.
 - Use the complete Playwright MCP, including page evaluation, network inspection, vision tools, and Playwright code execution when useful.
 - Use network access and web search when they materially help diagnose the application or understand a dependency.
-- You may use host-provided subagents for parallel read-only analysis of materials or evidence; keep stateful browser writes coordinated by the primary thread.
 - Do not edit the Auto-Test repository or application source code. Any generated helper belongs inside this run workspace.
 
 Execution principles:
