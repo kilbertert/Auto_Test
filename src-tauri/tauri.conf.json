@@ -21,6 +21,7 @@
   },
   "bundle": {
     "active": true,
+    "icon": ["icons/icon.svg"],
     "resources": ["../Auto-Test.cmd", "../scripts", "../dist", "../package.json", "../package-lock.json"],
     "targets": ["nsis", "msi"],
     "windows": { "webviewInstallMode": { "type": "downloadBootstrapper" } }

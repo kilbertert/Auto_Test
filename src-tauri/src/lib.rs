@@ -26,11 +26,14 @@ fn run_test(app: AppHandle, runtime: State<'_, Runtime>, request: RunRequest) ->
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     *runtime.0.lock().unwrap() = Some(child);
+    let output_app = app.clone();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader};
-        for stream in [stdout, stderr].into_iter().flatten() {
-            for line in BufReader::new(stream).lines().flatten() { let _ = app.emit("run-output", line); }
-        }
+        if let Some(stream) = stdout { for line in BufReader::new(stream).lines().flatten() { let _ = output_app.emit("run-output", line); } }
+    });
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        if let Some(stream) = stderr { for line in BufReader::new(stream).lines().flatten() { let _ = app.emit("run-output", line); } }
         let _ = app.emit("run-finished", true);
     });
     Ok(())
