@@ -48,3 +48,4 @@ evals/
 .DS_Store
 .idea/
 .vscode/
+src-tauri/target/
