@@ -361,6 +361,9 @@ jobs:
           if (-not (Test-Path $secretPath)) { throw 'Private package key was not persisted with DPAPI' }
           if ((Get-Content -Raw -Encoding UTF8 $secretPath) -match 'synthetic-private-package-key') { throw 'DPAPI file contains the plaintext API key' }
 
+          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
+          if ((& $codex --version) -notmatch '0\.146\.0') { throw 'Unexpected Codex CLI version' }
+
   windows-tauri-build:
     name: Windows Tauri Package
     runs-on: windows-latest
@@ -410,5 +413,3 @@ jobs:
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/SHA256SUMS.txt
-          $codex = Join-Path $env:AUTO_TEST_TOOLS_HOME 'node_modules\.bin\codex.cmd'
-          if ((& $codex --version) -notmatch '0\.146\.0') { throw 'Unexpected Codex CLI version' }
