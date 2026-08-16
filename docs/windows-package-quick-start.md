@@ -62,6 +62,8 @@ unset key
 4. 双击 Auto-Test.cmd。首次启动会安装便携 Node.js、Codex CLI、依赖和 Chromium，并把一次性 API Key 导入当前 Windows 用户的 DPAPI。
 5. 首次启动成功后，解压目录中的明文引导文件会被删除；ZIP 原文件仍可能包含 Key，验收完成后按公司安全要求处理。
 
+如果需要图形入口，使用仓库中的 [Tauri GUI 说明](windows-tauri-gui.md)。GUI 只是现有启动器的薄壳，当前已验证的零输入交付仍是本页的 CLI ZIP。
+
 ## Windows 启动层验收
 
 在 PowerShell 中执行：

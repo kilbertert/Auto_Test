@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Auto-Test",
+  "version": "0.1.0",
+  "identifier": "com.autotest.desktop",
+  "build": {
+    "frontendDist": "ui",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{
+      "title": "Auto-Test",
+      "width": 760,
+      "height": 620,
+      "minWidth": 620,
+      "minHeight": 500,
+      "resizable": true
+    }],
+    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" }
+  },
+  "bundle": {
+    "active": true,
+    "resources": ["../Auto-Test.cmd", "../scripts", "../dist", "../package.json", "../package-lock.json"],
+    "targets": ["nsis", "msi"],
+    "windows": { "webviewInstallMode": { "type": "downloadBootstrapper" } }
+  }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "auto-test-gui"
+version = "0.1.0"
+description = "Minimal Windows UI for Auto-Test"
+authors = ["Auto-Test"]
+edition = "2021"
+
+[lib]
+name = "auto_test_gui_lib"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

@@ -84,6 +84,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 0. 退出
 ```
 
+仓库另提供可选的 Tauri 2 图形入口，适合不希望直接操作终端的 Windows 用户；它复用同一个 `Auto-Test.cmd run` 启动器，不改变凭据、恢复和结果语义。构建与验证边界见 [Windows Tauri 图形包](windows-tauri-gui.md)。
+
 ## 第一次接入一个网站
 
 选择“注册或更新测试环境”，然后：

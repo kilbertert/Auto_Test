@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Auto-Test</title><link rel="stylesheet" href="style.css"></head>
+<body><main><header><div><p class="eyebrow">WINDOWS TEST RUNNER</p><h1>Auto-Test</h1><p class="muted">用一个清晰的窗口启动现有测试流程。</p></div><span id="state" class="badge">就绪</span></header>
+<section class="panel"><label>测试用例 Excel <button id="choose" class="secondary" type="button">选择 Excel</button> <span id="filename" class="muted">尚未选择</span></label><label>网站 URL <span class="muted">每行一个</span><textarea id="urls" rows="3" placeholder="https://app.example.test/"></textarea></label><label class="check"><input id="one" type="checkbox" checked> 仅运行一条用例（建议先验证环境）</label><div class="actions"><button id="start">开始测试</button><button id="stop" class="secondary" disabled>停止</button></div></section>
+<section class="panel"><div class="log-title"><strong>运行输出</strong><button id="clear" class="link">清空</button></div><pre id="log" aria-live="polite">等待开始…</pre></section><p class="foot">API Key、Node、Codex 和浏览器仍由现有 Windows 启动器管理。</p></main><script src="app.js"></script></body></html>
