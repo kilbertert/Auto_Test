@@ -397,7 +397,8 @@ jobs:
           key: ${{ runner.os }}-tauri-${{ hashFiles('src-tauri/Cargo.lock') }}
       - name: Build Windows installers
         shell: pwsh
-        run: cargo tauri build --manifest-path src-tauri/Cargo.toml --bundles nsis,msi
+        working-directory: src-tauri
+        run: cargo tauri build --bundles nsis,msi
       - name: Write installer checksums
         shell: pwsh
         run: |
