@@ -118,6 +118,11 @@ class DshSdkSession implements AgentHostSession {
     this.active?.end(new AgentHostError('dsh', 'DSH SDK session closed', 'process'))
     await this.request('shutdown', {}).catch(() => undefined)
     this.process.stdin.end()
+    if (this.process.exitCode !== null) return
+    await Promise.race([
+      new Promise<void>(resolvePromise => this.process.once('exit', () => resolvePromise())),
+      new Promise<void>(resolvePromise => setTimeout(resolvePromise, 2_000)),
+    ])
     if (this.process.exitCode === null) this.process.kill()
   }
 

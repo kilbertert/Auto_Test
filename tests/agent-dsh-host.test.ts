@@ -47,9 +47,13 @@ lines.on('line', line => {
     }
     const session = await new DshAgentHost().start(options)
     const first = await session.run([{ type: 'text', text: 'first' }])
-    expect((await Array.fromAsync(first.events)).find(event => event.type === 'agent_message')?.text).toBe('first')
+    const firstEvents = []
+    for await (const event of first.events) firstEvents.push(event)
+    expect(firstEvents.find(event => event.type === 'agent_message')?.text).toBe('first')
     const second = await session.run([{ type: 'text', text: 'second' }])
-    expect((await Array.fromAsync(second.events)).find(event => event.type === 'agent_message')?.text).toBe('second')
+    const secondEvents = []
+    for await (const event of second.events) secondEvents.push(event)
+    expect(secondEvents.find(event => event.type === 'agent_message')?.text).toBe('second')
     expect(session.id).toMatch(/^auto-test-/)
     await session.close?.()
   })

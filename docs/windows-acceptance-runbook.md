@@ -1,6 +1,6 @@
 # Windows 从零验收清单
 
-> DSH Host 尚未进入本清单的通过矩阵。只有 bridge、真实 Provider/MCP、ACL/PwSh sandbox、写入补偿和恢复 canary 全部完成后，才能新增 DSH Windows 验收声明。
+> DSH Host 尚未进入本清单的通过矩阵。只有官方 SDK runtime、真实 Provider/MCP、ACL/PwSh sandbox、写入补偿和恢复 canary 全部完成后，才能新增 DSH Windows 验收声明。
 
 本清单从“已经拿到私有 ZIP”开始。如何从 Linux/WSL 生成 ZIP，统一见[Windows 私有包快速打包](windows-package-quick-start.md)。
 

@@ -1,6 +1,6 @@
 # Windows 使用：双击即可开始
 
-> DSH `--agent-host dsh` 当前是实验性路线 B，只完成 Auto-Test adapter；还需要单独安装 `auto-test-host` JSONL bridge profile，且尚未完成 Windows ACL/PwSh sandbox 与真实业务 canary。
+> DSH `--agent-host dsh` 当前是实验性路线 B，使用官方 SDK JSON-RPC runtime 和 Auto-Test 内置组合配置；仍需单独安装 DSH runtime，且尚未完成 Windows ACL/PwSh sandbox 与真实业务 canary。
 
 日常使用不需要编辑 JSON、不需要创建 `storageState`，也不需要记住长命令。
 

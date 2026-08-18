@@ -7,6 +7,52 @@ import { controlServerPath, packageFilePath } from './runtime-paths.js'
 
 const require = createRequire(import.meta.url)
 
+const defaultCordisConfiguration = `
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: true
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './sessions'
+    compression: none
+- id: session-checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are the Auto-Test browser testing agent.'
+    workspaceContext:
+      maxBytes: 100000
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+- id: mcp-playwright
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: playwright
+    transport: stdio
+    command: !!js process.env.AUTO_TEST_PLAYWRIGHT_COMMAND
+    args: !!js JSON.parse(process.env.AUTO_TEST_PLAYWRIGHT_ARGS ?? '[]')
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    env: !!js JSON.parse(process.env.AUTO_TEST_MCP_ENV ?? '{}')
+    failOnStartupError: true
+- id: mcp-control
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: auto-test-control
+    transport: stdio
+    command: !!js process.env.AUTO_TEST_CONTROL_COMMAND
+    args: !!js JSON.parse(process.env.AUTO_TEST_CONTROL_ARGS ?? '[]')
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    env: !!js JSON.parse(process.env.AUTO_TEST_MCP_ENV ?? '{}')
+    failOnStartupError: true
+`.trimStart()
+
 export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
   readonly supportedApis = ['anthropic-messages'] as const
 
@@ -41,11 +87,7 @@ export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
     const configurationPath = resolve(options.agentHome, 'settings.yaml')
     await writePrivateText(configurationPath, JSON.stringify(settings, null, 2) + '\n')
     const cordisTemplate = options.environment.AUTO_TEST_DSH_CORDIS_TEMPLATE
-    if (cordisTemplate) {
-      await writePrivateText(resolve(options.agentHome, 'cordis.yml'), await readFile(cordisTemplate, 'utf8'))
-    } else {
-      throw new Error('DSH requires AUTO_TEST_DSH_CORDIS_TEMPLATE pointing to an SDK JSON-RPC cordis.yml')
-    }
+    await writePrivateText(resolve(options.agentHome, 'cordis.yml'), cordisTemplate ? await readFile(cordisTemplate, 'utf8') : defaultCordisConfiguration)
     const tsxCli = require.resolve('tsx/cli')
     environment.AUTO_TEST_PLAYWRIGHT_COMMAND = process.execPath
     environment.AUTO_TEST_PLAYWRIGHT_ARGS = JSON.stringify([
