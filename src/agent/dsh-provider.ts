@@ -15,6 +15,7 @@ const defaultCordisConfiguration = `
     requiredTools:
       - mcp__auto-test-control__test_contract
       - mcp__playwright__browser_navigate
+      - bash
     readinessTimeoutMs: 15000
 - id: llm-profile
   name: '@deepseek-ai/dsh-llm-pi-ai'
@@ -46,6 +47,10 @@ const defaultCordisConfiguration = `
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
     env: !!js JSON.parse(process.env.AUTO_TEST_MCP_ENV ?? '{}')
     failOnStartupError: true
+- id: subprocess-local
+  name: '@deepseek-ai/dsh-subprocess-local'
+- id: bash-local
+  name: '@deepseek-ai/dsh-bash-local'
 - id: agent-spine
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:
@@ -56,8 +61,15 @@ const defaultCordisConfiguration = `
       maxBytes: 100000
     skills:
       enabled: false
-    toolBash: false
+    toolBash:
+      enableRunInBackground: false
     toolJobs: false
+- id: repeat-tool-reminder
+  name: '@deepseek-ai/dsh-repeat-tool-reminder'
+  config:
+    thresholds: [3, 5, 8]
+    include:
+      - mcp__auto-test-control__test_value_get
 `.trimStart()
 
 export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {

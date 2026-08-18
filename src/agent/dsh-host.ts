@@ -214,7 +214,7 @@ export class DshAgentHost implements AgentHost {
     if (!options.fullAgentAccess) throw new AgentHostError('dsh', 'DSH SDK route currently requires direct mode', 'capability')
     await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
     const executable = await this.executable(options)
-    const executableNodeModules = resolve(dirname(executable), '../../../..', 'examples', 'node_modules')
+    const executableNodeModules = resolve(dirname(executable), '../../../..', 'node_modules', '.pnpm', 'node_modules')
     try { await symlink(executableNodeModules, resolve(options.runtime.agentHome, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir') } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new AgentHostError('dsh', `DSH runtime dependency link failed: ${String(error)}`, 'configuration')
     }

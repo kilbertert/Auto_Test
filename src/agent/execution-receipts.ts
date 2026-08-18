@@ -161,7 +161,7 @@ export class ExecutionReceiptRecorder {
     const receipt = browserReceipt(
       event,
       this.activeCaseId,
-      `${this.namespace}:turn-${String(this.turnOrdinal).padStart(4, '0')}:${event.id ?? 'unknown'}`,
+      `${this.namespace}:turn-${String(this.turnOrdinal).padStart(4, '0')}:${event.id ?? event.callId ?? `tool-${this.receipts.size + 1}`}`,
     )
     if (!receipt || this.receipts.has(receipt.id)) return
     this.receipts.set(receipt.id, receipt)

@@ -48,6 +48,21 @@ describe('execution receipts', () => {
     await expect(recorder.observe(event({ id: 'begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'case-two' }, status: 'completed' }))).rejects.toThrow(/unknown case/i)
   })
 
+  it('keeps DSH receipts distinct when normalized events have no item id', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-execution-receipts-dsh-'))
+    directories.push(directory)
+    const path = resolve(directory, 'execution-receipts.json')
+    const recorder = await ExecutionReceiptRecorder.create(path, ['case-one'])
+    await recorder.observe({ type: 'turn_started' })
+    await recorder.observe({ type: 'tool_completed', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'case-one' }, status: 'completed' })
+    await recorder.observe({ type: 'tool_completed', server: 'playwright', tool: 'browser_click', callId: 'dsh-click-1', status: 'completed' })
+    await recorder.observe({ type: 'tool_completed', server: 'playwright', tool: 'browser_snapshot', callId: 'dsh-snapshot-1', status: 'completed' })
+    expect((await readExecutionReceipts(path)).map((receipt) => receipt.id)).toEqual([
+      'single-thread:turn-0001:dsh-click-1',
+      'single-thread:turn-0001:dsh-snapshot-1',
+    ])
+  })
+
   it('records OMP xd:// MCP executions under the same case attribution contract', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-execution-receipts-omp-xdev-'))
     directories.push(directory)
