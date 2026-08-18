@@ -1,7 +1,11 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import type { AgentHostModelProviderAdapter, AgentHostProviderPrepareOptions, AgentHostRuntime } from './host.js'
 import { agentProcessEnvironment, assertProviderApiSupported, requireProviderCredential, writePrivateText } from './provider-runtime.js'
+import { controlServerPath, packageFilePath } from './runtime-paths.js'
+
+const require = createRequire(import.meta.url)
 
 export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
   readonly supportedApis = ['anthropic-messages'] as const
@@ -36,6 +40,20 @@ export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
     // JSON is valid YAML and avoids owning a YAML serializer.
     const configurationPath = resolve(options.agentHome, 'settings.yaml')
     await writePrivateText(configurationPath, JSON.stringify(settings, null, 2) + '\n')
+    const cordisTemplate = options.environment.AUTO_TEST_DSH_CORDIS_TEMPLATE
+    if (cordisTemplate) {
+      await writePrivateText(resolve(options.agentHome, 'cordis.yml'), await readFile(cordisTemplate, 'utf8'))
+    } else {
+      throw new Error('DSH requires AUTO_TEST_DSH_CORDIS_TEMPLATE pointing to an SDK JSON-RPC cordis.yml')
+    }
+    const tsxCli = require.resolve('tsx/cli')
+    environment.AUTO_TEST_PLAYWRIGHT_COMMAND = process.execPath
+    environment.AUTO_TEST_PLAYWRIGHT_ARGS = JSON.stringify([
+      packageFilePath('@playwright/mcp', 'cli.js'), '--config', options.playwrightConfigPath, '--secrets', options.playwrightSecretsPath,
+    ])
+    environment.AUTO_TEST_CONTROL_COMMAND = process.execPath
+    environment.AUTO_TEST_CONTROL_ARGS = JSON.stringify([tsxCli, controlServerPath(), options.controlConfigPath])
+    environment.AUTO_TEST_MCP_ENV = JSON.stringify(options.mcpEnvironment)
     environment.DSH_HOME = options.agentHome
     return {
       agentHome: options.agentHome,

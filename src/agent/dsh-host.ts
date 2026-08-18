@@ -3,104 +3,166 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
 import { createInterface } from 'node:readline'
 import { mkdir } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { extname, resolve } from 'node:path'
 import type {
   AgentEvent, AgentHost, AgentHostCapabilities, AgentHostLaunchOptions,
   AgentHostModelProviderAdapter, AgentHostProbeResult, AgentHostSession,
   AgentHostStream, AgentInputPart,
 } from './host.js'
-import { AgentHostError, normalizeAgentEvent, resolveHostExecutable } from './host.js'
+import { AgentHostError, resolveHostExecutable } from './host.js'
 import { DshModelProviderAdapter } from './dsh-provider.js'
 
-/** Experimental JSONL contract for the DSH route-B bridge. */
-export interface DshBridgeFrame { type: string; id?: string; [key: string]: unknown }
+interface JsonRpcFrame { id?: number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: Record<string, unknown> }
 
 class Queue<T> {
   private values: T[] = []
-  private waiters: Array<(value: IteratorResult<T>) => void> = []
+  private waiters: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (error: Error) => void }> = []
+  private failure: Error | undefined
   private done = false
-  push(value: T): void { if (this.done) return; const waiter = this.waiters.shift(); waiter ? waiter({ value, done: false }) : this.values.push(value) }
-  end(): void { if (this.done) return; this.done = true; for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true }) }
-  async *iterate(): AsyncGenerator<T> { while (this.values.length || !this.done) { if (this.values.length) yield this.values.shift()!; else { const next = await new Promise<IteratorResult<T>>(resolvePromise => this.waiters.push(resolvePromise)); if (next.done) return; yield next.value } } }
-}
-
-function inputPayload(parts: AgentInputPart[]): Record<string, unknown> {
-  return {
-    type: 'input',
-    parts: parts.map(part => part.type === 'text'
-      ? part
-      : { type: 'local_image', path: part.path }),
+  push(value: T): void { if (this.done) return; const waiter = this.waiters.shift(); waiter ? waiter.resolve({ value, done: false }) : this.values.push(value) }
+  end(error?: Error): void {
+    if (this.done) return
+    this.done = true
+    this.failure = error
+    for (const waiter of this.waiters.splice(0)) error ? waiter.reject(error) : waiter.resolve({ value: undefined, done: true })
+  }
+  async *iterate(): AsyncGenerator<T> {
+    while (this.values.length || !this.done) {
+      if (this.values.length) yield this.values.shift()!
+      else {
+        const next = await new Promise<IteratorResult<T>>((resolvePromise, rejectPromise) => {
+          if (this.failure) rejectPromise(this.failure)
+          else this.waiters.push({ resolve: resolvePromise, reject: rejectPromise })
+        })
+        if (next.done) return
+        yield next.value
+      }
+    }
+    if (this.failure) throw this.failure
   }
 }
 
-class DshSession implements AgentHostSession {
+function contentParts(input: AgentInputPart[]): Array<Record<string, unknown>> {
+  return input.map(part => part.type === 'text'
+    ? { type: 'text', text: part.text }
+    : { type: 'text', text: `A local image is available at ${part.path}. Inspect it from the run workspace.` })
+}
+
+function eventFromSession(event: Record<string, unknown>): AgentEvent | undefined {
+  const type = event.type
+  const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
+  if (type === 'assistant/message') {
+    const message = data.message && typeof data.message === 'object' ? data.message as Record<string, unknown> : {}
+    const content = Array.isArray(message.content) ? message.content : []
+    const text = content.map(block => block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text' ? (block as Record<string, unknown>).text : '').filter(value => typeof value === 'string').join('')
+    return { type: 'agent_message', ...(text ? { text } : {}), raw: event }
+  }
+  if (type === 'tool/call') {
+    return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, tool: typeof data.name === 'string' ? data.name : 'agent_tool', arguments: data.arguments, raw: event }
+  }
+  if (type === 'tool/result') {
+    const message = data.message && typeof data.message === 'object' ? data.message as Record<string, unknown> : {}
+    return { type: 'tool_completed', callId: typeof data.callId === 'string' ? data.callId : undefined, tool: typeof message.source === 'object' && message.source && typeof (message.source as Record<string, unknown>).callId === 'string' ? (message.source as Record<string, unknown>).callId as string : 'agent_tool', status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event }
+  }
+  if (type === 'turn/start') return { type: 'turn_started', raw: event }
+  if (type === 'turn/end') return { type: 'turn_completed', raw: event }
+  return undefined
+}
+
+class DshSdkSession implements AgentHostSession {
   private readonly process: ChildProcessWithoutNullStreams
-  private readonly pending = new Map<string, (frame: DshBridgeFrame) => void>()
+  private readonly pending = new Map<number, { resolve: (result: Record<string, unknown>) => void; reject: (error: Error) => void }>()
+  private readonly sessionId: string
+  private serial = 0
   private active: Queue<AgentEvent> | undefined
   private closed = false
-  private sessionId: string | null = null
-  private readonly initialized: Promise<void>
+  private initialized: Promise<void>
 
-  constructor(options: AgentHostLaunchOptions & { executable: string; resumeId?: string }, spawnProcess = crossSpawn as typeof spawn) {
-    const args = ['--profile', 'auto-test-host', '--rpc', ...(options.resumeId ? ['--resume', options.resumeId] : [])]
-    this.process = spawnProcess(options.executable, args, {
+  constructor(options: AgentHostLaunchOptions & { executable: string; configPath: string; resumeId?: string }, spawnProcess = crossSpawn as typeof spawn) {
+    this.sessionId = options.resumeId ?? `auto-test-${randomUUID()}`
+    const executableIsScript = ['.js', '.mjs', '.cjs'].includes(extname(options.executable).toLowerCase())
+    const args = executableIsScript ? [options.executable, options.configPath] : [options.configPath]
+    this.process = spawnProcess(executableIsScript ? process.execPath : options.executable, args, {
       cwd: options.workspaceDirectory,
-      env: { ...options.runtime.environment, DSH_HOME: options.runtime.agentHome },
+      env: { ...options.runtime.environment, DSH_CWD: options.workspaceDirectory, DSH_HOME: options.runtime.agentHome },
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     })
     const lines = createInterface({ input: this.process.stdout })
     lines.on('line', line => this.handleLine(line))
     this.process.once('error', error => this.fail(error instanceof Error ? error : new Error(String(error))))
-    this.process.once('exit', () => { if (!this.closed) this.fail(new AgentHostError('dsh', 'DSH bridge exited unexpectedly', 'process')) })
-    this.initialized = this.send({ type: options.resumeId ? 'resume' : 'start', id: randomUUID(), runId: resolve(options.workspaceDirectory), resumeId: options.resumeId })
-      .then(frame => {
-        if (typeof frame.sessionId !== 'string' || !frame.sessionId) throw new AgentHostError('dsh', 'DSH bridge did not return a sessionId', 'protocol')
-        this.sessionId = frame.sessionId
-      })
+    this.process.once('exit', () => { if (!this.closed) this.fail(new AgentHostError('dsh', 'DSH SDK runtime exited unexpectedly', 'process')) })
+    this.initialized = this.request('initialize', {
+      cwd: options.workspaceDirectory,
+      provider: options.runtime.provider?.providerId ?? 'deepseek-official',
+      model: options.runtime.provider?.model ?? options.runtime.model ?? 'deepseek-v4-flash',
+      ...(options.runtime.provider?.maxOutputTokens ? { maxTokens: options.runtime.provider.maxOutputTokens } : {}),
+    }).then(() => undefined)
   }
 
   get id(): string | null { return this.sessionId }
-
   async initialize(): Promise<void> { await this.initialized }
 
   async run(input: AgentInputPart[]): Promise<AgentHostStream> {
-    if (this.closed) throw new AgentHostError('dsh', 'DSH session is already closed', 'process')
+    await this.initialized
+    if (this.closed) throw new AgentHostError('dsh', 'DSH SDK session is closed', 'process')
+    if (this.active) throw new AgentHostError('dsh', 'DSH SDK session already has an active prompt', 'process')
     const queue = new Queue<AgentEvent>()
     this.active = queue
-    await this.send(inputPayload(input) as DshBridgeFrame)
+    await this.request('session/prompt', { sessionId: this.sessionId, contentBlocks: contentParts(input) })
     return { events: queue.iterate() }
   }
 
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
-    this.active?.end()
-    this.process.stdin.end(JSON.stringify({ type: 'close' }) + '\n')
+    this.active?.end(new AgentHostError('dsh', 'DSH SDK session closed', 'process'))
+    await this.request('shutdown', {}).catch(() => undefined)
+    this.process.stdin.end()
     if (this.process.exitCode === null) this.process.kill()
   }
 
   private handleLine(line: string): void {
     if (!line.trim()) return
-    let frame: DshBridgeFrame
-    try { frame = JSON.parse(line) as DshBridgeFrame } catch { return this.fail(new AgentHostError('dsh', 'DSH bridge emitted invalid JSON', 'protocol')) }
-    if (frame.type === 'response' && typeof frame.id === 'string') { this.pending.get(frame.id)?.(frame); this.pending.delete(frame.id); return }
-    if (frame.type === 'session_started' && typeof frame.sessionId === 'string') this.sessionId = frame.sessionId
-    if (frame.type === 'turn_completed' || frame.type === 'turn_failed') { this.active?.push(normalizeAgentEvent(frame)); this.active?.end(); this.active = undefined; return }
-    if (this.active) this.active.push(normalizeAgentEvent(frame))
+    let frame: JsonRpcFrame
+    try { frame = JSON.parse(line) as JsonRpcFrame } catch { this.fail(new AgentHostError('dsh', 'DSH SDK emitted invalid JSON-RPC', 'protocol')); return }
+    if (typeof frame.id === 'number') {
+      const pending = this.pending.get(frame.id)
+      if (!pending) return
+      this.pending.delete(frame.id)
+      if (frame.error) pending.reject(new AgentHostError('dsh', String(frame.error.message ?? 'DSH SDK request failed'), 'transport'))
+      else pending.resolve(frame.result ?? {})
+      return
+    }
+    if (frame.method === 'session.event') {
+      const params = frame.params ?? {}
+      if (params.sessionId !== this.sessionId || !this.active || !params.event || typeof params.event !== 'object') return
+      const event = eventFromSession(params.event as Record<string, unknown>)
+      if (event) this.active.push(event)
+      return
+    }
+    if (frame.method === 'session.status' && frame.params?.sessionId === this.sessionId && frame.params.status === 'idle' && this.active) {
+      const active = this.active
+      this.active = undefined
+      active.end()
+    }
   }
 
-  private send(frame: DshBridgeFrame): Promise<DshBridgeFrame> {
-    if (this.closed || !this.process.stdin.writable) return Promise.reject(new AgentHostError('dsh', 'DSH bridge stdin is unavailable', 'process'))
-    const id = frame.id ?? randomUUID()
-    const payload = JSON.stringify({ ...frame, id })
+  private request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.process.stdin.writable) return Promise.reject(new AgentHostError('dsh', 'DSH SDK stdin is unavailable', 'process'))
+    const id = ++this.serial
     return new Promise((resolvePromise, rejectPromise) => {
-      const timer = setTimeout(() => { this.pending.delete(id); rejectPromise(new AgentHostError('dsh', `DSH bridge ${frame.type} timed out`, 'transport')) }, 30_000)
-      this.pending.set(id, response => { clearTimeout(timer); if (response.error) rejectPromise(new AgentHostError('dsh', String(response.error), 'transport')); else resolvePromise(response) })
-      this.process.stdin.write(payload + '\n', error => { if (error) { clearTimeout(timer); this.pending.delete(id); rejectPromise(error) } })
+      const timer = setTimeout(() => { this.pending.delete(id); rejectPromise(new AgentHostError('dsh', `DSH SDK ${method} timed out`, 'transport')) }, 30_000)
+      this.pending.set(id, { resolve: result => { clearTimeout(timer); resolvePromise(result) }, reject: error => { clearTimeout(timer); rejectPromise(error) } })
+      this.process.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
     })
   }
 
-  private fail(error: Error): void { this.active?.end(); this.active = undefined; for (const resolvePromise of this.pending.values()) resolvePromise({ type: 'response', error: error.message }); this.pending.clear() }
+  private fail(error: Error): void {
+    this.active?.end(error)
+    this.active = undefined
+    for (const pending of this.pending.values()) pending.reject(error)
+    this.pending.clear()
+  }
 }
 
 const capabilities: AgentHostCapabilities = {
@@ -110,17 +172,16 @@ const capabilities: AgentHostCapabilities = {
 
 export class DshAgentHost implements AgentHost {
   readonly id = 'dsh' as const
-  readonly displayName = 'DeepSeek Harness RPC (experimental)'
+  readonly displayName = 'DeepSeek Harness SDK JSON-RPC'
   readonly capabilities = capabilities
   readonly modelProvider: AgentHostModelProviderAdapter = new DshModelProviderAdapter()
-
   constructor(private readonly options: { spawnProcess?: typeof spawn } = {}) {}
 
   private async executable(options: AgentHostLaunchOptions): Promise<string> {
-    const value = options.executable || options.runtime.environment.AUTO_TEST_AGENT_BIN || 'dsh'
-    const resolved = await resolveHostExecutable(value, options.runtime.environment)
-    if (!resolved) throw new AgentHostError('dsh', `DSH executable is unavailable: ${value}`, 'configuration')
-    return resolved
+    const value = options.executable || options.runtime.environment.AUTO_TEST_AGENT_BIN || 'dsh-jsonrpc-agent'
+    const found = await resolveHostExecutable(value, options.runtime.environment)
+    if (!found) throw new AgentHostError('dsh', `DSH SDK JSON-RPC executable is unavailable: ${value}`, 'configuration')
+    return found
   }
 
   async probe(options: AgentHostLaunchOptions): Promise<AgentHostProbeResult> {
@@ -128,19 +189,16 @@ export class DshAgentHost implements AgentHost {
     catch (error) { return { ok: false, hostId: this.id, reason: error instanceof Error ? error.message : String(error) } }
   }
 
-  async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> {
-    if (!options.fullAgentAccess) throw new AgentHostError('dsh', 'DSH route B currently requires direct mode', 'capability')
+  private async launch(options: AgentHostLaunchOptions & { resumeId?: string }): Promise<AgentHostSession> {
+    if (!options.fullAgentAccess) throw new AgentHostError('dsh', 'DSH SDK route currently requires direct mode', 'capability')
     await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
-    const session = new DshSession({ ...options, executable: await this.executable(options) }, this.options.spawnProcess)
+    const executable = await this.executable(options)
+    const configPath = resolve(options.runtime.agentHome, 'cordis.yml')
+    const session = new DshSdkSession({ ...options, executable, configPath }, this.options.spawnProcess)
     await session.initialize()
     return session
   }
 
-  async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> {
-    if (!options.fullAgentAccess) throw new AgentHostError('dsh', 'DSH route B currently requires direct mode', 'capability')
-    await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
-    const session = new DshSession({ ...options, executable: await this.executable(options) }, this.options.spawnProcess)
-    await session.initialize()
-    return session
-  }
+  async start(options: AgentHostLaunchOptions): Promise<AgentHostSession> { return this.launch(options) }
+  async resume(options: AgentHostLaunchOptions & { resumeId: string }): Promise<AgentHostSession> { return this.launch(options) }
 }

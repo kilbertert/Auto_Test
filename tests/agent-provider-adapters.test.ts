@@ -62,8 +62,10 @@ describe('AgentHost model provider adapters', () => {
   it('writes an isolated DSH Anthropic Messages provider and rejects other APIs', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-provider-adapter-dsh-'))
     directories.push(directory)
+    const template = resolve(directory, 'cordis.yml')
+    await writeFile(template, '- id: sdk-jsonrpc-server\n  name: fixture\n')
     const provider = descriptor({ api: 'anthropic-messages', baseUrl: 'https://api.deepseek.com/anthropic' })
-    const runtime = await new DshModelProviderAdapter().prepare(await options(directory, { FIXTURE_PROVIDER_KEY: 'fixture-secret' }, provider))
+    const runtime = await new DshModelProviderAdapter().prepare(await options(directory, { FIXTURE_PROVIDER_KEY: 'fixture-secret', AUTO_TEST_DSH_CORDIS_TEMPLATE: template }, provider))
     const settings = JSON.parse(await readFile(resolve(runtime.agentHome, 'settings.yaml'), 'utf8')) as Record<string, unknown>
     expect(runtime.model).toBe('fixture_provider/fixture-model')
     expect(settings).toMatchObject({

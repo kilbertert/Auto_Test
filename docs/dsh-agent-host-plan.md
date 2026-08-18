@@ -13,7 +13,7 @@
 
 ## Bridge 合同
 
-Auto-Test 启动 `dsh --profile auto-test-host --rpc`，stdin/stdout 使用一行一个 JSON 对象。命令包含 `start`、`resume`、`input` 和 `close`；每个命令必须返回带相同 `id` 的 `response`。启动响应必须包含持久 `sessionId`。
+Auto-Test 启动 DSH SDK JSON-RPC runtime，stdin/stdout 使用 JSON-RPC 2.0 行协议。使用官方已有的 `initialize`、`session/prompt` 和 `shutdown` 请求，以及 `session.event`、`session.status` 通知；Session ID 由 Auto-Test 固定并跨物理进程恢复。
 
 Bridge 输出使用 `AgentEvent` 的稳定事件名：`thread_started`、`turn_started`、`agent_message`、`tool_started`、`tool_completed`、`command_started`、`command_completed`、`file_change_started`、`file_change_completed`、`turn_completed`、`turn_failed`、`session_incompatible` 和 `error`。工具事件必须提供稳定 `callId`，MCP 工具同时提供 `server` 与 `tool`。
 
@@ -28,4 +28,4 @@ Bridge 输出使用 `AgentEvent` 的稳定事件名：`thread_started`、`turn_s
 
 ## 当前边界
 
-本分支完成阶段 1 的 Auto-Test 一侧。阶段 2 必须在 DSH 项目实现，官方 `headless` profile 不支持 `--rpc`。因此当前 `doctor` 只能确认 DSH CLI 存在；真实运行会在缺少 `auto-test-host` bridge 时于业务执行前失败。
+本分支完成阶段 1 的 Auto-Test 一侧。DSH SDK JSON-RPC runtime 已在官方仓库通过 keyless smoke；生产运行仍需要可解析 `AUTO_TEST_DSH_CORDIS_TEMPLATE` 的 DSH runtime 配置，并完成 Playwright/Control MCP 注入与真实业务 canary。
