@@ -48,6 +48,11 @@ function contentParts(input: AgentInputPart[]): Array<Record<string, unknown>> {
     : { type: 'text', text: `A local image is available at ${part.path}. Inspect it from the run workspace.` })
 }
 
+function parseToolArguments(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try { return JSON.parse(value) as unknown } catch { return value }
+}
+
 function eventFromSession(
   event: Record<string, unknown>,
   toolNames = new Map<string, string>(),
@@ -66,9 +71,9 @@ function eventFromSession(
     const match = /^mcp__([^_]+(?:[_-][^_]+)*)__(.+)$/.exec(name)
     if (typeof data.callId === 'string') {
       toolNames.set(data.callId, name)
-      toolArguments.set(data.callId, data.arguments)
+      toolArguments.set(data.callId, parseToolArguments(data.arguments))
     }
-    return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), arguments: data.arguments, raw: event }
+    return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), arguments: parseToolArguments(data.arguments), raw: event }
   }
   if (type === 'tool/result') {
     const message = data.message && typeof data.message === 'object' ? data.message as Record<string, unknown> : {}
