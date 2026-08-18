@@ -24,11 +24,10 @@ const unsafeTools = /(?:run_code|evaluate)/
 
 function resultText(result: unknown): string {
   if (!result || typeof result !== 'object') return ''
-  const content = (result as { content?: unknown }).content
-  if (!Array.isArray(content)) return ''
-  return content.flatMap((item) => item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string'
-    ? [(item as { text: string }).text]
-    : []).join('\n')
+  const value = result as { text?: unknown; content?: unknown }
+  if (typeof value.text === 'string') return value.text
+  if (!Array.isArray(value.content)) return ''
+  return value.content.map(resultText).filter(Boolean).join('\n')
 }
 
 function playwrightCode(text: string): string | undefined {
