@@ -37,6 +37,23 @@ describe('MCP replay compiler', () => {
     expect(result.source).not.toContain('<secret>')
   })
 
+  it('re-solves a dynamic image captcha during replay', () => {
+    const result = compileMcpReplay([
+      event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'login-1' }),
+      event('2', 'playwright', 'browser_navigate', {}, "### Ran Playwright code\n```js\nawait page.goto('https://example.test/login');\n```"),
+      event('3', 'playwright', 'browser_take_screenshot', { element: 'Verification code captcha image' }, "### Ran Playwright code\n```js\nawait page.locator('img.login-code-img').screenshot({ path: 'captcha.png' });\n```"),
+      event('4', 'playwright', 'browser_fill_form', {}, "### Ran Playwright code\n```js\nawait page.getByPlaceholder('Username').fill('<secret>AUTO_TEST_VALUE_001</secret>');\nawait page.getByPlaceholder('Verification code').fill('old-code');\n```"),
+      event('5', 'playwright', 'browser_click', {}, "### Ran Playwright code\n```js\nawait page.getByRole('button', { name: 'Log in' }).click();\n```"),
+      event('6', 'playwright', 'browser_verify_text_visible', {}, "### Ran Playwright code\n```js\nawait expect(page.getByText('Home')).toBeVisible();\n```"),
+      event('7', 'auto-test-control', 'case_execution_end', { caseId: 'login-1' }),
+    ], new Set(['login-1']))
+
+    expect(result.diagnostics).toEqual([])
+    expect(result.source).toContain("getByPlaceholder('Verification code').fill(await solveReplayCaptcha(page, \"img.login-code-img\"))")
+    expect(result.source).toContain('process.env.AUTO_TEST_VALUE_001')
+    expect(result.source).not.toContain('old-code')
+  })
+
   it('fails closed for unsafe code and missing passed-case events', () => {
     const result = compileMcpReplay([
       event('1', 'auto-test-control', 'case_execution_begin', { caseId: 'case-1' }),

@@ -15,7 +15,7 @@ export interface CompiledMcpReplay {
   diagnostics: ReplayDiagnostic[]
 }
 
-interface ReplayAttempt { caseId: string; code: string[]; diagnostics: ReplayDiagnostic[]; complete: boolean }
+interface ReplayAttempt { caseId: string; code: string[]; diagnostics: ReplayDiagnostic[]; complete: boolean; captchaImageLocator?: string }
 
 // These tools inspect evidence but do not represent a deterministic page action.
 // Their MCP responses intentionally have no generated Playwright source.
@@ -41,6 +41,17 @@ function environmentExpression(name: string): string {
 function makeReplayable(code: string): string {
   return code
     .replace(/(['"])<secret>(AUTO_TEST_VALUE_\d+(?:_\d+)?)<\/secret>\1/g, (_match, _quote, name: string) => environmentExpression(name))
+}
+
+function captchaImageLocator(code: string): string | undefined {
+  return code.match(/page\.locator\((['"])(.+?)\1\)\.screenshot\s*\(/i)?.[2]
+}
+
+function rewriteCaptchaFill(code: string, imageLocator: string | undefined): string {
+  if (!imageLocator) return code
+  return code.split('\n').map((line) => /(captcha|verification\s*code|验证码)/i.test(line)
+    ? line.replace(/\.fill\((['"])(.*?)\1\)/, `.fill(await solveReplayCaptcha(page, ${JSON.stringify(imageLocator)}))`)
+    : line).join('\n')
 }
 
 function replayCode(attempt: ReplayAttempt): string[] | undefined {
@@ -101,7 +112,14 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
       activeAttempt = undefined
       continue
     }
-    if (event.server !== 'playwright' || !event.tool?.startsWith('browser_') || ignoredTools.test(event.tool)) continue
+    if (event.server !== 'playwright' || !event.tool?.startsWith('browser_')) continue
+    if (event.tool === 'browser_take_screenshot') {
+      const screenshotCode = playwrightCode(resultText(event.result))
+      const locator = screenshotCode && captchaImageLocator(screenshotCode)
+      if (locator && /captcha|verification|验证码/i.test(`${JSON.stringify(event.arguments)} ${screenshotCode}`)) activeAttempt && (activeAttempt.captchaImageLocator = locator)
+      continue
+    }
+    if (ignoredTools.test(event.tool)) continue
     if (!activeCaseId || (passedCaseIds && !passedCaseIds.has(activeCaseId))) continue
     if (unsafeTools.test(event.tool)) {
       activeAttempt?.diagnostics.push({ severity: 'error', code: 'unsafe_tool', message: `${event.tool} cannot be replayed deterministically`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
@@ -112,7 +130,7 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
       activeAttempt?.diagnostics.push({ severity: 'error', code: 'generated_code_missing', message: `${event.tool} did not return Playwright code`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
       continue
     }
-    const replayable = makeReplayable(code)
+    const replayable = rewriteCaptchaFill(makeReplayable(code), activeAttempt?.captchaImageLocator)
     if (/<(?:\/?secret|redacted(?:-[^>]+)?)>/i.test(replayable)) {
       activeAttempt?.diagnostics.push({ severity: 'error', code: 'redacted_runtime_value', message: `${event.tool} contains a runtime value that cannot be recovered from redacted events`, caseId: activeCaseId, ...(event.id ? { eventId: event.id } : {}) })
       continue
@@ -137,8 +155,9 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
     ...lines.flatMap((code) => code.split('\n').map((line) => `  ${line}`)),
     '})',
   ].join('\n')).join('\n\n')
+  const captchaHelper = body.includes('solveReplayCaptcha(') ? `import { execFileSync } from 'node:child_process'\nimport { randomUUID } from 'node:crypto'\nimport { rmSync } from 'node:fs'\nimport { tmpdir } from 'node:os'\nimport { join } from 'node:path'\n\nasync function solveReplayCaptcha(page: { locator(selector: string): { screenshot(options: { path: string }): Promise<unknown> } }, imageSelector: string): Promise<string> {\n  const imagePath = join(tmpdir(), \`auto-test-replay-captcha-\${randomUUID()}.png\`)\n  try {\n    await page.locator(imageSelector).screenshot({ path: imagePath })\n    return execFileSync('python3', ['-c', \"import ddddocr,sys; print(ddddocr.DdddOcr(show_ad=False).classification(open(sys.argv[1],'rb').read()))\", imagePath], { encoding: 'utf8' }).trim()\n  } finally { rmSync(imagePath, { force: true }) }\n}\n\n` : ''
   return {
-    source: `import { test, expect } from '@playwright/test'\n\n${body}\n`,
+    source: `import { test, expect } from '@playwright/test'\n${captchaHelper}\n${body}\n`,
     caseIds: [...cases.keys()],
     diagnostics,
   }
