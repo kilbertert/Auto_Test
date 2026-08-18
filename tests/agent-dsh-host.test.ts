@@ -61,4 +61,39 @@ lines.on('line', line => {
     expect(session.id).toMatch(/^auto-test-/)
     await session.close?.()
   })
+
+  it('preserves persisted-session collisions as session incompatibility', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-dsh-host-error-'))
+    directories.push(directory)
+    const workspaceDirectory = resolve(directory, 'workspace')
+    const agentHome = resolve(directory, 'dsh-home')
+    await mkdir(workspaceDirectory, { recursive: true })
+    await mkdir(agentHome, { recursive: true })
+    await writeFile(resolve(agentHome, 'cordis.yml'), 'fixture')
+    const executable = resolve(directory, 'runtime.mjs')
+    await writeFile(executable, `
+import readline from 'node:readline'
+const lines = readline.createInterface({ input: process.stdin })
+lines.on('line', line => {
+  const frame = JSON.parse(line)
+  if (frame.method === 'initialize') return process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {} }) + '\\n')
+  if (frame.method === 'shutdown') return process.exit(0)
+  if (frame.method === 'session/prompt') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {} }) + '\\n')
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId: frame.params.sessionId, event: { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'session "x" already has a persisted log on disk that does not match this live session (id collision)' } } } } } }) + '\\n')
+  }
+})
+`)
+    await chmod(executable, 0o700)
+    const options: AgentHostLaunchOptions = {
+      workspaceDirectory, runtime: { agentHome, environment: { PATH: process.env.PATH ?? '' }, mcpEnvironment: {} }, executable,
+      playwrightConfigPath: resolve(directory, 'playwright.json'), playwrightSecretsPath: resolve(directory, 'secrets.env'), controlConfigPath: resolve(directory, 'control.json'), fullAgentAccess: true,
+    }
+    const session = await new DshAgentHost().start(options)
+    const stream = await session.run([{ type: 'text', text: 'resume' }])
+    const events = []
+    for await (const event of stream.events) events.push(event)
+    expect(events[0]).toMatchObject({ type: 'session_incompatible' })
+    await session.close?.()
+  })
 })

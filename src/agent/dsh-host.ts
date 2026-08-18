@@ -90,7 +90,16 @@ function eventFromSession(
     }
   }
   if (type === 'turn/start') return { type: 'turn_started', raw: event }
-  if (type === 'turn/end') return { type: 'turn_completed', raw: event }
+  if (type === 'turn/end') {
+    const reason = data.reason && typeof data.reason === 'object' ? data.reason as Record<string, unknown> : {}
+    const error = reason.error && typeof reason.error === 'object' ? reason.error as Record<string, unknown> : {}
+    const message = typeof error.message === 'string' ? error.message : undefined
+    if (message && /persisted log .* does not match this live session|session .* already has a persisted log on disk/i.test(message)) {
+      return { type: 'session_incompatible', message, raw: event }
+    }
+    if (message) return { type: 'turn_failed', message, raw: event }
+    return { type: 'turn_completed', raw: event }
+  }
   return undefined
 }
 
@@ -172,7 +181,13 @@ class DshSdkSession implements AgentHostSession {
       const pending = this.pending.get(frame.id)
       if (!pending) return
       this.pending.delete(frame.id)
-      if (frame.error) pending.reject(new AgentHostError('dsh', String(frame.error.message ?? 'DSH SDK request failed'), 'transport'))
+      if (frame.error) {
+        const message = String(frame.error.message ?? 'DSH SDK request failed')
+        const kind = /persisted log .* does not match this live session|session .* already has a persisted log on disk/i.test(message)
+          ? 'session_incompatible'
+          : 'transport'
+        pending.reject(new AgentHostError('dsh', message, kind))
+      }
       else pending.resolve(frame.result ?? {})
       return
     }
