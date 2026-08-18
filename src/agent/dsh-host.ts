@@ -85,7 +85,8 @@ function eventFromSession(
       type: 'tool_completed', callId,
       ...(match ? { server: match[1], tool: match[2] } : { tool: name }),
       ...(callId && toolArguments.has(callId) ? { arguments: toolArguments.get(callId) } : {}),
-      status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event,
+      status: message.isError === true ? 'failed' : 'completed',
+      result: { content: message.content }, raw: event,
     }
   }
   if (type === 'turn/start') return { type: 'turn_started', raw: event }
