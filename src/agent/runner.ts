@@ -1412,7 +1412,8 @@ export async function runAgentTest(
             throw error
           }
           const sessionIncompatible = error instanceof AgentHostError && error.kind === 'session_incompatible'
-          if (!sessionIncompatible || !resumeCompatibilityPending || sessionRotationAttempted) throw error
+          const providerSessionEnded = isResumePrompt && /usage limit|quota|credit|rate.?limit|\b429\b|too many requests|provider.*(?:unavailable|capacity)/i.test(error instanceof Error ? error.message : String(error))
+          if ((!sessionIncompatible || !resumeCompatibilityPending) && (!providerSessionEnded || sessionRotationAttempted)) throw error
           const recoveredResponse = await rotateIncompatibleSession()
           return isResumePrompt ? recoveredResponse : invokeEpochTurn(input, outputSchema)
         }
