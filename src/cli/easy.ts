@@ -201,7 +201,7 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   const filePath = resolve(stripDraggedPath(options.filePath))
   if (extname(filePath).toLowerCase() !== '.xlsx') throw new Error('请选择 .xlsx 测试用例文件')
   const configuredHost = process.env.AUTO_TEST_AGENT_HOST
-  if (configuredHost && !isBuiltInAgentHostId(configuredHost)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex 或 omp，收到：${configuredHost}`)
+  if (configuredHost && !isBuiltInAgentHostId(configuredHost)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex、omp 或 dsh，收到：${configuredHost}`)
   let effectiveAgentHostId = options.agentHostId
   if (!effectiveAgentHostId && configuredHost && !options.resume) effectiveAgentHostId = configuredHost as AgentHostId
   await access(filePath)
@@ -313,9 +313,9 @@ function visibleModelProfiles(registry: Awaited<ReturnType<typeof loadModelProfi
   ]
 }
 
-function configuredAgentHost(): 'codex' | 'omp' {
+function configuredAgentHost(): 'codex' | 'omp' | 'dsh' {
   const value = process.env.AUTO_TEST_AGENT_HOST?.trim() || 'codex'
-  if (!isBuiltInAgentHostId(value)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex 或 omp，收到：${value}`)
+  if (!isBuiltInAgentHostId(value)) throw new Error(`AUTO_TEST_AGENT_HOST 只支持 codex、omp 或 dsh，收到：${value}`)
   return value
 }
 
@@ -388,7 +388,13 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
   })
 }
 
-async function doctor(agentHostId: 'codex' | 'omp' = configuredAgentHost()): Promise<boolean> {
+async function doctor(agentHostId: 'codex' | 'omp' | 'dsh' = configuredAgentHost()): Promise<boolean> {
+  if (agentHostId === 'dsh') {
+    const dshExecutable = process.env.AUTO_TEST_AGENT_BIN || 'dsh'
+    const ok = await commandAvailable(dshExecutable, ['--version'])
+    console.log(`\n环境检查（AgentHost: dsh）：\n- DSH CLI 已安装：${ok ? '通过' : '失败'}\n- DSH 路线 B bridge：需安装 auto-test-host profile`)
+    return ok
+  }
   if (agentHostId === 'omp') {
     const ompExecutable = process.env.AUTO_TEST_OMP_BIN || 'omp'
     const modelRegistryPath = defaultModelProfileRegistryPath()
@@ -552,7 +558,7 @@ async function main(): Promise<void> {
   }
   if (command === 'doctor') {
     const requestedHost = valueAfter(args, '--agent-host') ?? configuredAgentHost()
-    if (!isBuiltInAgentHostId(requestedHost)) throw new Error('--agent-host 只支持 codex 或 omp')
+    if (!isBuiltInAgentHostId(requestedHost)) throw new Error('--agent-host 只支持 codex、omp 或 dsh')
     if (!await doctor(requestedHost)) process.exitCode = 1
     return
   }
@@ -592,7 +598,7 @@ async function main(): Promise<void> {
     else if (caseLimitValue !== undefined) caseLimit = Number(caseLimitValue)
     if (caseLimit !== undefined && (!Number.isInteger(caseLimit) || caseLimit < 1)) throw new Error('--case-limit 必须是正整数')
     const agentHostId = valueAfter(args, '--agent-host')
-    if (agentHostId && !isBuiltInAgentHostId(agentHostId)) throw new Error('--agent-host 只支持 codex 或 omp')
+    if (agentHostId && !isBuiltInAgentHostId(agentHostId)) throw new Error('--agent-host 只支持 codex、omp 或 dsh')
     const agentBin = valueAfter(args, '--agent-bin')
     const agentHome = valueAfter(args, '--agent-home')
     const codexBin = valueAfter(args, '--codex-bin')
@@ -637,7 +643,7 @@ async function main(): Promise<void> {
   }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
-    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--agent-host codex|omp] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
+    console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--agent-host codex|omp|dsh] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
     console.log('      AgentHost 会按模型容量自动规划执行 epoch，并在需要时轮换或恢复会话；无需手工切分用例')
     console.log('      Codex 和 OMP 获得相同原始材料、可写 run 工作区、shell、网络、完整 Playwright 与结果合同')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
@@ -645,7 +651,7 @@ async function main(): Promise<void> {
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
-    console.log('      npm run easy -- doctor [--agent-host codex|omp]')
+    console.log('      npm run easy -- doctor [--agent-host codex|omp|dsh]')
     return
   }
   throw new Error(`未知命令：${command}`)

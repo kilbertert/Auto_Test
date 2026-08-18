@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CodexModelProviderAdapter } from '../src/agent/codex-provider.js'
 import { OmpModelProviderAdapter } from '../src/agent/omp-provider.js'
+import { DshModelProviderAdapter } from '../src/agent/dsh-provider.js'
 import type { AgentHostProviderPrepareOptions, AgentModelProviderDescriptor } from '../src/agent/host.js'
 
 const directories: string[] = []
@@ -58,6 +59,22 @@ async function options(directory: string, environment: NodeJS.ProcessEnv, provid
 }
 
 describe('AgentHost model provider adapters', () => {
+  it('writes an isolated DSH Anthropic Messages provider and rejects other APIs', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-provider-adapter-dsh-'))
+    directories.push(directory)
+    const provider = descriptor({ api: 'anthropic-messages', baseUrl: 'https://api.deepseek.com/anthropic' })
+    const runtime = await new DshModelProviderAdapter().prepare(await options(directory, { FIXTURE_PROVIDER_KEY: 'fixture-secret' }, provider))
+    const settings = JSON.parse(await readFile(resolve(runtime.agentHome, 'settings.yaml'), 'utf8')) as Record<string, unknown>
+    expect(runtime.model).toBe('fixture_provider/fixture-model')
+    expect(settings).toMatchObject({
+      'llm-pi-ai': { providers: { fixture_provider: { api: 'anthropic-messages', apiKeyEnv: 'FIXTURE_PROVIDER_KEY' } } },
+      'agent-default-model': { provider: 'fixture_provider', model: 'fixture-model' },
+    })
+    await expect(new DshModelProviderAdapter().prepare(await options(
+      resolve(directory, 'unsupported'), { FIXTURE_PROVIDER_KEY: 'fixture-secret' }, descriptor(),
+    ))).rejects.toThrow(/does not support model API openai-responses/)
+  })
+
   it.each([
     ['deepseek', 'deepseek', 'deepseek-v4-flash', 'https://api.deepseek.com', 'DEEPSEEK_API_KEY'],
     ['volcengine', 'volcengine_coding', 'glm-5.2', 'https://ark.cn-beijing.volces.com/api/coding/v3', 'ARK_API_KEY'],

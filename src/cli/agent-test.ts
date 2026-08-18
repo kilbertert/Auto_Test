@@ -126,7 +126,7 @@ function help(): string {
     `  --profile-registry <path>   环境注册表，默认 ${defaultEnvironmentProfileRegistryPath()}`,
     '',
     '执行:',
-    '  --agent-host <codex|omp>   选择测试代理宿主，默认 codex；两者遵守同一测试结果合同',
+    '  --agent-host <codex|omp|dsh>   选择测试代理宿主，默认 codex；dsh 为实验性路线 B',
     '  --agent-bin <path>         当前宿主的可执行文件；也可设置 AUTO_TEST_AGENT_BIN',
     '  --agent-home <path>        当前宿主的原生 provider/auth 源目录；运行仍使用隔离副本',
     '  --output-dir <path>         本次运行目录',
@@ -215,7 +215,7 @@ export function parseAgentTestArgs(args: string[]): AgentTestCliOptions {
   else if (codexBin || codexHome) binHost = 'codex'
   if (explicitHost && binHost && explicitHost !== binHost) throw new Error('--agent-host 与宿主专用可执行文件参数不一致')
   const requestedHost = explicitHost ?? binHost ?? 'codex'
-  if (!isBuiltInAgentHostId(requestedHost)) throw new Error(`--agent-host 只支持 codex 或 omp，收到：${requestedHost}`)
+  if (!isBuiltInAgentHostId(requestedHost)) throw new Error(`--agent-host 只支持 codex、omp 或 dsh，收到：${requestedHost}`)
   const resolvedFilePath = resolve(filePath)
   return {
     filePath: resolvedFilePath,
@@ -502,7 +502,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     }
     if (!effectiveAgentHostId) {
       const priorState = JSON.parse(await readFile(priorStatePath, 'utf8')) as { agentHost?: AgentHostId }
-      effectiveAgentHostId = priorState.agentHost === 'omp' ? 'omp' : 'codex'
+      effectiveAgentHostId = isBuiltInAgentHostId(priorState.agentHost) ? priorState.agentHost : 'codex'
     }
   } else {
     for (const path of [priorStatePath, priorLedgerPath]) {

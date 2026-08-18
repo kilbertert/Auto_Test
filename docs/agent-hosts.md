@@ -8,6 +8,9 @@ Auto-Test 的测试核心不再依赖某一个代理产品。`AgentHost` 是一�
 | --- | --- | --- | --- | --- | --- |
 | Codex CLI | `codex`（默认） | Codex SDK/CLI thread | 原生支持 | 支持 | `CodexModelProviderAdapter`：Profile -> 隔离 `config.toml` + `models.json` |
 | oh-my-pi | `omp` | OMP RPC JSONL (`omp --mode rpc`) | 由同一最终 JSON 提示和 Core 校验 | RPC session 文件 | `OmpModelProviderAdapter`：Profile -> 隔离 `models.yml` |
+| DeepSeek Harness | `dsh`（实验性） | Auto-Test JSONL bridge profile | 文件 artifact + Core 校验 | DSH 持久 Session | `DshModelProviderAdapter`：Anthropic Messages Profile -> 隔离 `settings.yaml` |
+
+DSH 路线 B 当前只定义并接入 Auto-Test 一侧的长驻 bridge 合同。它要求 DSH 安装一个名为 `auto-test-host` 的 profile，并由该 profile 提供 `--rpc`、`start/resume/input/close` 命令及归一化事件输出。官方 `headless` profile 仍是一次提交后退出的 one-shot runner，不能冒充该合同。未安装 bridge profile 时 DSH Host 必须 fail closed；在真实 Provider、MCP、恢复和 Windows canary 完成前，DSH 不属于已验收宿主。
 
 宿主能力记录还包含 `workspaceIsolation`：Linux/macOS 的 Codex 为 `enforced`，Windows Codex 直连模式因原生 CLI 的 MCP/shell 限制使用 `danger-full-access`，因此如实记录为 `prompt_only`；OMP 一直为 `prompt_only`。这不会改变两者的业务结果合同，但会在审计和竞争报告中保留真实执行边界。
 

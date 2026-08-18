@@ -2,7 +2,7 @@
 
 面向测试工程师的 AI 辅助 Web 自动化测试项目。
 
-Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需登录 Codex/ChatGPT 账号或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
+Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需登录 Codex/ChatGPT 账号或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`。实验性的 DSH 路线 B 可用 `--agent-host dsh` 接入同一合同，但还要求单独安装 `auto-test-host` JSONL bridge profile，尚未完成真实业务或 Windows 验收。
 
 默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。旧的 IR→Playwright 编译/探索/修复/分类链和 Workflow Runtime/Planner/Recovery 执行链已移除；回归资产由 AgentHost replay 生成，`npm run compile:replay` 可迁移历史 Run。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
 
@@ -18,6 +18,7 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 
 - [跨场景自动化测试快速操作指南](docs/quick-start.md)
 - [AgentHost 宿主契约与 Codex/OMP 比较](docs/agent-hosts.md)
+- [DSH AgentHost 路线 B 实施计划](docs/dsh-agent-host-plan.md)
 - [Windows 快速操作指南](docs/windows-quick-start.md)
 - [Windows 私有包快速打包](docs/windows-package-quick-start.md)
 - [Windows 从零验收清单](docs/windows-acceptance-runbook.md)

@@ -222,7 +222,7 @@ describe('AgentHost contract', () => {
   })
 
   it('registers Codex and OMP as competing hosts with explicit capabilities', () => {
-    expect(availableAgentHosts().map((host) => host.id)).toEqual(['codex', 'omp'])
+    expect(availableAgentHosts().map((host) => host.id)).toEqual(['codex', 'omp', 'dsh'])
     expect(createAgentHost('codex').capabilities.structuredOutput).toBe(true)
     expect(createAgentHost('omp').capabilities.structuredOutput).toBe(false)
     expect(createAgentHost('omp').capabilities.mcp).toBe(true)
@@ -233,6 +233,8 @@ describe('AgentHost contract', () => {
     expect(createAgentHost('omp').modelProvider.supportedApis).toContain('openai-completions')
     expect(createAgentHost('omp').capabilities.workspaceIsolation).toBe('prompt_only')
     expect(createAgentHost('omp').capabilities.restrictedMode).toBe(false)
+    expect(createAgentHost('dsh').capabilities.sessionResume).toBe(true)
+    expect(createAgentHost('dsh').capabilities.structuredOutput).toBe(false)
   })
 
   it('gates Codex web search with the selected provider capability', () => {
