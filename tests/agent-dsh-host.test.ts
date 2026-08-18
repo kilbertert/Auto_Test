@@ -32,6 +32,8 @@ lines.on('line', line => {
   const sessionId = frame.params.sessionId
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'turn/start', data: {} } } }) + '\\n')
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: frame.params.contentBlocks[0].text }] } } } } }) + '\\n')
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'tool/call', data: { callId: 'tool-' + frame.id, name: 'mcp__auto-test-control__case_execution_begin', arguments: { caseId: 'test-001' } } } } }) + '\\n')
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'tool/result', data: { message: { source: { callId: 'tool-' + frame.id }, content: [], isError: false } } } } }) + '\\n')
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'turn/end', data: {} } } }) + '\\n')
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } }) + '\\n')
 })
@@ -55,6 +57,7 @@ lines.on('line', line => {
     const secondEvents = []
     for await (const event of second.events) secondEvents.push(event)
     expect(secondEvents.find(event => event.type === 'agent_message')?.text).toBe('second')
+    expect(secondEvents.find(event => event.type === 'tool_completed')?.arguments).toEqual({ caseId: 'test-001' })
     expect(session.id).toMatch(/^auto-test-/)
     await session.close?.()
   })
