@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
 import { createInterface } from 'node:readline'
-import { mkdir } from 'node:fs/promises'
-import { extname, resolve } from 'node:path'
+import { mkdir, symlink } from 'node:fs/promises'
+import { dirname, extname, resolve } from 'node:path'
 import type {
   AgentEvent, AgentHost, AgentHostCapabilities, AgentHostLaunchOptions,
   AgentHostModelProviderAdapter, AgentHostProbeResult, AgentHostSession,
@@ -58,11 +58,16 @@ function eventFromSession(event: Record<string, unknown>): AgentEvent | undefine
     return { type: 'agent_message', ...(text ? { text } : {}), raw: event }
   }
   if (type === 'tool/call') {
-    return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, tool: typeof data.name === 'string' ? data.name : 'agent_tool', arguments: data.arguments, raw: event }
+    const name = typeof data.name === 'string' ? data.name : 'agent_tool'
+    const match = /^mcp__([^_]+(?:[_-][^_]+)*)__(.+)$/.exec(name)
+    return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), arguments: data.arguments, raw: event }
   }
   if (type === 'tool/result') {
     const message = data.message && typeof data.message === 'object' ? data.message as Record<string, unknown> : {}
-    return { type: 'tool_completed', callId: typeof data.callId === 'string' ? data.callId : undefined, tool: typeof message.source === 'object' && message.source && typeof (message.source as Record<string, unknown>).callId === 'string' ? (message.source as Record<string, unknown>).callId as string : 'agent_tool', status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event }
+    const source = typeof message.source === 'object' && message.source ? message.source as Record<string, unknown> : {}
+    const name = typeof data.name === 'string' ? data.name : typeof source.name === 'string' ? source.name : 'agent_tool'
+    const match = /^mcp__([^_]+(?:[_-][^_]+)*)__(.+)$/.exec(name)
+    return { type: 'tool_completed', callId: typeof data.callId === 'string' ? data.callId : typeof source.callId === 'string' ? source.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event }
   }
   if (type === 'turn/start') return { type: 'turn_started', raw: event }
   if (type === 'turn/end') return { type: 'turn_completed', raw: event }
@@ -93,7 +98,7 @@ class DshSdkSession implements AgentHostSession {
     this.process.once('exit', () => { if (!this.closed) this.fail(new AgentHostError('dsh', 'DSH SDK runtime exited unexpectedly', 'process')) })
     this.initialized = this.request('initialize', {
       cwd: options.workspaceDirectory,
-      provider: options.runtime.provider?.providerId ?? 'deepseek-official',
+      provider: options.runtime.provider?.providerId ?? 'deepseek',
       model: options.runtime.provider?.model ?? options.runtime.model ?? 'deepseek-v4-flash',
       ...(options.runtime.provider?.maxOutputTokens ? { maxTokens: options.runtime.provider.maxOutputTokens } : {}),
     }).then(() => undefined)
@@ -116,7 +121,10 @@ class DshSdkSession implements AgentHostSession {
     if (this.closed) return
     this.closed = true
     this.active?.end(new AgentHostError('dsh', 'DSH SDK session closed', 'process'))
-    await this.request('shutdown', {}).catch(() => undefined)
+    await Promise.race([
+      this.request('shutdown', {}).catch(() => undefined),
+      new Promise<void>(resolvePromise => setTimeout(resolvePromise, 2_000)),
+    ])
     this.process.stdin.end()
     if (this.process.exitCode !== null) return
     await Promise.race([
@@ -143,6 +151,11 @@ class DshSdkSession implements AgentHostSession {
       if (params.sessionId !== this.sessionId || !this.active || !params.event || typeof params.event !== 'object') return
       const event = eventFromSession(params.event as Record<string, unknown>)
       if (event) this.active.push(event)
+      if ((params.event as Record<string, unknown>).type === 'turn/end') {
+        const active = this.active
+        this.active = undefined
+        active?.end()
+      }
       return
     }
     if (frame.method === 'session.status' && frame.params?.sessionId === this.sessionId && frame.params.status === 'idle' && this.active) {
@@ -198,6 +211,10 @@ export class DshAgentHost implements AgentHost {
     if (!options.fullAgentAccess) throw new AgentHostError('dsh', 'DSH SDK route currently requires direct mode', 'capability')
     await mkdir(resolve(options.runtime.agentHome, 'sessions'), { recursive: true, mode: 0o700 })
     const executable = await this.executable(options)
+    const executableNodeModules = resolve(dirname(executable), '../../../..', 'examples', 'node_modules')
+    try { await symlink(executableNodeModules, resolve(options.runtime.agentHome, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir') } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new AgentHostError('dsh', `DSH runtime dependency link failed: ${String(error)}`, 'configuration')
+    }
     const configPath = resolve(options.runtime.agentHome, 'cordis.yml')
     const session = new DshSdkSession({ ...options, executable, configPath }, this.options.spawnProcess)
     await session.initialize()

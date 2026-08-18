@@ -32,6 +32,7 @@ lines.on('line', line => {
   const sessionId = frame.params.sessionId
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'turn/start', data: {} } } }) + '\\n')
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: frame.params.contentBlocks[0].text }] } } } } }) + '\\n')
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'turn/end', data: {} } } }) + '\\n')
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } }) + '\\n')
 })
 `)

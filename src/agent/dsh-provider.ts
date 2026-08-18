@@ -12,8 +12,9 @@ const defaultCordisConfiguration = `
   name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
   config:
     maxTokensAsSuccess: true
-- id: llm-deepseek
-  name: '@deepseek-ai/dsh-llm-deepseek'
+- id: llm-profile
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config: !!js JSON.parse(process.env.AUTO_TEST_DSH_PROVIDER_CONFIG ?? '{}')
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
@@ -21,16 +22,6 @@ const defaultCordisConfiguration = `
     compression: none
 - id: session-checkpoints
   name: '@deepseek-ai/dsh-session-checkpoint-policy'
-- id: agent-spine
-  name: '@deepseek-ai/dsh-agent-spine-demo'
-  config:
-    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are the Auto-Test browser testing agent.'
-    workspaceContext:
-      maxBytes: 100000
-    skills:
-      enabled: false
-    toolBash: false
-    toolJobs: false
 - id: mcp-playwright
   name: '@deepseek-ai/dsh-mcp-client'
   config:
@@ -51,6 +42,18 @@ const defaultCordisConfiguration = `
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
     env: !!js JSON.parse(process.env.AUTO_TEST_MCP_ENV ?? '{}')
     failOnStartupError: true
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    tools:
+      mode: native
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are the Auto-Test browser testing agent. DSH names MCP tools as mcp__<server>__<tool>; when Auto-Test says auto-test-control.<tool>, call the corresponding mcp__auto-test-control__<tool> tool.'
+    workspaceContext:
+      maxBytes: 100000
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
 `.trimStart()
 
 export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
@@ -63,6 +66,7 @@ export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
 
     assertProviderApiSupported('dsh', 'DeepSeek Harness', this.supportedApis, options.provider)
     const envKey = requireProviderCredential('dsh', options.provider, options.environment)
+    if (envKey && options.environment[envKey]) environment[envKey] = options.environment[envKey]
     const selector = `${options.provider.providerId}/${options.model ?? options.provider.model}`
     const settings = {
       'llm-pi-ai': {
@@ -96,6 +100,13 @@ export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
     environment.AUTO_TEST_CONTROL_COMMAND = process.execPath
     environment.AUTO_TEST_CONTROL_ARGS = JSON.stringify([tsxCli, controlServerPath(), options.controlConfigPath])
     environment.AUTO_TEST_MCP_ENV = JSON.stringify(options.mcpEnvironment)
+    environment.AUTO_TEST_DSH_PROVIDER_CONFIG = JSON.stringify({ providers: { [options.provider.providerId]: {
+      displayName: options.provider.displayName ?? options.provider.profileId,
+      api: options.provider.api,
+      apiKeyEnv: envKey,
+      baseURL: options.provider.baseUrl,
+      models: [{ id: options.model ?? options.provider.model }],
+    } } })
     environment.DSH_HOME = options.agentHome
     return {
       agentHome: options.agentHome,

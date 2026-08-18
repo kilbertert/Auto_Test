@@ -68,6 +68,10 @@ describe('AgentHost model provider adapters', () => {
     const runtime = await new DshModelProviderAdapter().prepare(await options(directory, { FIXTURE_PROVIDER_KEY: 'fixture-secret', AUTO_TEST_DSH_CORDIS_TEMPLATE: template }, provider))
     const settings = JSON.parse(await readFile(resolve(runtime.agentHome, 'settings.yaml'), 'utf8')) as Record<string, unknown>
     expect(runtime.model).toBe('fixture_provider/fixture-model')
+    expect(runtime.environment.FIXTURE_PROVIDER_KEY).toBe('fixture-secret')
+    expect(JSON.parse(runtime.environment.AUTO_TEST_DSH_PROVIDER_CONFIG ?? '{}')).toMatchObject({
+      providers: { fixture_provider: { api: 'anthropic-messages', apiKeyEnv: 'FIXTURE_PROVIDER_KEY', models: [{ id: 'fixture-model' }] } },
+    })
     expect(settings).toMatchObject({
       'llm-pi-ai': { providers: { fixture_provider: { api: 'anthropic-messages', apiKeyEnv: 'FIXTURE_PROVIDER_KEY' } } },
       'agent-default-model': { provider: 'fixture_provider', model: 'fixture-model' },
