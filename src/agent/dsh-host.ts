@@ -48,7 +48,7 @@ function contentParts(input: AgentInputPart[]): Array<Record<string, unknown>> {
     : { type: 'text', text: `A local image is available at ${part.path}. Inspect it from the run workspace.` })
 }
 
-function eventFromSession(event: Record<string, unknown>): AgentEvent | undefined {
+function eventFromSession(event: Record<string, unknown>, toolNames = new Map<string, string>()): AgentEvent | undefined {
   const type = event.type
   const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
   if (type === 'assistant/message') {
@@ -60,14 +60,16 @@ function eventFromSession(event: Record<string, unknown>): AgentEvent | undefine
   if (type === 'tool/call') {
     const name = typeof data.name === 'string' ? data.name : 'agent_tool'
     const match = /^mcp__([^_]+(?:[_-][^_]+)*)__(.+)$/.exec(name)
+    if (typeof data.callId === 'string') toolNames.set(data.callId, name)
     return { type: 'tool_started', callId: typeof data.callId === 'string' ? data.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), arguments: data.arguments, raw: event }
   }
   if (type === 'tool/result') {
     const message = data.message && typeof data.message === 'object' ? data.message as Record<string, unknown> : {}
     const source = typeof message.source === 'object' && message.source ? message.source as Record<string, unknown> : {}
-    const name = typeof data.name === 'string' ? data.name : typeof source.name === 'string' ? source.name : 'agent_tool'
+    const callId = typeof data.callId === 'string' ? data.callId : typeof source.callId === 'string' ? source.callId : undefined
+    const name = typeof data.name === 'string' ? data.name : typeof source.name === 'string' ? source.name : callId ? toolNames.get(callId) ?? 'agent_tool' : 'agent_tool'
     const match = /^mcp__([^_]+(?:[_-][^_]+)*)__(.+)$/.exec(name)
-    return { type: 'tool_completed', callId: typeof data.callId === 'string' ? data.callId : typeof source.callId === 'string' ? source.callId : undefined, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event }
+    return { type: 'tool_completed', callId, ...(match ? { server: match[1], tool: match[2] } : { tool: name }), status: message.isError === true ? 'failed' : 'completed', result: message.content, raw: event }
   }
   if (type === 'turn/start') return { type: 'turn_started', raw: event }
   if (type === 'turn/end') return { type: 'turn_completed', raw: event }
@@ -77,6 +79,7 @@ function eventFromSession(event: Record<string, unknown>): AgentEvent | undefine
 class DshSdkSession implements AgentHostSession {
   private readonly process: ChildProcessWithoutNullStreams
   private readonly pending = new Map<number, { resolve: (result: Record<string, unknown>) => void; reject: (error: Error) => void }>()
+  private readonly toolNames = new Map<string, string>()
   private readonly sessionId: string
   private serial = 0
   private active: Queue<AgentEvent> | undefined
@@ -149,7 +152,7 @@ class DshSdkSession implements AgentHostSession {
     if (frame.method === 'session.event') {
       const params = frame.params ?? {}
       if (params.sessionId !== this.sessionId || !this.active || !params.event || typeof params.event !== 'object') return
-      const event = eventFromSession(params.event as Record<string, unknown>)
+      const event = eventFromSession(params.event as Record<string, unknown>, this.toolNames)
       if (event) this.active.push(event)
       if ((params.event as Record<string, unknown>).type === 'turn/end') {
         const active = this.active

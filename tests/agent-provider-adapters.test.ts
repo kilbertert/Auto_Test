@@ -59,7 +59,7 @@ async function options(directory: string, environment: NodeJS.ProcessEnv, provid
 }
 
 describe('AgentHost model provider adapters', () => {
-  it('writes an isolated DSH Anthropic Messages provider and rejects other APIs', async () => {
+  it('writes isolated DSH providers and rejects unsupported APIs', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-provider-adapter-dsh-'))
     directories.push(directory)
     const template = resolve(directory, 'cordis.yml')
@@ -77,8 +77,8 @@ describe('AgentHost model provider adapters', () => {
       'agent-default-model': { provider: 'fixture_provider', model: 'fixture-model' },
     })
     await expect(new DshModelProviderAdapter().prepare(await options(
-      resolve(directory, 'unsupported'), { FIXTURE_PROVIDER_KEY: 'fixture-secret' }, descriptor(),
-    ))).rejects.toThrow(/does not support model API openai-responses/)
+      resolve(directory, 'unsupported'), { FIXTURE_PROVIDER_KEY: 'fixture-secret' }, descriptor({ api: 'gemini' as AgentModelProviderDescriptor['api'] }),
+    ))).rejects.toThrow(/does not support model API gemini/)
   })
 
   it.each([

@@ -12,6 +12,10 @@ const defaultCordisConfiguration = `
   name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
   config:
     maxTokensAsSuccess: true
+    requiredTools:
+      - mcp__auto-test-control__test_contract
+      - mcp__playwright__browser_navigate
+    readinessTimeoutMs: 15000
 - id: llm-profile
   name: '@deepseek-ai/dsh-llm-pi-ai'
   config: !!js JSON.parse(process.env.AUTO_TEST_DSH_PROVIDER_CONFIG ?? '{}')
@@ -57,7 +61,7 @@ const defaultCordisConfiguration = `
 `.trimStart()
 
 export class DshModelProviderAdapter implements AgentHostModelProviderAdapter {
-  readonly supportedApis = ['anthropic-messages'] as const
+  readonly supportedApis = ['anthropic-messages', 'openai-completions', 'openai-responses'] as const
 
   async prepare(options: AgentHostProviderPrepareOptions): Promise<AgentHostRuntime> {
     await mkdir(options.agentHome, { recursive: true, mode: 0o700 })
