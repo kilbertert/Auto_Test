@@ -44,13 +44,13 @@ function makeReplayable(code: string): string {
 }
 
 function captchaImageLocator(code: string): string | undefined {
-  return code.match(/page\.locator\((['"])(.+?)\1\)\.screenshot\s*\(/i)?.[2]
+  return code.match(/(page\.(?:locator|getByRole|getByAltText)\([\s\S]*?\))\.screenshot\s*\(/i)?.[1]
 }
 
 function rewriteCaptchaFill(code: string, imageLocator: string | undefined): string {
-  if (!imageLocator) return code
-  return code.split('\n').map((line) => /(captcha|verification\s*code|验证码)/i.test(line)
-    ? line.replace(/\.fill\((['"])(.*?)\1\)/, `.fill(await solveReplayCaptcha(page, ${JSON.stringify(imageLocator)}))`)
+  const locator = imageLocator ?? `page.locator('img[alt="Verification code"]')`
+  return code.split('\n').map((line) => /(captcha|verification(?:\s*code)?|验证码)/i.test(line)
+    ? line.replace(/\.fill\((['"])(.*?)\1\)/, `.fill(await solveReplayCaptcha(${locator}))`)
     : line).join('\n')
 }
 
@@ -74,6 +74,7 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
   const diagnostics: ReplayDiagnostic[] = []
   let activeCaseId: string | undefined
   let activeAttempt: ReplayAttempt | undefined
+  let lastCaptchaImageLocator: string | undefined
   const hasCaseBoundaries = events.some((value) => {
     const event = normalizeAgentEvent(value)
     return event.type === 'tool_completed' && event.server === 'auto-test-control' && (event.tool === 'case_execution_begin' || event.tool === 'case_execution_end')
@@ -101,6 +102,7 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
       activeAttempt = activeCaseId && (!passedCaseIds || passedCaseIds.has(activeCaseId))
         ? { caseId: activeCaseId, code: [], diagnostics: [], complete: false }
         : undefined
+      if (activeAttempt && lastCaptchaImageLocator) activeAttempt.captchaImageLocator = lastCaptchaImageLocator
       if (activeAttempt) attempts.set(activeCaseId!, [...(attempts.get(activeCaseId!) ?? []), activeAttempt])
       continue
     }
@@ -115,8 +117,14 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
     if (event.server !== 'playwright' || !event.tool?.startsWith('browser_')) continue
     if (event.tool === 'browser_take_screenshot') {
       const screenshotCode = playwrightCode(resultText(event.result))
+      const screenshotTarget = (event.arguments as { target?: unknown } | undefined)?.target
       const locator = screenshotCode && captchaImageLocator(screenshotCode)
-      if (locator && /captcha|verification|验证码/i.test(`${JSON.stringify(event.arguments)} ${screenshotCode}`)) activeAttempt && (activeAttempt.captchaImageLocator = locator)
+        ? captchaImageLocator(screenshotCode)
+        : typeof screenshotTarget === 'string' && /^(?:img|#|\.)/.test(screenshotTarget) ? `page.locator(${JSON.stringify(screenshotTarget)})` : undefined
+      if (locator && /captcha|verification|验证码/i.test(`${JSON.stringify(event.arguments)} ${screenshotCode}`)) {
+        lastCaptchaImageLocator = locator
+        if (activeAttempt) activeAttempt.captchaImageLocator = locator
+      }
       continue
     }
     if (ignoredTools.test(event.tool)) continue
@@ -155,7 +163,7 @@ export function compileMcpReplay(events: unknown[], passedCaseIds?: ReadonlySet<
     ...lines.flatMap((code) => code.split('\n').map((line) => `  ${line}`)),
     '})',
   ].join('\n')).join('\n\n')
-  const captchaHelper = body.includes('solveReplayCaptcha(') ? `import { execFileSync } from 'node:child_process'\nimport { randomUUID } from 'node:crypto'\nimport { rmSync } from 'node:fs'\nimport { tmpdir } from 'node:os'\nimport { join } from 'node:path'\n\nasync function solveReplayCaptcha(page: { locator(selector: string): { screenshot(options: { path: string }): Promise<unknown> } }, imageSelector: string): Promise<string> {\n  const imagePath = join(tmpdir(), \`auto-test-replay-captcha-\${randomUUID()}.png\`)\n  try {\n    await page.locator(imageSelector).screenshot({ path: imagePath })\n    return execFileSync('python3', ['-c', \"import ddddocr,sys; print(ddddocr.DdddOcr(show_ad=False).classification(open(sys.argv[1],'rb').read()))\", imagePath], { encoding: 'utf8' }).trim()\n  } finally { rmSync(imagePath, { force: true }) }\n}\n\n` : ''
+  const captchaHelper = body.includes('solveReplayCaptcha(') ? `import { execFileSync } from 'node:child_process'\nimport { randomUUID } from 'node:crypto'\nimport { rmSync } from 'node:fs'\nimport { tmpdir } from 'node:os'\nimport { join } from 'node:path'\n\nasync function solveReplayCaptcha(image: { screenshot(options: { path: string }): Promise<unknown> }): Promise<string> {\n  const imagePath = join(tmpdir(), \`auto-test-replay-captcha-\${randomUUID()}.png\`)\n  try {\n    await image.screenshot({ path: imagePath })\n    return execFileSync('python3', ['-c', \"import ddddocr,sys; print(ddddocr.DdddOcr(show_ad=False).classification(open(sys.argv[1],'rb').read()))\", imagePath], { encoding: 'utf8' }).trim()\n  } finally { rmSync(imagePath, { force: true }) }\n}\n\n` : ''
   return {
     source: `import { test, expect } from '@playwright/test'\n${captchaHelper}\n${body}\n`,
     caseIds: [...cases.keys()],
