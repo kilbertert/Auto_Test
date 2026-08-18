@@ -95,10 +95,18 @@ class DshSdkSession implements AgentHostSession {
       env: { ...options.runtime.environment, DSH_CWD: options.workspaceDirectory, DSH_HOME: options.runtime.agentHome },
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     })
+    let stderr = ''
+    this.process.stderr.on('data', chunk => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-8000)
+    })
     const lines = createInterface({ input: this.process.stdout })
     lines.on('line', line => this.handleLine(line))
     this.process.once('error', error => this.fail(error instanceof Error ? error : new Error(String(error))))
-    this.process.once('exit', () => { if (!this.closed) this.fail(new AgentHostError('dsh', 'DSH SDK runtime exited unexpectedly', 'process')) })
+    this.process.once('exit', (code, signal) => {
+      if (this.closed) return
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : ''
+      this.fail(new AgentHostError('dsh', `DSH SDK runtime exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'none'})${detail}`, 'process'))
+    })
     this.initialized = this.request('initialize', {
       cwd: options.workspaceDirectory,
       provider: options.runtime.provider?.providerId ?? 'deepseek',
