@@ -91,7 +91,14 @@ async function appendEvent(
   secrets: string[],
   receiptRecorder?: ExecutionReceiptRecorder,
 ): Promise<void> {
-  const source = event.raw ?? event
+  // DSH emits slash-named JSON-RPC events whose raw envelope is not understood
+  // by the replay compiler; persist the already normalized AgentEvent for those.
+  const rawType = event.raw && typeof event.raw === 'object' && 'type' in event.raw
+    ? String((event.raw as { type?: unknown }).type ?? '')
+    : ''
+  const source = rawType === 'tool/call' || rawType === 'tool/result' || rawType === 'assistant/message' || rawType === 'turn/start' || rawType === 'turn/end'
+    ? event
+    : event.raw ?? event
   const serialized = JSON.stringify(redactAgentArtifactValue(source, [...secrets, ...transientAgentEventValues(source)]))
   await writeFile(path, `${serialized}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 })
   if (process.platform !== 'win32') await chmod(path, 0o600)
