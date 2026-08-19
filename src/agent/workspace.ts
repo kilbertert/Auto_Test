@@ -168,15 +168,20 @@ export async function promoteReplayBrowserState(workspace: AgentWorkspace, allow
 
     const sessionState = await readReplaySessionStorage(workspace.replaySessionStoragePath, {})
     if (sessionCapture !== undefined) {
-      const value = JSON.parse(sessionCapture) as { origin?: unknown; entries?: unknown }
-      if (typeof value.origin !== 'string' || !allowedOrigins.includes(value.origin) ||
-        !value.entries || typeof value.entries !== 'object' || Array.isArray(value.entries) ||
-        !Object.values(value.entries).every((entry) => typeof entry === 'string')) {
+      const value = JSON.parse(sessionCapture) as { origin?: unknown; entries?: unknown; byOrigin?: unknown }
+      const legacy = value.byOrigin && typeof value.byOrigin === 'object' && !Array.isArray(value.byOrigin)
+        ? Object.entries(value.byOrigin as Record<string, unknown>)[0]
+        : undefined
+      const origin = typeof value.origin === 'string' ? value.origin : legacy?.[0]
+      const entries = value.entries ?? legacy?.[1]
+      if (typeof origin !== 'string' || !allowedOrigins.includes(origin) ||
+        !entries || typeof entries !== 'object' || Array.isArray(entries) ||
+        !Object.values(entries).every((entry) => typeof entry === 'string')) {
         throw new Error('Captured replay sessionStorage must contain an allowed origin and string entries')
       }
-      const entries = value.entries as Record<string, string>
-      if (Object.keys(entries).length > 0) sessionState.byOrigin[value.origin] = entries
-      else delete sessionState.byOrigin[value.origin]
+      const stringEntries = entries as Record<string, string>
+      if (Object.keys(stringEntries).length > 0) sessionState.byOrigin[origin] = stringEntries
+      else delete sessionState.byOrigin[origin]
       await writePrivateJson(workspace.replaySessionStoragePath, sessionState)
       await writePrivateText(workspace.initPagePath, sessionStorageInitPage(sessionState.byOrigin))
     }

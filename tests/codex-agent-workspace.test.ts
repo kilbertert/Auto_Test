@@ -247,6 +247,27 @@ describe('Codex agent workspace', () => {
     await expect(access(workspace.replaySessionStorageCapturePath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('accepts a copied private session seed during host recovery', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-replay-legacy-session-'))
+    directories.push(directory)
+    const origin = 'https://tasks.example.test'
+    const workspace = await prepareCodexAgentWorkspace({
+      outputDirectory: resolve(directory, 'run'),
+      manifest: manifest([origin]),
+      profile: { id: 'fixture', origins: [origin], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, headed: false, browserExecutablePath: '/verified/chromium', environment: { PATH: '/usr/bin' },
+    })
+    await writeFile(workspace.replayStorageCapturePath, JSON.stringify({ cookies: [], origins: [] }))
+    await writeFile(workspace.replaySessionStorageCapturePath, JSON.stringify({
+      version: '1.0', byOrigin: { [origin]: { token: 'recovered' } },
+    }))
+
+    await promoteReplayBrowserState(workspace, [origin])
+
+    const sessionState = JSON.parse(await readFile(workspace.replaySessionStoragePath, 'utf8'))
+    expect(sessionState.byOrigin[origin]).toEqual({ token: 'recovered' })
+  })
+
   it('refreshes ephemeral browser configuration without resetting persisted recovery state', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-agent-workspace-resume-'))
     directories.push(directory)
