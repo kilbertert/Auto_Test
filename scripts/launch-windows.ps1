@@ -78,16 +78,44 @@ function Use-NodeRuntime([string] $NodeHome) {
   $script:NpmCliPath = $npmCliPath
 }
 
+# The portable Node archive carries npm as a nested tree of small JS files.
+# A file can go missing locally (antivirus quarantine, interrupted extract)
+# while node.exe itself still reports the correct version, so a version match
+# alone does not prove npm works. Check the files npm actually requires on its
+# fetch path; a missing one would surface later as a confusing MODULE_NOT_FOUND
+# during `npm ci` instead of a clean re-download here.
+function Test-NpmIntegrity([string] $NodeHome) {
+  $npmCliPath = Join-Path $NodeHome 'node_modules\npm\bin\npm-cli.js'
+  if (-not (Test-Path $npmCliPath)) { return $false }
+  $required = @(
+    'node_modules\npm\node_modules\make-fetch-happen\lib\cache\policy.js',
+    'node_modules\npm\node_modules\make-fetch-happen\lib\cache\entry.js',
+    'node_modules\npm\node_modules\make-fetch-happen\lib\fetch.js',
+    'node_modules\npm\node_modules\npm-registry-fetch\lib\index.js'
+  )
+  foreach ($relative in $required) {
+    if (-not (Test-Path (Join-Path $NodeHome $relative))) { return $false }
+  }
+  return $true
+}
+
 function Ensure-Node {
   $toolsHome = Resolve-ToolsHome
   $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
   $archiveStem = "node-v$NodeVersion-win-$architecture"
   $nodeHome = Join-Path $toolsHome $archiveStem
   $nodeExecutable = Join-Path $nodeHome 'node.exe'
-  if ((Get-NodeVersion $nodeExecutable) -eq $NodeVersion) {
+  if ((Get-NodeVersion $nodeExecutable) -eq $NodeVersion -and (Test-NpmIntegrity $nodeHome)) {
     Use-NodeRuntime $nodeHome
     Write-Host "[OK] Node.js v$NodeVersion"
     return
+  }
+
+  # node.exe exists but npm is broken (missing required files). Force a clean
+  # re-download instead of silently running `npm ci` with a broken npm.
+  if ((Test-Path $nodeExecutable) -and -not (Test-NpmIntegrity $nodeHome)) {
+    Write-Host '[安装] 检测到独立 Node.js 的 npm 文件缺失，重新下载完整 Node.js……'
+    Remove-Item -Recurse -Force $nodeHome -ErrorAction SilentlyContinue
   }
 
   Write-Host "[安装] 正在为 Auto-Test 下载独立 Node.js v$NodeVersion……"
@@ -116,6 +144,7 @@ function Ensure-Node {
     Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
   }
   if ((Get-NodeVersion $nodeExecutable) -ne $NodeVersion) { throw 'Node.js 私有安装验证失败。' }
+  if (-not (Test-NpmIntegrity $nodeHome)) { throw 'Node.js 私有安装验证失败：npm 关键文件缺失。' }
   Use-NodeRuntime $nodeHome
   Write-Host "[OK] Node.js v$NodeVersion"
 }

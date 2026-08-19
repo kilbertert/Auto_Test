@@ -61,7 +61,7 @@ $env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS = "180"
 Remove-Item Env:AUTO_TEST_CODEX_PROBE_TIMEOUT_SECONDS
 ```
 
-Chromium 首次下载默认优先使用适合当前 Windows 部署区域的 Playwright 镜像；镜像失败会自动回退官方 CDN。安装器直接使用 Auto-Test 自带的 `node.exe` 执行项目内 Playwright CLI，不依赖电脑上的全局 `npm`、`npx` 或它们的 PowerShell 脚本。企业网络如果有自己的制品镜像，可以在启动前临时指定：
+Chromium 首次下载默认优先使用适合当前 Windows 部署区域的 Playwright 镜像；镜像失败会自动回退官方 CDN。安装器直接使用 Auto-Test 自带的 `node.exe` 执行项目内 Playwright CLI，不依赖电脑上的全局 `npm`、`npx` 或它们的 PowerShell 脚本。便携 Node 在每次启动时会做 npm 完整性自检：若 `node.exe` 版本匹配但 npm 关键文件（如 `make-fetch-happen` 的 `cache\policy.js`）缺失——通常是被安全软件隔离或解压被中断——安装器会自动删除损坏的 Node 目录并重新下载官方完整包，而不是带病执行 `npm ci`。企业网络如果有自己的制品镜像，可以在启动前临时指定：
 
 ```powershell
 $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwright"
