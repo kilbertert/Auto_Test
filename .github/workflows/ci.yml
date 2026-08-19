@@ -35,7 +35,17 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        env:
+          # GitHub's ubuntu runner prefers azure.archive.ubuntu.com
+          # (priority:1 in /etc/apt/apt-mirrors.txt), which has been stalling
+          # so `npx playwright install --with-deps` hangs in apt-get update
+          # until the job timeout. Drop the azure mirror from apt-mirrors.txt
+          # so apt falls back to archive.ubuntu.com, then run `--with-deps`
+          # (Playwright installs the full system-dependency set itself).
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          npx playwright install --with-deps chromium
 
       - name: Run deterministic checks
         run: npm run check

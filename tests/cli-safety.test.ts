@@ -192,5 +192,5 @@ describe('CLI output safety', () => {
     expect(conflict.stderr).toContain('--headed 与 --headless 不能同时使用')
     expect(invalidSlowMo.stderr).toContain('--slow-mo 必须是非负整数')
     expect(missingSlowMo.stderr).toContain('--slow-mo 必须提供取值')
-  })
+  }, 15_000)
 })

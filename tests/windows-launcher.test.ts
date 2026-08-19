@@ -28,6 +28,13 @@ describe('Windows portable launcher', () => {
     expect(script).toContain('OMP 使用当前 Model Profile 环境变量')
     expect(script).toContain('$startInfo.RedirectStandardOutput = $false')
     expect(script).toContain('$startInfo.RedirectStandardError = $false')
+    // A portable Node whose node.exe version matches may still have a broken
+    // npm (missing make-fetch-happen files). Ensure-Node must re-download
+    // instead of running `npm ci` with a broken npm.
+    expect(script).toContain('function Test-NpmIntegrity')
+    expect(script).toContain('make-fetch-happen\\lib\\cache\\policy.js')
+    expect(script).toContain('检测到独立 Node.js 的 npm 文件缺失，重新下载完整 Node.js')
+    expect(script).toContain('npm 关键文件缺失')
     expect(script).toContain("'auto-test-codex-probes'")
     expect(script).toContain('[IO.FileShare]::ReadWrite')
     expect(script).toContain('[Text.UTF8Encoding]::new($true)')
