@@ -28,6 +28,11 @@ describe('Windows portable launcher', () => {
     expect(script).toContain('OMP 使用当前 Model Profile 环境变量')
     expect(script).toContain('$startInfo.RedirectStandardOutput = $false')
     expect(script).toContain('$startInfo.RedirectStandardError = $false')
+    // The probe must not inherit an unreadable console stdin: give codex exec
+    // an anonymous pipe and close it immediately so it sees EOF instead of
+    // hanging until the probe timeout (base_url/model/key may all be correct).
+    expect(script).toContain('$startInfo.RedirectStandardInput = $true')
+    expect(script).toContain('$process.StandardInput.Close()')
     expect(script).toContain("'auto-test-codex-probes'")
     expect(script).toContain('[IO.FileShare]::ReadWrite')
     expect(script).toContain('[Text.UTF8Encoding]::new($true)')

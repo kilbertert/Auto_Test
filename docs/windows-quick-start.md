@@ -51,7 +51,7 @@ Node.js 和 Codex CLI 都安装在 `%APPDATA%\auto-test\tools`，Codex 配置保
 
 Windows 默认 Provider 和显式 Codex Model Profile 都属于受管 Profile。Codex AgentHost 会自动用本机 loopback 兼容桥把 Codex namespace MCP 工具转换为标准 Responses function tools，因此兼容 Provider 不需要实现 Codex 私有 namespace 扩展；Provider 仍必须支持标准 function tools、SSE 流和工具结果续传。该桥只监听 `127.0.0.1`，不记录 Key。模型探针只能证明最小模型请求可用，真实 Run 开始前的 Control MCP 能力预检才证明工具链可用。
 
-旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。只有本次使用 Codex 默认 Windows Provider 时才运行该探针；显式 `--model-profile` 不会被无关的旧默认 Provider 阻断，OMP 也不运行 Codex 专用探针。新默认配置通过探针后才会替换旧配置，验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
+旧版本如果检测到 `cliproxyapi` 配置，会自动改用上述直连接入。只有本次使用 Codex 默认 Windows Provider 时才运行该探针；显式 `--model-profile` 不会被无关的旧默认 Provider 阻断，OMP 也不运行 Codex 专用探针。新默认配置通过探针后才会替换旧配置，验证失败会自动恢复。探针默认最多等待 120 秒，等待超过 20 秒后会持续显示安全心跳。stdout/stderr 写入本次探针的临时捕获文件，主进程退出后直接读取当前快照；因此脱离父进程的继承输出句柄不会延长探针等待，模型服务或流式响应本身卡住时仍会按上限终止并给出网络/Provider 诊断。探针进程的 stdin 会被重定向为匿名管道并在启动后立即关闭，`codex exec` 只会读到 EOF 而不会继承无法读取的控制台句柄卡住，因此 base_url/Key/模型都正确时不会因为探针自挂而误报额度不足或限流。单次探针的 stdout+stderr 上限为 4 MiB，异常超量会终止进程树、回滚 Provider 并清理捕获文件。
 
 只有确认私有网关正常但响应时间确实超过 120 秒时，才临时调高等待时间；取值范围为 1 到 3600 秒。这个参数不会修复额度不足、限流或断流，不应作为日常配置：
 

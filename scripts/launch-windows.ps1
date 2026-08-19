@@ -608,10 +608,16 @@ exit `$LASTEXITCODE
   $startInfo.CreateNoWindow = $true
   $startInfo.RedirectStandardOutput = $false
   $startInfo.RedirectStandardError = $false
+  # Give the probe an anonymous stdin pipe that is closed immediately after
+  # start. Without any stdin redirection, codex exec inherits a console handle
+  # it cannot read from a detached launcher and silently hangs until the probe
+  # timeout, even when base_url/model/key are all correct.
+  $startInfo.RedirectStandardInput = $true
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   try {
     $process.Start() | Out-Null
+    $process.StandardInput.Close()
     return [pscustomobject]@{
       Process = $process
       CaptureDirectory = $captureDirectory
