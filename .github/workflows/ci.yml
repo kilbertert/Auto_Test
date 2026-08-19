@@ -35,7 +35,16 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        env:
+          # azure.archive.ubuntu.com is the default GitHub runner mirror but
+          # has been stalling on noble-security/noble-updates (apt-get update
+          # hangs until the job timeout). archive.ubuntu.com works; rewrite
+          # the apt sources so `--with-deps` does not hang.
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list
+          sudo apt-get update -o Acquire::Retries=3
+          npx playwright install --with-deps chromium
 
       - name: Run deterministic checks
         run: npm run check
