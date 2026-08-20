@@ -140,6 +140,21 @@ Profiles live at `~/.config/auto-test/environment-profiles.json` (Linux/macOS) o
 `storageState`/`sessionStorage` per run; auth files must be `0600`. Write permission is governed
 only by the Profile, never by inferred per-case risk.
 
+## Model API credentials (consensus)
+
+- **Provider API keys are private credentials.** They never go into tracked files, commits, or public
+  docs. The project has one dedicated automation-test credential source; its CSV lives outside the
+  repo (or is git-ignored by `*apiKey-*.csv` / `*api-key-*.csv` if placed under the repo root) and is
+  only read into the build process via environment variables, never written into the command line or
+  shell history.
+- **Do not add a CSV under the repo root without it being ignored.** `build-private-windows-package.sh`
+  injects the key into the private ZIP; the ZIP itself is a sensitive credential artifact. Distribute
+  it point-to-point only, delete it locally after delivery, and never upload it to chat, cloud drives,
+  or public artifact stores.
+- **Model IDs are provider-specific.** A model id valid on one provider (e.g. Volcengine ARK) may not
+  exist on another (e.g. Aliyun Bailian); switching suppliers requires re-verifying the id and base URL
+  against that provider's Responses endpoint before packaging.
+
 ## Model profile (multi-provider switching)
 
 A separate `model-profiles.json` registry (same config dir as environment profiles; template at
