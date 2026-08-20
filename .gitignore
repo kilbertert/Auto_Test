@@ -33,6 +33,9 @@ storage-state*.json
 auth-state*.json
 Auto-Test.private-key
 Auto-Test.private-provider.json
+# Provider API-key CSV files are private credentials, never commit them.
+*apiKey-*.csv
+*api-key-*.csv
 
 # Real test inputs are private by default. Synthetic templates may be committed.
 *.xlsx
