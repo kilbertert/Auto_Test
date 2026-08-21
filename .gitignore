@@ -23,6 +23,9 @@ screenshots/
 *.pid
 *.tmp
 .cache/
+# Redacted run event/state logs are generated per run (in the run dir).
+*.jsonl
+codex-agent.state.json
 
 # Credentials and browser state
 .env
