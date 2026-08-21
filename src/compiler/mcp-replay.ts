@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { normalizeAgentEvent } from '../agent/host.js'
+import { normalizeAgentEvent } from '../core/agent-events.js'
 
 export interface ReplayDiagnostic {
   severity: 'error' | 'warning'
