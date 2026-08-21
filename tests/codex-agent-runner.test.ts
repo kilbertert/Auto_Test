@@ -494,6 +494,145 @@ describe('adaptive Codex epochs', () => {
     expect(resumed.state.threadId).toBe('thread-old')
   })
 
+  it('fails fast on provider quota reconnects, closes the physical session, and clears its id', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-quota-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    await removeSessionBindingFingerprint(interrupted.outputDirectory)
+    let closed = 0
+    let resumedCalls = 0
+
+    const resumed = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: ({ threadId }) => ({
+        id: threadId,
+        async close() { closed += 1 },
+        runStreamed: async () => failedEventStream(
+          'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, token-limit)',
+          threadId,
+        ),
+      }),
+      startThread: () => { throw new Error('quota must not start an automatic replacement thread') },
+    })
+
+    expect(closed).toBe(1)
+    expect(resumed.state.status).toBe('completed')
+    expect(resumed.state.outcome).toBe('blocked')
+    expect(resumed.state.threadId).toBeUndefined()
+    expect(resumed.state.activeEpoch?.threadId).toBeUndefined()
+    expect(resumed.state.runInterruption).toMatchObject({ code: 'provider_capacity' })
+
+    const continued = await runCodexTestAgent({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: () => {
+        resumedCalls += 1
+        throw new Error('a quota-invalidated session must not be resumed')
+      },
+      startThread: () => ({
+        id: 'thread-after-quota',
+        runStreamed: async (_input, options) => options?.outputSchema
+          ? eventStream(resultFor(workflow, ['case-one']), 'thread-after-quota')
+          : eventStream('recovered after provider capacity', 'thread-after-quota'),
+      }),
+    })
+
+    expect(resumedCalls).toBe(0)
+    expect(continued.result?.outcome).toBe('passed')
+  })
+
+  it('keeps an ordinary reconnect advisory non-fatal within the current turn', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-reconnect-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-reconnect',
+        runStreamed: async (_input, options) => options?.outputSchema
+          ? eventStream(resultFor(workflow, ['case-one']), 'thread-reconnect')
+          : {
+              events: (async function* () {
+                yield { type: 'thread.started', thread_id: 'thread-reconnect' } as ThreadEvent
+                yield { type: 'error', message: 'Reconnecting... 1/5 (stream disconnected before completion)' } as ThreadEvent
+                yield { type: 'item.completed', item: { id: 'reconnect-message', type: 'agent_message', text: 'execution resumed' } } as ThreadEvent
+                yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
+              })(),
+            },
+      }),
+    })
+
+    expect(run.result?.outcome).toBe('passed')
+  })
+
+  it('accepts a valid epoch delivery artifact before spending a finalization turn', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-artifact-first-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    let finalizationTurns = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-artifact-first',
+        runStreamed: async (_input, options) => {
+          if (options?.outputSchema) {
+            finalizationTurns += 1
+            throw new Error('valid delivery must not request finalization')
+          }
+          const workspace = resolve(outputDirectory, 'agent-workspace')
+          await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+          await writeFile(resolve(workspace, 'evidence', 'blocked.txt'), 'observed')
+          await writeFile(resolve(workspace, 'case-results.epoch-0001.json'), JSON.stringify({
+            version: '1.0', kind: 'case-results', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+            generatedAt: '2026-08-20T00:00:00.000Z',
+            cases: [{
+              caseId: 'case-one', title: '第一条', outcome: 'blocked', summary: 'Fixture prerequisite unavailable',
+              evidencePaths: ['evidence/blocked.txt'], failureSource: 'agent_execution', failureKind: 'execution',
+            }],
+            mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+          }))
+          return eventStream('execution completed', 'thread-artifact-first')
+        },
+      }),
+    })
+
+    expect(finalizationTurns).toBe(0)
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({ caseId: 'case-one', failureSource: 'agent_execution' })
+  })
+
   it('attempts at most one replacement when the new physical session is also incompatible', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-single-retry-'))
     directories.push(directory)

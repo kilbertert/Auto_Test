@@ -1,6 +1,6 @@
 # 自适应 Epoch Runtime 验证记录
 
-更新时间：2026-08-05
+更新时间：2026-08-21
 
 本记录只说明运行时架构和恢复契约的验证结果。当前没有新的真实故障案例，因此不得把以下 fixture、历史输入回放或模型容量估算写成业务准确率验收。
 
@@ -46,6 +46,11 @@ npm run check
 - 已完成 case 的记录在恢复后不被重写；
 - pending Mutation 会阻止后续 epoch，并为未调度 case 生成明确的 `blocked` 结果；
 - `version: 1.0` 及旧 `single_thread/case_windows` 状态不会被猜测迁移。
+- 明确的额度、限流、上下文或输出容量错误会立即关闭当前物理 session，并清除 Run 与 active epoch 的 thread ID；下一次 `--resume` 启动新物理线程，不复用已膨胀 session；
+- 没有容量标记的普通网络 `Reconnecting...` 仍可在当前 turn 内继续；
+- 执行 turn 已写出的合法 epoch 交付会在 finalization 前被采用，不再调用模型重复生成同一结构化结果。
+
+以上新增边界由合成 AgentHost/Runner fixture 验证，证明的是错误归一化、物理 session 生命周期和确定性交付恢复，不是业务准确率验收。
 
 ## 真实 LTA 只读 canary
 

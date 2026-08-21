@@ -14,7 +14,7 @@ import type { CodexTestControlConfig } from './control-types.js'
 import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
-import { AgentHostError, normalizeAgentEvent } from './host.js'
+import { AgentHostError, agentHostErrorKindForMessage, agentHostErrorMessageForMatching, normalizeAgentEvent, normalizeAgentHostError } from './host.js'
 import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostRuntime, AgentHostSession, AgentInputPart } from './host.js'
 import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
@@ -104,7 +104,7 @@ async function appendEvent(
 }
 
 function isNonFatalAgentHostError(message: string): boolean {
-  return /^Reconnecting\.\.\. \d+\/\d+/i.test(message) ||
+  return (/^Reconnecting\.\.\. \d+\/\d+/i.test(message) && !agentHostErrorKindForMessage(message)) ||
     /^Model metadata for .+ not found\. Defaulting to fallback metadata\b/i.test(message)
 }
 
@@ -136,11 +136,18 @@ async function runTurn(
       if (event.type === 'session_incompatible') {
         throw new AgentHostError(hostId, event.message ?? 'AgentHost session is incompatible with the current model binding', 'session_incompatible')
       }
-      if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) throw new Error(event.message ?? 'agent host error')
+      if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) {
+        const message = event.message ?? 'agent host error'
+        const kind = event.errorKind ?? agentHostErrorKindForMessage(message)
+        if (kind) throw new AgentHostError(hostId, message, kind)
+        throw new Error(message)
+      }
       if (event.type === 'turn_completed') break
     }
     if (!finalResponse) throw new Error('Agent host returned no final response')
     return finalResponse
+  } catch (error) {
+    throw normalizeAgentHostError(hostId, error)
   } finally {
     await afterTurn?.()
   }
@@ -343,7 +350,8 @@ function enforceEnvironmentRequirements(
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
   if (error instanceof AgentHostError) return error.retryable
-  return /usage limit|quota|credit|rate.?limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|mutation ledger|chromium executable|spawn .*enoent|no final response|不可用/i.test(message)
+  const normalized = agentHostErrorMessageForMatching(message)
+  return /usage limit|quota|credit|rate limit|tpm rate limit|rpm rate limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|resource exhausted|overloaded|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|mutation ledger|chromium executable|spawn .*enoent|no final response|不可用/i.test(normalized)
 }
 
 function isMutationLedgerViolation(message: string): boolean {
@@ -369,21 +377,22 @@ function infrastructureBlockDetails(message: string): {
       nextAction: '检查运行目录中的 Mutation Ledger 和 Agent 事件，修复宿主执行后使用原结果目录恢复；不要重复已发生的业务写入。',
     }
   }
-  if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(message)) {
+  const normalized = agentHostErrorMessageForMatching(message)
+  if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(normalized)) {
     return {
       code: 'provider_capacity',
       reason: '当前执行 epoch 超出模型上下文或单次输出容量。',
       nextAction: '在模型 Profile 中登记准确的容量参数或切换到容量更大的模型后，使用原结果目录继续上次测试。',
     }
   }
-  if (/at capacity|capacity|try a different model/i.test(message)) {
+  if (/at capacity|capacity|try a different model|overloaded/i.test(normalized)) {
     return {
       code: 'provider_capacity',
       reason: '当前模型供应商容量不足或所选模型暂时不可用。',
       nextAction: '使用 --model-profile 切换到另一个已注册的模型供应商后，使用原结果目录继续上次测试。',
     }
   }
-  if (/usage limit|quota|credit|rate.?limit|\b429\b/i.test(message)) {
+  if (/usage limit|quota|credit|rate limit|tpm rate limit|rpm rate limit|resource exhausted|\b429\b/i.test(normalized)) {
     return {
       code: 'provider_rate_limited',
       reason: '模型服务额度不足或调用频率受限。',
@@ -1174,6 +1183,27 @@ export async function runAgentTest(
         state = updateCodexTestState(state, { lastUsage: { ...epochUsage } })
         await writePrivateJson(statePath, state)
       }
+      const invalidatePhysicalSession = async (): Promise<void> => {
+        const currentThread = thread
+        thread = undefined
+        if (activeThread === currentThread) activeThread = undefined
+        try {
+          await currentThread?.close?.()
+        } catch {
+          // The provider has already failed; preserve the logical Run even if
+          // closing its physical transport also reports an error.
+        }
+        const { threadId: _runThreadId, activeEpoch: currentEpoch, ...stateWithoutThread } = state
+        const nextEpoch = currentEpoch
+          ? (() => {
+              const { threadId: _epochThreadId, ...epochWithoutThread } = currentEpoch
+              return epochWithoutThread
+            })()
+          : undefined
+        state = updateCodexTestState(stateWithoutThread, nextEpoch ? { activeEpoch: nextEpoch } : {})
+        threadId = undefined
+        await writePrivateJson(statePath, state)
+      }
       // A logical Run may cold-resume on one replacement physical session,
       // but only after the original resume attempt proves incompatible.
       let resumeCompatibilityPending = Boolean(epochThreadId)
@@ -1277,6 +1307,10 @@ export async function runAgentTest(
           }
           return response
         } catch (error) {
+          if (error instanceof AgentHostError && error.kind === 'quota') {
+            await invalidatePhysicalSession()
+            throw error
+          }
           const sessionIncompatible = error instanceof AgentHostError && error.kind === 'session_incompatible'
           if (!sessionIncompatible || !resumeCompatibilityPending || sessionRotationAttempted) throw error
           const recoveredResponse = await rotateIncompatibleSession()
@@ -1325,10 +1359,36 @@ export async function runAgentTest(
         )
       }
 
-      let epochResult: CodexTestAgentResult | undefined
       let deliveryProblems: string[] = []
+      let lastRecoveredEpochCases: CodexTestCaseResult[] = []
+      const recoverExistingEpochDelivery = async (): Promise<CodexTestAgentResult | undefined> => {
+        const recovered = await recoverAgentDeliveryResult({ artifactPath: deliveryPath, manifest: scopedManifest, startedAt: state.startedAt })
+        if (!recovered.result) {
+          deliveryProblems = recovered.problems
+          return undefined
+        }
+        lastRecoveredEpochCases = recovered.result.cases
+        const requirements = await reconcileEnvironmentRequirementCaseLinks(
+          workspace.environmentRequirementsPath,
+          recovered.result.cases,
+        )
+        const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
+        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+        const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
+        const replayProblems = await replayProblemsForResult(eventsPath, normalized)
+        const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+        const replayVerification = problems.length === 0
+          ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
+          : []
+        deliveryProblems = [...problems, ...replayVerification]
+        if (deliveryProblems.length > 0) return undefined
+        return enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+      }
+      // A complete epoch artifact is already an auditable delivery contract;
+      // do not spend another model turn merely to re-serialize those facts.
+      let epochResult: CodexTestAgentResult | undefined = await recoverExistingEpochDelivery()
       const maxFinalizationTurns = options.maxFinalizationTurns ?? 2
-      for (let turn = 0; turn <= maxFinalizationTurns; turn++) {
+      for (let turn = 0; !epochResult && turn <= maxFinalizationTurns; turn++) {
         if (turn > 0) progress.report('stage', `epoch ${epoch.id} 的结构化交付仍有 ${deliveryProblems.length} 项问题，正在修正`)
         const prompt = turn === 0
           ? agentTestFinalPrompt(epoch)
@@ -1383,26 +1443,12 @@ export async function runAgentTest(
 
       if (!epochResult) {
         const ledger = await readMutationLedger(workspace.mutationLedgerPath)
-        const recovered = await recoverAgentDeliveryResult({ artifactPath: deliveryPath, manifest: scopedManifest, startedAt: state.startedAt })
-        if (recovered.result) {
-          const requirements = await reconcileEnvironmentRequirementCaseLinks(
-            workspace.environmentRequirementsPath,
-            recovered.result.cases,
-          )
-          const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
-          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
-          const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
-          const replayProblems = await replayProblemsForResult(eventsPath, normalized)
-          const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
-          const replayVerification = problems.length === 0
-            ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
-            : []
-          epochResult = problems.length === 0 && replayVerification.length === 0
-            ? enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), ledger)
-            : deliveryBlockedResult(scopedManifest, state, [...problems, ...replayVerification].join('; '), ledger, scopedRequirements, recovered.result.cases)
+        const recovered = await recoverExistingEpochDelivery()
+        if (recovered) {
+          epochResult = recovered
         } else {
           const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-          epochResult = deliveryBlockedResult(scopedManifest, state, deliveryProblems.join('; ') || recovered.problems.join('; ') || `epoch ${epoch.id} 没有可验证的结构化交付`, ledger, environmentRequirementsForCases(requirements, epoch.caseIds))
+          epochResult = deliveryBlockedResult(scopedManifest, state, deliveryProblems.join('; ') || `epoch ${epoch.id} 没有可验证的结构化交付`, ledger, environmentRequirementsForCases(requirements, epoch.caseIds), lastRecoveredEpochCases)
         }
       }
 
