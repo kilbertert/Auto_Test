@@ -11,7 +11,7 @@ import type {
   AgentInputPart,
   AgentHostStream,
 } from './host.js'
-import { AgentHostError, isAgentSessionIncompatibleMessage, normalizeAgentEvent } from './host.js'
+import { AgentHostError, agentHostErrorKindForMessage, isAgentSessionIncompatibleMessage, normalizeAgentEvent } from './host.js'
 import { resolveCodexExecutable } from './codex-executable.js'
 import { CodexModelProviderAdapter } from './codex-provider.js'
 import { startResponsesToolBridge, type ResponsesToolBridge } from './responses-tool-bridge.js'
@@ -21,7 +21,8 @@ const require = createRequire(import.meta.url)
 
 interface CodexThreadLike {
   readonly id: string | null
-  runStreamed(input: Input, options?: { outputSchema?: unknown }): Promise<{ events: AsyncGenerator<ThreadEvent> }>
+  runStreamed(input: Input, options?: { outputSchema?: unknown; signal?: AbortSignal }): Promise<{ events: AsyncGenerator<ThreadEvent> }>
+  close?(): Promise<void>
 }
 
 export interface LegacyCodexThreadFactory {
@@ -73,6 +74,8 @@ function rethrowCodexSessionError(error: unknown): never {
   if (isAgentSessionIncompatibleMessage(message)) {
     throw new AgentHostError('codex', message, 'session_incompatible')
   }
+  const kind = agentHostErrorKindForMessage(message)
+  if (kind) throw new AgentHostError('codex', message, kind)
   throw error
 }
 
@@ -199,6 +202,7 @@ export function startCodexSdkThread(
 
 class CodexSession implements AgentHostSession {
   private closed = false
+  private activeAbortController: AbortController | undefined
 
   constructor(
     private readonly thread: CodexThreadLike,
@@ -211,17 +215,23 @@ class CodexSession implements AgentHostSession {
 
   async run(input: AgentInputPart[], options?: { outputSchema?: unknown }): Promise<AgentHostStream> {
     let stream: Awaited<ReturnType<CodexThreadLike['runStreamed']>>
+    const abortController = new AbortController()
+    this.activeAbortController = abortController
     try {
-      stream = await this.thread.runStreamed(toCodexInput(input), options)
+      stream = await this.thread.runStreamed(toCodexInput(input), { ...options, signal: abortController.signal })
     } catch (error) {
+      this.activeAbortController = undefined
       rethrowCodexSessionError(error)
     }
+    const session = this
     return {
       events: (async function* (): AsyncGenerator<AgentEvent> {
         try {
           for await (const event of stream.events) yield normalizeAgentEvent(event)
         } catch (error) {
           rethrowCodexSessionError(error)
+        } finally {
+          if (session.activeAbortController === abortController) session.activeAbortController = undefined
         }
       })(),
     }
@@ -230,6 +240,9 @@ class CodexSession implements AgentHostSession {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.activeAbortController?.abort()
+    this.activeAbortController = undefined
+    await this.thread.close?.()
     await this.bridge?.close()
   }
 }

@@ -6,9 +6,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentHostError, normalizeAgentEvent } from '../src/agent/host.js'
+import type { ThreadEvent } from '@openai/codex-sdk'
+import { AgentHostError, normalizeAgentEvent, normalizeAgentHostError } from '../src/agent/host.js'
 import type { AgentHost, AgentHostLaunchOptions, AgentHostProviderPrepareOptions, AgentInputPart } from '../src/agent/host.js'
-import { codexSandboxMode, codexWebSearchEnabled, codexWorkspaceIsolation, startCodexSdkThread } from '../src/agent/codex-host.js'
+import { codexSandboxMode, codexWebSearchEnabled, codexWorkspaceIsolation, createLegacyCodexAgentHost, startCodexSdkThread } from '../src/agent/codex-host.js'
 import { OmpAgentHost, RpcFrameDecoder } from '../src/agent/omp-host.js'
 import { availableAgentHosts, createAgentHost } from '../src/agent/host-registry.js'
 import { AgentTestProgressReporter, progressFromAgentEvent, type AgentTestProgress } from '../src/agent/progress.js'
@@ -196,6 +197,12 @@ describe('AgentHost contract', () => {
       message: 'Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.',
     })).toMatchObject({ type: 'other' })
     expect(normalizeAgentEvent({
+      type: 'error',
+      message: 'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, token-limit)',
+    })).toMatchObject({ type: 'error', errorKind: 'quota' })
+    expect(normalizeAgentEvent({ type: 'error', message: 'ModelAccountTpmRateLimitExceeded' })).toMatchObject({ type: 'error', errorKind: 'quota' })
+    expect(normalizeAgentEvent({ type: 'error', message: 'insufficient_quota: context_length_exceeded' })).toMatchObject({ type: 'error', errorKind: 'quota' })
+    expect(normalizeAgentEvent({
       type: 'item.completed',
       item: {
         id: 'skill-budget-warning',
@@ -249,6 +256,29 @@ describe('AgentHost contract', () => {
     expect(codexWorkspaceIsolation('win32')).toBe('prompt_only')
   })
 
+  it('aborts the active Codex stream when the AgentHost session closes', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-close-'))
+    directories.push(directory)
+    let signal: AbortSignal | undefined
+    const host = createLegacyCodexAgentHost({
+      startThread: () => ({
+        id: 'legacy-thread',
+        runStreamed: async (_input, options) => {
+          signal = options?.signal
+          return { events: (async function* () { yield { type: 'thread.started', thread_id: 'legacy-thread' } as ThreadEvent })() }
+        },
+      }),
+      resumeThread: () => { throw new Error('resume is not used by this fixture') },
+    })
+
+    const session = await host.start(ompLaunchOptions(directory, directory))
+    await session.run([{ type: 'text', text: 'close me' }])
+    await session.close?.()
+
+    expect(signal).toBeDefined()
+    expect(signal?.aborted).toBe(true)
+  })
+
   it.skipIf(process.platform === 'win32')('passes the Windows fallback to the native Codex CLI invocation', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-sandbox-'))
     directories.push(directory)
@@ -299,6 +329,8 @@ process.stdin.on('end', () => {
     expect(new AgentHostError('omp', 'unsupported mode', 'capability').retryable).toBe(false)
     expect(new AgentHostError('codex', 'bad executable', 'configuration').retryable).toBe(false)
     expect(new AgentHostError('omp', 'bad protocol', 'protocol').retryable).toBe(false)
+    expect(normalizeAgentHostError('omp', new AgentHostError('omp', 'quota configuration is missing', 'configuration'))).toMatchObject({ kind: 'configuration' })
+    expect(normalizeAgentHostError('omp', new AgentHostError('omp', 'rate_limit_exceeded', 'transport'))).toMatchObject({ kind: 'quota' })
   })
 
   it('fails before model traffic when a profile uses a model API unsupported by the selected host', async () => {

@@ -16,7 +16,7 @@ import type {
   AgentInputPart,
   AgentUsage,
 } from './host.js'
-import { AgentHostError, normalizeAgentEvent, resolveHostExecutable, usageFrom } from './host.js'
+import { AgentHostError, agentHostErrorKindForMessage, normalizeAgentEvent, resolveHostExecutable, usageFrom } from './host.js'
 import { OmpModelProviderAdapter } from './omp-provider.js'
 
 interface OmpResponse {
@@ -464,12 +464,14 @@ class OmpRpcSession implements AgentHostSession {
         this.pending.delete(id)
         clearTimeout(pending.timeout)
         if (response.success === false) {
-          pending.reject(new AgentHostError('omp', response.error ?? `OMP RPC ${pending.command} failed`, 'transport'))
+          const message = response.error ?? `OMP RPC ${pending.command} failed`
+          pending.reject(new AgentHostError('omp', message, agentHostErrorKindForMessage(message) ?? 'transport'))
         } else {
           pending.resolve(response)
         }
       } else if (response.success === false) {
-        const error = new AgentHostError('omp', response.error ?? 'OMP RPC command failed', 'transport')
+        const message = response.error ?? 'OMP RPC command failed'
+        const error = new AgentHostError('omp', message, agentHostErrorKindForMessage(message) ?? 'transport')
         if (id && this.activeRun?.promptId === id) {
           const active = this.activeRun
           this.activeRun = undefined

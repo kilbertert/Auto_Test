@@ -66,6 +66,10 @@ npm run agent:test -- \
 
 Provider 选择在 AgentHost 边界完成。Core 只传递 `AgentModelProviderDescriptor`（`providerId`、`model`、`baseUrl`、统一 `api`、输入模态、推理/容量能力和环境变量引用），再调用选中 Host 的 `modelProvider.prepare()`；适配器负责原生文件、selector、启动参数和隔离环境。Codex 当前声明只支持 `openai-responses`，并映射为 `wire_api = "responses"`。受管 Profile 的 `models.json` 以当前安装版 Codex CLI 的 bundled model catalog 为模板，保留该版本原生 agent instructions 和必需 schema，再只覆盖 Profile 声明的模型、推理、搜索、输入模态和容量能力；模板不可读取或生成文件不能由真实 CLI 解析时会在模型请求前 fail closed。这样既避免第三方模型落入错误的 fallback metadata，也不会用框架自制的弱提示替换 Codex 原生执行框架。Codex Web Search 只有在 Profile 明确声明 `supportsSearchTool: true` 时启用。OMP 声明支持 OMP catalog 的协议集合，并把同一 descriptor 写成 `models.yml`。因此 `openai-completions` 等 Profile 可以被 OMP 消费，但会在 Codex 适配器准备阶段明确拒绝，而不是让 Runner 解析 Codex 字段。第三方 Host 只需实现相同接口；已有合成 Host 契约测试证明它不需要在 Runner 增加 ID 分支。自定义模型应声明真实上下文窗口、输出上限和输入模态，避免错误调度或把不支持的图片发送给 Provider；仅 native 配置且没有目录元数据时，Codex 才可能保留 fallback metadata 警告。
 
+Provider/Host 错误也在同一边界归一化。明确包含额度耗尽、429/限流、上下文窗口、token/output limit 或模型容量不足的错误（包括 `ModelAccountTpmRateLimitExceeded`、`insufficient_quota`、`context_length_exceeded` 等机器可读拼写），不论来自 Codex 事件、Codex 流异常、OMP RPC 还是第三方 Host，都会成为同一个 `quota` 宿主错误。Runner 对此 fail fast：关闭或中止当前物理 session、清除 Run 与 active epoch 保存的 thread ID，并按具体原因以 `provider_capacity` 或 `provider_rate_limited` 保存可恢复阻断；它不会在同一 Provider 上无限重连或立即创建替代线程。下一次 `--resume` 保留逻辑 Run、case store、证据和 Ledger，但为未完成 epoch 启动新物理线程。没有容量标记的普通 `Reconnecting...` 仍可在当前 turn 内继续。
+
+执行 turn 返回后，Runner 会先确定性校验该 epoch 已写入的版本化交付 artifact。若输入身份、case 覆盖、证据、环境需求、执行回执、回放要求和权威 Ledger 均有效，就直接采用该 artifact，不再花费一次 finalization 模型调用重复序列化；校验失败时才要求同一 AgentHost 修正交付。Core 仍不从日志或页面残片补造业务结论。
+
 Auto-Test 的 Codex 测试线程固定由单一主代理执行，不启用 Codex 多代理工具。同一执行 epoch 内的页面写入、Mutation Ledger 和回放 episode 由同一线程排序；跨 epoch 的排序由 checkpoint/恢复协议保证，而非单个物理线程。只读材料分析仍可由主代理使用工作区脚本完成。
 
 仓库提供两个无密钥内置 Profile：

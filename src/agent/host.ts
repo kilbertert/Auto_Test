@@ -91,6 +91,8 @@ export interface AgentEvent {
   status?: 'completed' | 'failed' | undefined
   arguments?: unknown | undefined
   result?: unknown | undefined
+  /** Host-neutral classification for provider/runtime failures. */
+  errorKind?: AgentHostErrorKind | undefined
 }
 
 export interface AgentHostCapabilities {
@@ -258,6 +260,22 @@ const incompatibleSessionMessagePatterns = [
   /\b(?:session|thread)\b.*\b(?:model|provider)\b.*\b(?:mismatch|incompatible)\b/i,
 ]
 
+const quotaOrCapacityMessagePatterns = [
+  /\ballocated quota exceeded\b/i,
+  /\b(?:quota|usage|credit)(?: limit)?\s+(?:exceeded|depleted|insufficient|exhausted)\b/i,
+  /\binsufficient quota\b/i,
+  /\b(?:rate limit|too many requests)\b/i,
+  /\b(?:tpm|rpm)(?: rate)? limit\b/i,
+  /\btoken[- ]limit\b/i,
+  /\b(?:maximum )?(?:context length|context window)\b/i,
+  /\btoo many tokens\b/i,
+  /\boutput limit\b/i,
+  /\bat capacity\b/i,
+  /\b(?:resource )?exhausted\b/i,
+  /\boverloaded\b/i,
+  /\b429\b/i,
+]
+
 /** These Codex advisories do not stop the following turn from running. */
 function isAdvisoryHostMessage(message: string): boolean {
   return advisoryHostMessagePatterns.some((pattern) => pattern.test(message))
@@ -268,12 +286,45 @@ export function isAgentSessionIncompatibleMessage(message: string): boolean {
   return incompatibleSessionMessagePatterns.some((pattern) => pattern.test(message))
 }
 
+/** Normalize common provider error spellings before applying host-neutral rules. */
+export function agentHostErrorMessageForMatching(message: string): string {
+  return message
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
+/**
+ * Normalize provider capacity/usage failures at the host boundary. Codex and
+ * OMP may use different wire errors, but the Core must make the same
+ * fail-fast decision for both.
+ */
+export function agentHostErrorKindForMessage(message: string): AgentHostErrorKind | undefined {
+  const normalized = agentHostErrorMessageForMatching(message)
+  return quotaOrCapacityMessagePatterns.some((pattern) => pattern.test(normalized)) ? 'quota' : undefined
+}
+
+export function normalizeAgentHostError(hostId: AgentHostId, error: unknown): unknown {
+  const message = error instanceof Error ? error.message : String(error)
+  const kind = agentHostErrorKindForMessage(message)
+  if (error instanceof AgentHostError) {
+    // An adapter's explicit capability/configuration/protocol classification
+    // is authoritative; infer quota only for an unclassified transport.
+    return kind && (error.kind === 'transport' || error.kind === 'unknown')
+      ? new AgentHostError(hostId, message, kind)
+      : error
+  }
+  return kind ? new AgentHostError(hostId, message, kind) : error
+}
+
 function normalizedFailureEvent(message: string, raw: unknown, id?: string): AgentEvent {
   if (isAdvisoryHostMessage(message)) return eventWithRaw({ type: 'other', ...(id ? { id } : {}), message }, raw)
   if (isAgentSessionIncompatibleMessage(message)) {
     return eventWithRaw({ type: 'session_incompatible', ...(id ? { id } : {}), message }, raw)
   }
-  return eventWithRaw({ type: 'error', ...(id ? { id } : {}), message }, raw)
+  const errorKind = agentHostErrorKindForMessage(message)
+  return eventWithRaw({ type: 'error', ...(id ? { id } : {}), message, ...(errorKind ? { errorKind } : {}) }, raw)
 }
 
 function normalizeItemEvent(raw: Record<string, unknown>, item: Record<string, unknown>): AgentEvent {

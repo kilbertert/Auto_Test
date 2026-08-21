@@ -164,9 +164,11 @@ Get-ChildItem "$Run\*-Auto-Test-结果.xlsx" | Select-Object FullName
   --headed
 ```
 
-恢复会继续使用原始材料副本、Agent 工作区文件、证据和 Mutation Ledger，并先重新观察 active epoch 未完成业务写入的真实状态。若浏览器执行已结束、但最终 JSON 响应在传输中断，框架只能在对应 epoch artifact 或全量 `agent-workspace\case-results.json` 通过身份、case 覆盖、证据路径和 Ledger 终态校验后采用结果，不能从日志或页面猜测。Excel、URL、Environment Profile 和风险策略必须保持不变；模型 Profile 可以在额度、容量或 Provider 故障后显式切换。旧版 v1 状态不支持恢复。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
+恢复会继续使用原始材料副本、Agent 工作区文件、证据和 Mutation Ledger，并先重新观察 active epoch 未完成业务写入的真实状态。若执行 turn 已写出对应 epoch artifact，框架会先按身份、case 覆盖、证据路径、环境需求、回执和 Ledger 终态校验；合法时直接采用，不再发起 finalization 模型调用。最终 JSON 响应在传输中断时也只能按相同规则恢复，不能从日志或页面猜测。Excel、URL、Environment Profile 和风险策略必须保持不变；模型 Profile 可以在额度、容量或 Provider 故障后显式切换。旧版 v1 状态不支持恢复。不要删除原输出目录或 Ledger，不要改用新输出目录盲目重跑，也不要手工把 `blocked` 改成 `passed`。
 
 模型 Profile 变化时，`codex-agent.state.json` 中的无密钥绑定指纹用于判断旧物理 session 是否还能恢复。绑定不同时，Runner 保留同一个逻辑 Run、active epoch、工作区和 Ledger，启动下一代 thread，并在继续执行前发送 resume prompt 核对 pending Mutation。早期 v2 状态没有指纹时，仅在宿主明确返回 session 不兼容后执行一次轮换；普通业务或代理执行错误不得触发轮换，第二次不兼容必须以基础设施阻断结束。
+
+明确的上下文/输出容量错误（例如 `context_length_exceeded`）会归为 `provider_capacity`；额度、429/限流错误（例如 `ModelAccountTpmRateLimitExceeded` 或 `insufficient_quota`）会归为 `provider_rate_limited`。两类错误都在 AgentHost 边界标记为 `quota`，并在第一次明确错误时关闭当前物理 session，从 `codex-agent.state.json` 的顶层和 `activeEpoch` 清除 thread ID；不要等待窗口继续反复重连。恢复额度或切换可用模型 Profile 后，对原 `$Run` 执行 `--resume`，并确认新状态的 `threadGeneration` 增加且没有恢复旧 thread ID。没有容量标记的普通网络 `Reconnecting...` 仍允许当前 turn 自动继续，不能把一次短暂网络抖动误判为需要换线程。
 
 `product_failed` 表示已确认产品结果不符合预期，应修复产品或调整测试数据后重新验收；它不是基础设施恢复入口。即使本轮还有其他用例 `blocked`，终端摘要仍会保留已确认产品差异，并按输入材料、环境/权限/测试数据、基础设施和 AgentHost 执行交付分别显示阻断数量与首个直接原因。若环境需求已经由同一 case 的页面证据记录，后续 Provider 中断不会把该 case 改成基础设施失败；只有没有逐 case 事实的剩余 case 才使用运行中断分类。
 

@@ -239,7 +239,7 @@ OMP 与 Codex 使用同一个 Auto-Test Model Profile 选择层；真正的请�
   --headed
 ```
 
-恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。若原模型额度或 Provider 不可用，可以在同一命令中显式选择另一个可用模型 Profile。Runner 会保留原 active epoch、工作区和 Ledger；当已保存的物理 session 与新 AgentHost/Provider/模型绑定不兼容时，只启动一代新 thread，先执行 resume 协议并核对 pending Mutation，再继续原 epoch。普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍不兼容也不会无限重试。
+恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。执行 turn 已写出合法的当前 epoch 交付时也会直接采用，不再额外调用模型重写结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。若原模型额度或 Provider 不可用，可以在同一命令中显式选择另一个可用模型 Profile。明确的额度、429/限流、上下文或输出容量错误会立即结束当前物理 session 并清除其 thread ID；因此下一次 `--resume` 会为未完成 epoch 启动新 thread，不会再次恢复已经膨胀的旧线程。Runner 会保留原 active epoch、工作区和 Ledger；当已保存的物理 session 与新 AgentHost/Provider/模型绑定不兼容时，也只启动一代新 thread，先执行 resume 协议并核对 pending Mutation，再继续原 epoch。没有容量标记的普通网络重连仍可由当前 turn 自动恢复；普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍不兼容也不会无限重试。
 
 Excel、URL、Environment Profile、风险策略和原有 origin 必须保持不变；这里的 Environment Profile 不等于可为基础设施恢复而切换的模型 Profile。旧版 v1 状态不支持恢复，其他业务环境替换或权限收窄都会拒绝恢复。
 
