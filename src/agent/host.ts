@@ -1,6 +1,12 @@
 import { constants as fsConstants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { delimiter, extname, isAbsolute, resolve } from 'node:path'
+import {
+  type AgentModelApi,
+  type AgentModelInputModality,
+  type AgentModelProviderDescriptor,
+  type AgentModelReasoningEffort,
+} from '../core/model-provider.js'
 
 /**
  * The only execution surface the Auto-Test core expects from an agent.
@@ -10,44 +16,16 @@ import { delimiter, extname, isAbsolute, resolve } from 'node:path'
  * normalized events below and never imports a vendor SDK.
  */
 export type AgentHostId = 'codex' | 'omp' | (string & {})
-export const AGENT_MODEL_APIS = [
-  'openai-completions',
-  'openai-responses',
-  'openai-codex-responses',
-  'azure-openai-responses',
-  'anthropic-messages',
-  'bedrock-converse-stream',
-  'google-generative-ai',
-  'google-gemini-cli',
-  'google-vertex',
-] as const
-export type AgentModelApi = typeof AGENT_MODEL_APIS[number]
-export type AgentModelReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-export type AgentModelInputModality = 'text' | 'image'
-
-export type AgentModelCredential =
-  | { type: 'environment'; name: string }
-  | { type: 'none' }
-
-/** Host-neutral model endpoint selected once for an Auto-Test run. */
-export interface AgentModelProviderDescriptor {
-  profileId: string
-  providerId: string
-  model: string
-  baseUrl: string
-  api: AgentModelApi
-  credential: AgentModelCredential
-  displayName?: string
-  reasoningEffort?: AgentModelReasoningEffort
-  reasoningEfforts?: AgentModelReasoningEffort[]
-  inputModalities?: AgentModelInputModality[]
-  supportsParallelToolCalls?: boolean
-  supportsSearchTool?: boolean
-  serviceTier?: string
-  supportsWebsockets?: boolean
-  contextWindowTokens?: number
-  maxOutputTokens?: number
-}
+// Model capability contract now lives in core/model-provider.ts (a provider
+// contract, not agent-specific); re-exported here for agent-layer consumers.
+export {
+  AGENT_MODEL_APIS,
+  type AgentModelApi,
+  type AgentModelCredential,
+  type AgentModelInputModality,
+  type AgentModelProviderDescriptor,
+  type AgentModelReasoningEffort,
+} from '../core/model-provider.js'
 
 export type AgentInputPart =
   | { type: 'text'; text: string }
