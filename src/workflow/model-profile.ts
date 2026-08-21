@@ -1,13 +1,13 @@
 import { homedir } from 'node:os'
 import { posix, resolve, win32 } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { AGENT_MODEL_APIS } from '../agent/host.js'
+import { AGENT_MODEL_APIS } from '../core/model-provider.js'
 import type {
   AgentModelApi,
   AgentModelInputModality,
   AgentModelProviderDescriptor,
   AgentModelReasoningEffort,
-} from '../agent/host.js'
+} from '../core/model-provider.js'
 
 /** @deprecated Registry readers still accept wireApi, but normalized profiles use api. */
 export type CodexWireApi = 'responses' | 'chat'

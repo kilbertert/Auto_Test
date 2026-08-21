@@ -1,0 +1,36 @@
+# Auto-Test architecture contract - agents must not violate it; check.py gates the end.
+# Derived from the real dependency flow (2026-08-21): core is pure and cli has zero
+# inbound edges are already true; rules fix the flow direction and forbid reversals/cycles.
+
+layers:
+  entry: [src.cli]                          # entry points, outbound-only
+  agent: [src.agent]                        # agent orchestration
+  workflow: [src.workflow]                  # workflow engine (orchestration core)
+  io: [src.input, src.ir, src.report, src.runtime, src.compiler]   # input/compile/output
+  repair: [src.repair, src.exploration]     # repair & exploration
+  support: [src.usability, src.validation, src.eval, src.importer]
+  foundation: [src.core]                    # pure foundation (types/diagnostics)
+
+rules:
+  # foundation must stay pure: no dependency on any internal layer
+  - from: foundation
+    cannot_depend_on: [entry, agent, workflow, io, repair, support]
+
+  # entry is the top layer; internal modules must not depend back on it
+  - from: agent
+    cannot_depend_on: [entry]
+  - from: workflow
+    cannot_depend_on: [entry]
+  - from: io
+    cannot_depend_on: [entry, agent, workflow]
+  - from: repair
+    cannot_depend_on: [entry]
+  - from: support
+    cannot_depend_on: [entry]
+
+  # dominant direction is agent -> workflow; workflow depending back on agent is a cycle
+  - from: workflow
+    cannot_depend_on: [agent]
+
+# ignore tests / scripts / configs (module-name globs; globs starting with * need quotes)
+exclude: [tests.*, scripts.*, examples.*, '*.config']
