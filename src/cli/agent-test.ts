@@ -5,6 +5,7 @@ import { basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAgentTest } from '../agent/runner.js'
 import { limitManifestToCases } from '../agent/execution-epochs.js'
+import type { CodexTestAgentProgressKind } from '../agent/progress.js'
 import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
 import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
 import { writeResultWorkbook } from '../agent/result-workbook.js'
@@ -485,9 +486,10 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
   if (!options.resume && options.urls.length === 0) {
     throw new Error('新 AgentHost Run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
   }
-  const printProgress = (message: string): void => {
+  const printProgress = (message: string, kind: CodexTestAgentProgressKind = 'stage'): void => {
     const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-    console.log(`[${time}] ${message}`)
+    const label = kind === 'activity' ? '动作' : kind === 'heartbeat' ? '心跳' : kind === 'warning' ? '恢复/阻断' : '阶段'
+    console.log(`[${time}] [${label}] ${message}`)
   }
   const priorStatePath = resolve(options.outputDirectory, 'codex-agent.state.json')
   const priorLedgerPath = resolve(options.outputDirectory, '.agent-private', 'mutation-ledger.json')
@@ -736,7 +738,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
     ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
     ...(options.agentSourceHome ? { agentSourceHome: options.agentSourceHome } : {}),
-    onProgress: (progress) => printProgress(progress.message),
+    onProgress: (progress) => printProgress(progress.message, progress.kind),
   })
   console.log(`测试状态：${run.state.status}`)
   console.log(`测试宿主：${run.state.agentHost ?? effectiveAgentHostId}`)

@@ -71,7 +71,7 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 如果最终 JSON 响应在传输中断，但 epoch recovery artifact 已存在，Runner 只在确定性校验通过后采用它。Runner 不从日志、标题或页面残片补造 case 结果。
 
-AgentHost 输出的 `Reconnecting... n/m` 是同一 turn 内的有界传输重试，Runner 只记录进度并等待终态；嵌套 quota 文本不会在第一次尝试时触发关闭。明确余额耗尽仍保存为 `provider_rate_limited` 并等待外部额度恢复；可识别的瞬时 429/TPS/TPM 限流会按服务端提示等待一次，启动一代物理线程并用 resume 继续，仍失败才阻断。真正的上下文/输出容量错误才触发有限调度恢复：权威 Ledger 为空且没有交互回执的多 case epoch 可以二分，已有业务写入的 epoch 不得拆分重做，只能保留原 case 集并换一代线程恢复；finalization 最多恢复一次。case 结果已落盘后的 checkpoint 是可选记忆，超限时跳过，禁止为它继续消耗线程。
+AgentHost 输出的 `Reconnecting... n/m` 是同一 turn 内的有界传输重试，Runner 只记录进度并等待终态；嵌套 quota 文本不会在第一次尝试时触发关闭，但明确的 `AccessDenied.Unpurchased`/模型未授权会立即归为 `provider_authorization`，不继续无效重连。明确余额耗尽仍保存为 `provider_rate_limited` 并等待外部额度恢复；可识别的瞬时 429/TPS/TPM 限流会按服务端提示等待一次，启动一代物理线程并用 resume 继续，仍失败才阻断。真正的上下文/输出容量错误才触发有限调度恢复：权威 Ledger 为空且没有交互回执的多 case epoch 可以二分，已有业务写入的 epoch 不得拆分重做，只能保留原 case 集并换一代线程恢复；finalization 最多恢复一次。case 结果已落盘后的 checkpoint 是可选记忆，超限时跳过，禁止为它继续消耗线程。
 
 ## 结果边界
 

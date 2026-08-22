@@ -104,8 +104,12 @@ async function appendEvent(
 }
 
 function isNonFatalAgentHostError(message: string): boolean {
-  return /^Reconnecting\.\.\. \d+\/\d+/i.test(message) ||
-    /^Model metadata for .+ not found\. Defaulting to fallback metadata\b/i.test(message)
+  if (/^Reconnecting\.\.\. \d+\/\d+/i.test(message)) {
+    // A model entitlement denial is permanent for this Provider binding. Do
+    // not spend the remaining native reconnect attempts on the same 403.
+    return agentHostErrorKindForMessage(message) !== 'provider_authorization'
+  }
+  return /^Model metadata for .+ not found\. Defaulting to fallback metadata\b/i.test(message)
 }
 
 async function runTurn(
@@ -366,7 +370,8 @@ function enforceEnvironmentRequirements(
 }
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
-  if (error instanceof AgentHostError) return error.retryable
+  if (error instanceof AgentHostError) return error.retryable || error.kind === 'provider_authorization'
+  if (agentHostErrorKindForMessage(message) === 'provider_authorization') return true
   const normalized = agentHostErrorMessageForMatching(message)
   return /usage limit|quota|credit|rate limit|tpm rate limit|rpm rate limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|resource exhausted|overloaded|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|mutation ledger|chromium executable|spawn .*enoent|no final response|不可用/i.test(normalized)
 }
@@ -417,6 +422,13 @@ function infrastructureBlockDetails(message: string): {
     }
   }
   const normalized = agentHostErrorMessageForMatching(message)
+  if (agentHostErrorKindForMessage(message) === 'provider_authorization') {
+    return {
+      code: 'provider_authorization',
+      reason: 'Provider 拒绝了当前模型访问：模型未购买、未开通，或当前 Key 无权使用。',
+      nextAction: '在当前 Provider 开通该模型，或切换到当前 Key 已授权的模型/Profile 后，使用原结果目录继续上次测试。',
+    }
+  }
   if (/context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(normalized)) {
     return {
       code: 'provider_capacity',

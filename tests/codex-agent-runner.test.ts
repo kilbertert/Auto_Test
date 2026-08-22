@@ -623,6 +623,37 @@ describe('adaptive Codex epochs', () => {
     expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited' })
   })
 
+  it('fails fast for a permanently unauthorized model without retrying the same host', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-unpurchased-model-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test/'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        started += 1
+        return {
+          id: 'thread-unpurchased-model',
+          runStreamed: async () => failedEventStream('Reconnecting... 1/5 (403 AccessDenied.Unpurchased: model not purchased)', 'thread-unpurchased-model'),
+        }
+      },
+    })
+
+    expect(started).toBe(1)
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.state.runInterruption).toMatchObject({ code: 'provider_authorization' })
+    expect(run.result?.nextActions[0]).toContain('开通该模型')
+  })
+
   it('waits once and resumes a transient provider rate limit on a replacement session', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-transient-rate-limit-'))
     directories.push(directory)

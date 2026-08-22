@@ -78,6 +78,23 @@ const browserToolLabels: Record<string, string> = {
   browser_close: '关闭浏览器会话',
 }
 
+// Page inspection is valuable in the immutable event log, but showing every
+// snapshot/find/evaluate call makes the operator console unreadable.
+const quietBrowserTools = new Set([
+  'browser_snapshot',
+  'browser_find',
+  'browser_evaluate',
+  'browser_run_code_unsafe',
+  'browser_network_request',
+  'browser_network_requests',
+  'browser_console_messages',
+  'browser_generate_locator',
+  'browser_annotate',
+  'browser_highlight',
+  'browser_hide_highlight',
+  'browser_tabs',
+])
+
 const controlToolLabels: Record<string, string> = {
   test_contract: '读取不可变测试契约',
   test_value_get: '读取本次运行测试数据',
@@ -127,6 +144,10 @@ function actionCategory(server: string, tool: string): AgentProgressActionCatego
   if (tool === 'command_execution') return 'shell'
   if (tool === 'file_change') return 'workspace'
   return 'tool'
+}
+
+function isQuietAction(action: AgentProgressAction | undefined): boolean {
+  return action?.category === 'browser' && Boolean(action.tool && quietBrowserTools.has(action.tool))
 }
 
 function actionProgress(
@@ -265,7 +286,12 @@ export class CodexTestProgressReporter {
   private currentAction: AgentProgressAction | undefined
   private readonly activeActions = new Map<string, ActiveAction>()
   private readonly recentEventKeys = new Map<string, number>()
+  private readonly recentMessages = new Map<string, number>()
+  private readonly seenThreads = new Set<string>()
   private actionSequence = 0
+  private turnCount = 0
+  private completedActionCount = 0
+  private pageObservationCount = 0
   private recoveryActive = false
   private context: AgentTestProgressContext = {}
   private readonly startedAt = Date.now()
@@ -293,6 +319,16 @@ export class CodexTestProgressReporter {
   }
 
   private emit(progress: CodexTestAgentProgress): void {
+    if (progress.kind !== 'heartbeat') {
+      const now = Date.now()
+      const key = `${progress.kind}|${progress.message}`
+      const previous = this.recentMessages.get(key)
+      if (previous !== undefined && now - previous < 5_000) return
+      this.recentMessages.set(key, now)
+      for (const [candidate, timestamp] of this.recentMessages) {
+        if (now - timestamp > 60_000) this.recentMessages.delete(candidate)
+      }
+    }
     const context = Object.keys(this.context).length > 0 ? safeContext(this.context) : undefined
     const message = `${contextPrefix(this.context)}${progress.message}`
     try {
@@ -307,15 +343,50 @@ export class CodexTestProgressReporter {
   }
 
   observe(event: AgentEvent | unknown): void {
-    const progress = progressFromAgentEvent(event)
-    if (!progress) return
     const normalized = normalizeAgentEvent(event)
+    let progress = progressFromAgentEvent(normalized)
+    if (!progress) return
+
+    if (normalized.type === 'thread_started') {
+      const key = normalized.threadId ?? `generation:${this.context.threadGeneration ?? 'unknown'}`
+      if (this.seenThreads.has(key)) return
+      this.seenThreads.add(key)
+      const generation = this.context.threadGeneration ?? this.seenThreads.size
+      progress = {
+        ...progress,
+        message: this.seenThreads.size === 1
+          ? '执行线程已就绪；中断后可从本次结果目录恢复'
+          : `恢复线程已就绪（第 ${generation} 代）；继续使用本次结果目录中的状态`,
+      }
+    } else if (normalized.type === 'turn_started') {
+      this.turnCount += 1
+      progress = { ...progress, message: `开始执行第 ${this.turnCount} 个 Agent 回合` }
+    } else if (normalized.type === 'reasoning_started') {
+      this.currentActivity = '正在分析页面证据和下一步动作'
+      return
+    } else if (normalized.type === 'todo_started') {
+      this.currentActivity = '正在整理执行步骤'
+      return
+    } else if (normalized.type === 'agent_message') {
+      this.currentActivity = '已收到本轮执行回执'
+      return
+    }
     const enriched = progress.action ? this.enrichAction(progress, normalized) : progress
     if (!enriched) return
+
+    const quiet = isQuietAction(enriched.action)
+    if (enriched.action?.phase === 'completed') {
+      if (quiet) this.pageObservationCount += 1
+      else this.completedActionCount += 1
+    }
+    if (quiet && enriched.action?.phase !== 'failed') {
+      this.currentActivity = '正在观察页面结构和证据'
+      return
+    }
     this.currentActivity = enriched.message
-    this.currentAction = enriched.action
+    if (!quiet) this.currentAction = enriched.action
     if (enriched.kind === 'warning') this.recoveryActive = true
-    if (enriched.action?.phase === 'completed') this.recoveryActive = false
+    if (enriched.action?.phase === 'completed' && !quiet) this.recoveryActive = false
     this.emit(enriched)
   }
 
@@ -335,7 +406,10 @@ export class CodexTestProgressReporter {
       }
     }
     const started = key ? this.activeActions.get(key) : undefined
-    const sequence = started?.sequence ?? ++this.actionSequence
+    const quiet = isQuietAction(action)
+    const sequence = started
+      ? started.sequence
+      : (!quiet || action.phase === 'failed' ? ++this.actionSequence : 0)
     let durationMs: number | undefined
     if (action.phase !== 'started' && started) durationMs = Math.max(0, now - started.startedAt)
     if (action.phase === 'started') {
@@ -363,6 +437,7 @@ export class CodexTestProgressReporter {
   private latestActiveAction(): ActiveAction | undefined {
     let latest: ActiveAction | undefined
     for (const action of this.activeActions.values()) {
+      if (isQuietAction(action.action)) continue
       if (!latest || action.startedAt > latest.startedAt) latest = action
     }
     return latest
@@ -375,12 +450,13 @@ export class CodexTestProgressReporter {
       const active = this.latestActiveAction()
       const activity = active
         ? `当前动作：${actionDescription(active.action)}；动作 #${active.sequence}，状态=进行中，已持续 ${elapsedLabel(Date.now() - active.startedAt)}`
-        : `最近动作：${this.currentActivity}`
+        : `当前阶段：${this.currentActivity}`
+      const counts = `；关键动作 ${this.completedActionCount} 个；页面观察 ${this.pageObservationCount} 次；Agent 回合 ${this.turnCount} 次`
       const recovery = this.recoveryActive ? '；恢复状态：进行中' : ''
       try {
         this.sink?.({
           kind: 'heartbeat',
-          message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${recovery}`,
+          message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${counts}${recovery}`,
           ...(Object.keys(this.context).length > 0 ? { context: safeContext(this.context) } : {}),
           ...(active ? {
             action: {
@@ -403,6 +479,8 @@ export class CodexTestProgressReporter {
     this.heartbeat = undefined
     this.activeActions.clear()
     this.recentEventKeys.clear()
+    this.recentMessages.clear()
+    this.seenThreads.clear()
   }
 }
 
