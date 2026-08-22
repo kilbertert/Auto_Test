@@ -1,4 +1,6 @@
 import { normalizeAgentEvent, type AgentEvent } from './host.js'
+import { redactSensitiveText } from '../input/text.js'
+import { redactAgentValue } from './redact.js'
 
 export type CodexTestAgentProgressKind = 'stage' | 'activity' | 'heartbeat' | 'warning'
 
@@ -21,7 +23,27 @@ export interface AgentTestProgressContext {
   epochIndex?: number
   epochTotal?: number
   threadGeneration?: number
+  caseIndex?: number
+  caseTotal?: number
+  caseSourceRow?: number
+  caseTitle?: string
+  casePhase?: 'executing' | 'finalizing'
+  epochCaseStart?: number
+  epochCaseEnd?: number
+  epochCaseTotal?: number
+  completedCaseCount?: number
+  passedCaseCount?: number
+  productFailedCaseCount?: number
+  blockedCaseCount?: number
 }
+
+export interface AgentTestProgressCase {
+  id: string
+  title: string
+  sourceRow: number
+}
+
+export type AgentTestProgressCaseOutcome = 'passed' | 'product_failed' | 'blocked'
 
 export interface CodexTestAgentProgress {
   kind: CodexTestAgentProgressKind
@@ -102,6 +124,8 @@ const controlToolLabels: Record<string, string> = {
   evidence_record: '记录测试证据',
   field_composition_check: '校验复合字段输入表示',
   field_composition_list: '核对复合字段输入门禁',
+  case_execution_begin: '标记测试用例执行开始',
+  case_execution_end: '标记测试用例执行结束',
   case_result_record: '记录测试用例终态',
   mutation_begin: '登记业务写入到 Mutation Ledger',
   mutation_resolve: '核销业务写入和清理结果',
@@ -148,6 +172,16 @@ function actionCategory(server: string, tool: string): AgentProgressActionCatego
 
 function isQuietAction(action: AgentProgressAction | undefined): boolean {
   return action?.category === 'browser' && Boolean(action.tool && quietBrowserTools.has(action.tool))
+}
+
+function isControlTool(event: AgentEvent, tool: string): boolean {
+  return event.server === 'auto-test-control' && (event.tool === tool || event.tool?.endsWith(`_${tool}`) === true)
+}
+
+function caseIdFromEvent(event: AgentEvent): string | undefined {
+  if (!event.arguments || typeof event.arguments !== 'object' || Array.isArray(event.arguments)) return undefined
+  const caseId = (event.arguments as { caseId?: unknown }).caseId
+  return typeof caseId === 'string' && caseId.length > 0 ? caseId : undefined
 }
 
 function actionProgress(
@@ -255,17 +289,37 @@ function safeContext(context: AgentTestProgressContext): AgentTestProgressContex
     ...(context.epochIndex !== undefined ? { epochIndex: context.epochIndex } : {}),
     ...(context.epochTotal !== undefined ? { epochTotal: context.epochTotal } : {}),
     ...(context.threadGeneration !== undefined ? { threadGeneration: context.threadGeneration } : {}),
+    ...(context.caseIndex !== undefined ? { caseIndex: context.caseIndex } : {}),
+    ...(context.caseTotal !== undefined ? { caseTotal: context.caseTotal } : {}),
+    ...(context.caseSourceRow !== undefined ? { caseSourceRow: context.caseSourceRow } : {}),
+    ...(context.caseTitle ? { caseTitle: context.caseTitle } : {}),
+    ...(context.casePhase ? { casePhase: context.casePhase } : {}),
+    ...(context.epochCaseStart !== undefined ? { epochCaseStart: context.epochCaseStart } : {}),
+    ...(context.epochCaseEnd !== undefined ? { epochCaseEnd: context.epochCaseEnd } : {}),
+    ...(context.epochCaseTotal !== undefined ? { epochCaseTotal: context.epochCaseTotal } : {}),
+    ...(context.completedCaseCount !== undefined ? { completedCaseCount: context.completedCaseCount } : {}),
+    ...(context.passedCaseCount !== undefined ? { passedCaseCount: context.passedCaseCount } : {}),
+    ...(context.productFailedCaseCount !== undefined ? { productFailedCaseCount: context.productFailedCaseCount } : {}),
+    ...(context.blockedCaseCount !== undefined ? { blockedCaseCount: context.blockedCaseCount } : {}),
   }
 }
 
 function contextPrefix(context: AgentTestProgressContext): string {
   const parts: string[] = []
   const host = hostLabel(context.hostId)
-  if (host) parts.push(`Host=${host}`)
+  if (host) parts.push(`宿主=${host}`)
   if (context.epochIndex !== undefined && context.epochTotal !== undefined) {
-    parts.push(`epoch=${context.epochIndex}/${context.epochTotal}`)
+    parts.push(`批次=${context.epochIndex}/${context.epochTotal}`)
   }
-  if (context.threadGeneration !== undefined) parts.push(`thread generation=${context.threadGeneration}`)
+  if (context.threadGeneration !== undefined) parts.push(`执行线程=第${context.threadGeneration}代`)
+  if (context.caseIndex !== undefined && context.caseTotal !== undefined) parts.push(`用例=${context.caseIndex}/${context.caseTotal}`)
+  if (context.caseSourceRow !== undefined) parts.push(`Excel第${context.caseSourceRow}行`)
+  if (context.caseIndex === undefined && context.epochCaseStart !== undefined && context.epochCaseEnd !== undefined && context.epochCaseTotal !== undefined) {
+    const range = context.epochCaseStart === context.epochCaseEnd
+      ? `${context.epochCaseStart}/${context.epochCaseTotal}`
+      : `${context.epochCaseStart}-${context.epochCaseEnd}/${context.epochCaseTotal}`
+    parts.push(`用例范围=${range}`)
+  }
   return parts.length > 0 ? `[${parts.join(' | ')}] ` : ''
 }
 
@@ -288,6 +342,12 @@ export class CodexTestProgressReporter {
   private readonly recentEventKeys = new Map<string, number>()
   private readonly recentMessages = new Map<string, number>()
   private readonly seenThreads = new Set<string>()
+  private readonly cases = new Map<string, AgentTestProgressCase>()
+  private readonly caseOutcomes = new Map<string, AgentTestProgressCaseOutcome>()
+  private epochCaseIds: string[] = []
+  private activeCaseId: string | undefined
+  private casePhase: AgentTestProgressContext['casePhase']
+  private redactionSecrets: string[] = []
   private actionSequence = 0
   private turnCount = 0
   private completedActionCount = 0
@@ -310,6 +370,47 @@ export class CodexTestProgressReporter {
       this.recoveryActive = false
     }
     this.context = { ...this.context, ...context }
+  }
+
+  setCaseCatalog(cases: AgentTestProgressCase[], secrets: string[] = []): void {
+    this.redactionSecrets = [...secrets]
+    this.cases.clear()
+    this.caseOutcomes.clear()
+    this.activeCaseId = undefined
+    this.casePhase = undefined
+    for (const item of cases) {
+      this.cases.set(item.id, {
+        id: item.id,
+        title: redactAgentValue(redactSensitiveText(item.title).replace(/\s+/g, ' ').trim().slice(0, 64), this.redactionSecrets),
+        sourceRow: item.sourceRow,
+      })
+    }
+    this.refreshCaseContext()
+  }
+
+  setExecutionEpoch(caseIds: string[]): void {
+    this.epochCaseIds = caseIds.filter((caseId) => this.cases.has(caseId))
+    this.activeCaseId = undefined
+    this.casePhase = undefined
+    this.refreshCaseContext()
+  }
+
+  recordCaseResults(results: Array<{ caseId: string; outcome: AgentTestProgressCaseOutcome }>): void {
+    for (const result of results) {
+      if (this.cases.has(result.caseId)) this.caseOutcomes.set(result.caseId, result.outcome)
+    }
+    this.refreshCaseContext()
+  }
+
+  clearActiveCase(): void {
+    this.activeCaseId = undefined
+    this.casePhase = undefined
+    this.refreshCaseContext()
+  }
+
+  clearExecutionEpoch(): void {
+    this.epochCaseIds = []
+    this.clearActiveCase()
   }
 
   report(kind: CodexTestAgentProgressKind, message: string): void {
@@ -347,6 +448,28 @@ export class CodexTestProgressReporter {
     let progress = progressFromAgentEvent(normalized)
     if (!progress) return
 
+    const caseId = caseIdFromEvent(normalized)
+    const caseStarted = normalized.type === 'tool_completed' && isControlTool(normalized, 'case_execution_begin') && caseId
+    const caseEnded = normalized.type === 'tool_completed' && isControlTool(normalized, 'case_execution_end') && caseId
+    const caseResultRecorded = normalized.type === 'tool_completed' && isControlTool(normalized, 'case_result_record') && caseId
+    if (normalized.type === 'tool_completed' && isControlTool(normalized, 'case_execution_begin') && caseId) {
+      this.activeCaseId = caseId
+      this.casePhase = 'executing'
+      this.refreshCaseContext()
+    } else if (normalized.type === 'tool_completed' && isControlTool(normalized, 'case_execution_end') && caseId) {
+      this.activeCaseId = caseId
+      this.casePhase = 'finalizing'
+      this.refreshCaseContext()
+    } else if (normalized.type === 'tool_completed' && isControlTool(normalized, 'case_result_record') && caseId && normalized.arguments && typeof normalized.arguments === 'object') {
+      const outcome = (normalized.arguments as { outcome?: unknown }).outcome
+      if (outcome === 'passed' || outcome === 'product_failed' || outcome === 'blocked') {
+        this.caseOutcomes.set(caseId, outcome)
+        this.activeCaseId = undefined
+        this.casePhase = undefined
+        this.refreshCaseContext()
+      }
+    }
+
     if (normalized.type === 'thread_started') {
       const key = normalized.threadId ?? `generation:${this.context.threadGeneration ?? 'unknown'}`
       if (this.seenThreads.has(key)) return
@@ -373,6 +496,18 @@ export class CodexTestProgressReporter {
     }
     const enriched = progress.action ? this.enrichAction(progress, normalized) : progress
     if (!enriched) return
+
+    const active = this.activeCaseId ? this.cases.get(this.activeCaseId) : undefined
+    const eventCase = caseId ? this.cases.get(caseId) : undefined
+    if (caseStarted && active) {
+      enriched.message = `开始执行第 ${this.casePosition(active.id)} 条用例：${active.title}；${enriched.message}`
+    } else if (caseEnded && active) {
+      enriched.message = `第 ${this.casePosition(active.id)} 条用例的页面操作与断言已完成，正在整理结果；${enriched.message}`
+    } else if (caseResultRecorded && eventCase && normalized.arguments && typeof normalized.arguments === 'object') {
+      const outcome = (normalized.arguments as { outcome?: unknown }).outcome
+      const outcomeLabel = outcome === 'passed' ? '通过' : outcome === 'product_failed' ? '产品不符预期' : outcome === 'blocked' ? '阻断' : undefined
+      if (outcomeLabel) enriched.message = `${enriched.message}；第 ${this.casePosition(eventCase.id)} 条用例结果=${outcomeLabel}`
+    }
 
     const quiet = isQuietAction(enriched.action)
     if (enriched.action?.phase === 'completed') {
@@ -443,6 +578,43 @@ export class CodexTestProgressReporter {
     return latest
   }
 
+  private refreshCaseContext(): void {
+    const active = this.activeCaseId ? this.cases.get(this.activeCaseId) : undefined
+    const orderedIds = [...this.cases.keys()]
+    const caseIndex = this.activeCaseId ? orderedIds.indexOf(this.activeCaseId) + 1 : undefined
+    const outcomes = [...this.caseOutcomes.values()]
+    const {
+      caseIndex: _caseIndex,
+      caseTotal: _caseTotal,
+      caseSourceRow: _caseSourceRow,
+      caseTitle: _caseTitle,
+      casePhase: _casePhase,
+      epochCaseStart: _epochCaseStart,
+      epochCaseEnd: _epochCaseEnd,
+      epochCaseTotal: _epochCaseTotal,
+      completedCaseCount: _completedCaseCount,
+      passedCaseCount: _passedCaseCount,
+      productFailedCaseCount: _productFailedCaseCount,
+      blockedCaseCount: _blockedCaseCount,
+      ...baseContext
+    } = this.context
+    this.context = {
+      ...baseContext,
+      ...(caseIndex && active ? {
+        caseIndex,
+        caseTotal: this.cases.size,
+        caseSourceRow: active.sourceRow,
+        caseTitle: active.title,
+        ...(this.casePhase ? { casePhase: this.casePhase } : {}),
+      } : {}),
+      ...this.executionEpochContext(),
+      completedCaseCount: outcomes.length,
+      passedCaseCount: outcomes.filter((outcome) => outcome === 'passed').length,
+      productFailedCaseCount: outcomes.filter((outcome) => outcome === 'product_failed').length,
+      blockedCaseCount: outcomes.filter((outcome) => outcome === 'blocked').length,
+    }
+  }
+
   startHeartbeat(): void {
     if (!this.sink || this.heartbeat || this.heartbeatIntervalMs <= 0) return
     this.heartbeat = setInterval(() => {
@@ -452,11 +624,22 @@ export class CodexTestProgressReporter {
         ? `当前动作：${actionDescription(active.action)}；动作 #${active.sequence}，状态=进行中，已持续 ${elapsedLabel(Date.now() - active.startedAt)}`
         : `当前阶段：${this.currentActivity}`
       const counts = `；关键动作 ${this.completedActionCount} 个；页面观察 ${this.pageObservationCount} 次；Agent 回合 ${this.turnCount} 次`
+      const caseCounts = this.cases.size > 0
+        ? `；用例进度 ${this.caseOutcomes.size}/${this.cases.size}（通过 ${this.countOutcome('passed')}，产品不符预期 ${this.countOutcome('product_failed')}，阻断 ${this.countOutcome('blocked')}）`
+        : ''
+      const currentCase = this.activeCaseId ? this.cases.get(this.activeCaseId) : undefined
+      let currentCaseLabel = ''
+      if (currentCase) {
+        const phase = this.casePhase === 'finalizing' ? '正在整理结果' : '正在执行'
+        currentCaseLabel = `；当前用例：第 ${this.casePosition(currentCase.id)} 条，${phase}：${currentCase.title}`
+      } else if (this.epochCaseIds.length > 0) {
+        currentCaseLabel = `；当前状态：正在为第 ${this.executionEpochLabel()} 条用例探索/准备，尚未进入单条用例的可验证执行边界`
+      }
       const recovery = this.recoveryActive ? '；恢复状态：进行中' : ''
       try {
         this.sink?.({
           kind: 'heartbeat',
-          message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${counts}${recovery}`,
+          message: `${contextPrefix(this.context)}框架仍在运行（已持续 ${elapsed}）；${activity}${currentCaseLabel}${counts}${caseCounts}${recovery}`,
           ...(Object.keys(this.context).length > 0 ? { context: safeContext(this.context) } : {}),
           ...(active ? {
             action: {
@@ -472,6 +655,41 @@ export class CodexTestProgressReporter {
       }
     }, this.heartbeatIntervalMs)
     this.heartbeat.unref?.()
+  }
+
+  private countOutcome(outcome: AgentTestProgressCaseOutcome): number {
+    return [...this.caseOutcomes.values()].filter((item) => item === outcome).length
+  }
+
+  private casePosition(caseId: string): string {
+    const position = [...this.cases.keys()].indexOf(caseId) + 1
+    return `${position}/${this.cases.size}`
+  }
+
+  private executionEpochContext(): Pick<AgentTestProgressContext, 'epochCaseStart' | 'epochCaseEnd' | 'epochCaseTotal'> {
+    if (this.epochCaseIds.length === 0 || this.cases.size === 0) return {}
+    const positions = this.epochCaseIds
+      .map((caseId) => this.casePositionNumber(caseId))
+      .filter((position): position is number => position !== undefined)
+    if (positions.length === 0) return {}
+    return {
+      epochCaseStart: Math.min(...positions),
+      epochCaseEnd: Math.max(...positions),
+      epochCaseTotal: this.cases.size,
+    }
+  }
+
+  private executionEpochLabel(): string {
+    const context = this.executionEpochContext()
+    if (context.epochCaseStart === undefined || context.epochCaseEnd === undefined || context.epochCaseTotal === undefined) return '当前'
+    return context.epochCaseStart === context.epochCaseEnd
+      ? `${context.epochCaseStart}/${context.epochCaseTotal}`
+      : `${context.epochCaseStart}-${context.epochCaseEnd}/${context.epochCaseTotal}`
+  }
+
+  private casePositionNumber(caseId: string): number | undefined {
+    const position = [...this.cases.keys()].indexOf(caseId)
+    return position >= 0 ? position + 1 : undefined
   }
 
   close(): void {

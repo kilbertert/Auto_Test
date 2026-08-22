@@ -964,6 +964,7 @@ export async function runAgentTest(
   state = updateCodexTestState(state, { agentHost: host.id })
   await writePrivateJson(statePath, state)
   const redactionSecrets = secretValues(options.secrets)
+  progress.setCaseCatalog(options.manifest.phases, redactionSecrets)
   try {
     progress.report('stage', options.resume
       ? '正在恢复原测试代理线程、浏览器会话和 Mutation Ledger'
@@ -1130,6 +1131,7 @@ export async function runAgentTest(
     progress.report('stage', `隔离测试工作区已准备，正在启动 ${host.displayName} 测试线程`)
     const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
     const existingRecords = await readCaseResultRecords(resultDirectory, options.manifest)
+    progress.recordCaseResults(existingRecords.map((record) => ({ caseId: record.result.caseId, outcome: record.result.outcome })))
     const completedCaseIds = new Set([
       ...state.completedCaseIds,
       ...existingRecords.map((record) => record.result.caseId),
@@ -1183,6 +1185,7 @@ export async function runAgentTest(
         await redactAgentTextArtifact(deliveryPath, redactionSecrets)
       }
       await activateExecutionEpoch(workspace, epoch)
+      progress.setExecutionEpoch(epoch.caseIds)
       progress.setContext({ epochIndex: epoch.index + 1, epochTotal: epoch.total, threadGeneration: state.threadGeneration })
       const resumingEpoch = state.activeEpoch?.id === epoch.id && !freshlySplitEpochIds.delete(epoch.id)
       const initialEpochStage = resumingEpoch ? state.activeEpoch!.stage : 'executing'
@@ -1403,7 +1406,7 @@ export async function runAgentTest(
       }
 
       if (initialEpochStage === 'executing') {
-        progress.report('stage', `正在执行当前 epoch（${epoch.caseIds.length} 条）`)
+        progress.report('stage', `正在处理当前批次（${epoch.caseIds.length} 条用例）；先探索页面，再进入单条用例的可验证执行边界`)
         const input = resumingEpoch
           ? hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
           : hostInput(host, runtime, agentTestPrompt({
@@ -1458,6 +1461,7 @@ export async function runAgentTest(
               })
               await activateExecutionEpoch(workspace, nextEpoch)
               await writePrivateJson(statePath, state)
+              progress.setExecutionEpoch(nextEpoch.caseIds)
               progress.setContext({ epochIndex: nextEpoch.index + 1, epochTotal: nextEpoch.total, threadGeneration: state.threadGeneration })
               progress.report('warning', `当前 epoch 遭遇可恢复的模型容量/限流边界，已自动拆分为 ${replacements.map((item) => item.caseIds.length).join(' + ')} 条并继续执行`)
               epochIndex -= 1
@@ -1634,6 +1638,8 @@ export async function runAgentTest(
         lastUsage: { ...epochUsage },
       })
       await writePrivateJson(statePath, state)
+      progress.recordCaseResults(epochResult.cases.map((item) => ({ caseId: item.caseId, outcome: item.outcome })))
+      progress.clearExecutionEpoch()
       progress.report('stage', `当前 epoch 已完成，累计 ${completedCaseIds.size}/${options.manifest.phases.length} 条`)
 
       if (epoch.index < epochs.length - 1) {
