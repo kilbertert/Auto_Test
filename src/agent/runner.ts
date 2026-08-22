@@ -8,7 +8,7 @@ import type { WorkflowIntakeManifest } from '../workflow/types.js'
 import { redactAgentTextArtifact, redactAgentTextArtifacts, sanitizeAgentDeliveryEvidencePaths } from './artifact-redaction.js'
 import { readAgentBuildInfo } from './build-info.js'
 import { createLegacyCodexAgentHost } from './codex-host.js'
-import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
+import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, splitAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
@@ -104,7 +104,7 @@ async function appendEvent(
 }
 
 function isNonFatalAgentHostError(message: string): boolean {
-  return (/^Reconnecting\.\.\. \d+\/\d+/i.test(message) && !agentHostErrorKindForMessage(message)) ||
+  return /^Reconnecting\.\.\. \d+\/\d+/i.test(message) ||
     /^Model metadata for .+ not found\. Defaulting to fallback metadata\b/i.test(message)
 }
 
@@ -125,6 +125,8 @@ async function runTurn(
   try {
     const streamed = await thread.run(input, outputSchema ? { outputSchema } : undefined)
     let finalResponse = ''
+    let lastReconnectMessage: string | undefined
+    let turnCompleted = false
     for await (const event of streamed.events) {
       await appendEvent(eventsPath, event, secrets, receiptRecorder)
       progress.observe(event)
@@ -136,13 +138,28 @@ async function runTurn(
       if (event.type === 'session_incompatible') {
         throw new AgentHostError(hostId, event.message ?? 'AgentHost session is incompatible with the current model binding', 'session_incompatible')
       }
-      if (event.type === 'error' && !isNonFatalAgentHostError(event.message ?? '')) {
+      if (event.type === 'error') {
         const message = event.message ?? 'agent host error'
-        const kind = event.errorKind ?? agentHostErrorKindForMessage(message)
-        if (kind) throw new AgentHostError(hostId, message, kind)
-        throw new Error(message)
+        if (isNonFatalAgentHostError(message)) {
+          if (/^Reconnecting\.\.\. \d+\/\d+/i.test(message)) lastReconnectMessage = message
+        } else {
+          const kind = event.errorKind ?? agentHostErrorKindForMessage(message)
+          if (kind) throw new AgentHostError(hostId, message, kind)
+          throw new Error(message)
+        }
       }
-      if (event.type === 'turn_completed') break
+      if (event.type === 'turn_completed') {
+        turnCompleted = true
+        break
+      }
+    }
+    if (!turnCompleted) {
+      if (lastReconnectMessage) {
+        const kind = agentHostErrorKindForMessage(lastReconnectMessage)
+        if (kind) throw new AgentHostError(hostId, lastReconnectMessage, kind)
+        throw new Error(lastReconnectMessage)
+      }
+      throw new Error('Agent host returned no final response')
     }
     if (!finalResponse) throw new Error('Agent host returned no final response')
     return finalResponse
@@ -453,6 +470,11 @@ function infrastructureBlockDetails(message: string): {
     reason: 'Auto-Test 的执行依赖出现异常，测试尚未完成。',
     nextAction: '查看运行诊断并修复执行依赖后，使用原结果目录继续上次测试。',
   }
+}
+
+function isContextOrOutputCapacityError(error: unknown): boolean {
+  if (!(error instanceof AgentHostError) || error.kind !== 'quota') return false
+  return /context (?:length|window)|maximum context|too many tokens|token limit|output limit/i.test(agentHostErrorMessageForMatching(error.message))
 }
 
 function interruptionStage(state: CodexTestAgentState): CodexTestRunInterruptionStage {
@@ -1080,9 +1102,7 @@ export async function runAgentTest(
     ])
     const capacity = capacityForAgentProfile(options.modelProfile)
     let epochs = buildAgentExecutionEpochs(options.manifest, capacity, completedCaseIds)
-    const activePendingCaseIds = options.resume && state.activeEpoch?.stage === 'finalizing'
-      ? state.activeEpoch?.caseIds.filter((caseId) => !completedCaseIds.has(caseId)) ?? []
-      : []
+    const activePendingCaseIds = state.activeEpoch?.caseIds.filter((caseId) => !completedCaseIds.has(caseId)) ?? []
     if (state.activeEpoch && activePendingCaseIds.length > 0) {
       const active = new Set(activePendingCaseIds)
       const remaining = epochs
@@ -1115,7 +1135,10 @@ export async function runAgentTest(
     const capabilityPreflightRequired = !usesLegacyThreadFactory
     let thread: AgentHostSession | undefined
     let threadId = state.threadId ?? resumeThreadId
-    for (const epoch of epochs) {
+    const capacityRecoveryAttempts = new Set<string>()
+    const freshlySplitEpochIds = new Set<string>()
+    for (let epochIndex = 0; epochIndex < epochs.length; epochIndex += 1) {
+      const epoch = epochs[epochIndex]!
       if (epoch.caseIds.every((caseId) => completedCaseIds.has(caseId))) continue
       const scopedManifest = manifestForAgentExecutionEpoch(options.manifest, epoch)
       const deliveryPath = epochDeliveryPath(workspace, epoch)
@@ -1126,7 +1149,7 @@ export async function runAgentTest(
       }
       await activateExecutionEpoch(workspace, epoch)
       progress.setContext({ epochIndex: epoch.index + 1, epochTotal: epoch.total, threadGeneration: state.threadGeneration })
-      const resumingEpoch = options.resume && state.activeEpoch?.id === epoch.id
+      const resumingEpoch = state.activeEpoch?.id === epoch.id && !freshlySplitEpochIds.delete(epoch.id)
       const initialEpochStage = resumingEpoch ? state.activeEpoch!.stage : 'executing'
       const storedEpochThreadId = resumingEpoch ? state.activeEpoch?.threadId ?? threadId : undefined
       const bindingChanged = Boolean(
@@ -1210,7 +1233,11 @@ export async function runAgentTest(
       let sessionRotationAttempted = false
       let capabilityPreflightCompleted = false
       const verifyControlMcpCapability = async (): Promise<void> => {
-        if (!capabilityPreflightRequired || capabilityPreflightCompleted) return
+        if (!capabilityPreflightRequired) {
+          capabilityPreflightCompleted = true
+          return
+        }
+        if (capabilityPreflightCompleted) return
         if (!thread) throw new Error('AgentHost thread is unavailable for the Control MCP capability preflight')
         let completedContractCalls = 0
         let unexpectedTool: string | undefined
@@ -1267,10 +1294,8 @@ export async function runAgentTest(
         state = updateCodexTestState(state, { sessionBindingFingerprint: currentSessionBindingFingerprint })
         await writePrivateJson(statePath, state)
       }
-      const rotateIncompatibleSession = async (): Promise<string> => {
-        sessionRotationAttempted = true
-        resumeCompatibilityPending = false
-        await thread?.close?.()
+      const startReplacementSession = async (message: string): Promise<void> => {
+        if (thread || threadId || state.threadId || state.activeEpoch?.threadId) await invalidatePhysicalSession()
         thread = await host.start(threadOptions)
         activeThread = thread
         capabilityPreflightCompleted = false
@@ -1289,7 +1314,12 @@ export async function runAgentTest(
         })
         await writePrivateJson(statePath, state)
         progress.setContext({ threadGeneration: state.threadGeneration })
-        progress.report('warning', '已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复现场')
+        progress.report('warning', message)
+      }
+      const rotateIncompatibleSession = async (): Promise<string> => {
+        sessionRotationAttempted = true
+        resumeCompatibilityPending = false
+        await startReplacementSession('已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复现场')
         return invokeEpochTurn(
           hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
         )
@@ -1298,6 +1328,7 @@ export async function runAgentTest(
         input: AgentInputPart[],
         outputSchema?: unknown,
         isResumePrompt = false,
+        allowCapacityRecovery = false,
       ): Promise<string> => {
         try {
           const response = await invokeEpochTurn(input, outputSchema)
@@ -1308,6 +1339,12 @@ export async function runAgentTest(
           return response
         } catch (error) {
           if (error instanceof AgentHostError && error.kind === 'quota') {
+            const recoveryKey = `${epoch.id}:${state.activeEpoch?.stage ?? state.stage}`
+            if (allowCapacityRecovery && isContextOrOutputCapacityError(error) && !capacityRecoveryAttempts.has(recoveryKey)) {
+              capacityRecoveryAttempts.add(recoveryKey)
+              await startReplacementSession('当前物理线程已达到模型容量，正在保留原 Run 并自动换新线程继续')
+              return runEpochTurn(input, outputSchema, isResumePrompt, false)
+            }
             await invalidatePhysicalSession()
             throw error
           }
@@ -1338,11 +1375,62 @@ export async function runAgentTest(
                 ...(workspace.runValuesPath ? { runValuesPath: workspace.runValuesPath } : {}),
                 ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
               }), imagePathsForExecutionEpoch(workspace, scopedManifest))
-        await runEpochTurn(input, undefined, resumingEpoch)
+        try {
+          await runEpochTurn(input, undefined, resumingEpoch)
+        } catch (error) {
+          if (!isContextOrOutputCapacityError(error)) throw error
+          const deliveryExists = await access(deliveryPath).then(() => true, () => false)
+          if (deliveryExists) {
+            state = updateCodexTestState(state, {
+              stage: 'finalizing',
+              activeEpoch: { ...state.activeEpoch!, stage: 'finalizing' },
+            })
+            await writePrivateJson(statePath, state)
+            await startReplacementSession('执行交付已落盘但原线程达到模型容量，正在换新线程完成确定性核对')
+          } else {
+            const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+            const hasPendingMutation = ledger.some((entry) => entry.status === 'pending')
+            if (capabilityPreflightCompleted && ledger.length === 0 && epoch.caseIds.length > 1) {
+              const replacements = splitAgentExecutionEpoch(options.manifest, epoch)
+              epochs.splice(epochIndex, 1, ...replacements)
+              epochs = epochs.map((item, index, items) => ({ ...item, index, total: items.length }))
+              replacements.forEach((item) => freshlySplitEpochIds.add(item.id))
+              const nextEpoch = epochs[epochIndex]!
+              state = updateCodexTestState(state, {
+                stage: 'executing',
+                epochCount: epochs.length,
+                activeEpoch: {
+                  id: nextEpoch.id,
+                  index: nextEpoch.index,
+                  total: nextEpoch.total,
+                  caseIds: nextEpoch.caseIds,
+                  stage: 'executing',
+                },
+              })
+              await activateExecutionEpoch(workspace, nextEpoch)
+              await writePrivateJson(statePath, state)
+              progress.setContext({ epochIndex: nextEpoch.index + 1, epochTotal: nextEpoch.total, threadGeneration: state.threadGeneration })
+              progress.report('warning', `当前 epoch 达到模型容量，已自动拆分为 ${replacements.map((item) => item.caseIds.length).join(' + ')} 条并继续执行`)
+              epochIndex -= 1
+              continue
+            }
+            const recoveryKey = `${epoch.id}:execution`
+            if (capacityRecoveryAttempts.has(recoveryKey)) throw error
+            capacityRecoveryAttempts.add(recoveryKey)
+            await startReplacementSession(hasPendingMutation
+              ? '当前物理线程达到模型容量，正在换新线程优先核对未完成业务写入'
+              : '当前单 case epoch 达到模型容量，正在换新线程自动恢复一次')
+            await runEpochTurn(
+              hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+              undefined,
+              true,
+            )
+          }
+        }
         state = updateCodexTestState(state, {
           stage: 'finalizing',
-          activeEpoch: { ...state.activeEpoch!, stage: 'finalizing', ...(thread.id ? { threadId: thread.id } : {}) },
-          ...(thread.id ? { threadId: thread.id } : {}),
+          activeEpoch: { ...state.activeEpoch!, stage: 'finalizing', ...(thread?.id ? { threadId: thread.id } : {}) },
+          ...(thread?.id ? { threadId: thread.id } : {}),
         })
         await writePrivateJson(statePath, state)
       } else {
@@ -1355,6 +1443,7 @@ export async function runAgentTest(
         await runEpochTurn(
           hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
           undefined,
+          true,
           true,
         )
       }
@@ -1397,6 +1486,8 @@ export async function runAgentTest(
           const finalResponse = await runEpochTurn(
             hostInput(host, runtime, prompt, []),
             host.capabilities.structuredOutput ? agentTestStructuredOutputSchema : undefined,
+            false,
+            true,
           )
           const candidate = parseAgentTestCandidate(finalResponse)
           const requirements = await reconcileEnvironmentRequirementCaseLinks(workspace.environmentRequirementsPath, candidate.cases)
@@ -1497,6 +1588,7 @@ export async function runAgentTest(
 
       if (epoch.index < epochs.length - 1) {
         const checkpointPath = resolve(checkpointDirectory, `${epoch.id}.json`)
+        const previousCheckpointPath = state.checkpointPath
         await mkdir(checkpointDirectory, { recursive: true, mode: 0o700 })
         state = updateCodexTestState(state, {
           stage: 'executing',
@@ -1512,11 +1604,21 @@ export async function runAgentTest(
         })
         await writePrivateJson(statePath, state)
         progress.report('stage', '正在保存当前 epoch 的 AgentHost 工作记忆 checkpoint')
-        await runEpochTurn(hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []))
-        const { activeEpoch: _checkpointedEpoch, ...checkpointedState } = state
-        state = updateCodexTestState(checkpointedState, { stage: 'executing', checkpointPath })
+        let checkpointSaved = false
+        try {
+          await runEpochTurn(hostInput(host, runtime, agentTestCheckpointPrompt(epoch, checkpointPath), []))
+          checkpointSaved = true
+        } catch (error) {
+          if (!isContextOrOutputCapacityError(error)) throw error
+          progress.report('warning', 'checkpoint 线程仍达到模型容量；case 结果已经落盘，将跳过本次工作记忆并继续下一 epoch')
+        }
+        const { activeEpoch: _checkpointedEpoch, checkpointPath: _attemptedCheckpointPath, ...checkpointedState } = state
+        state = updateCodexTestState(checkpointedState, {
+          stage: 'executing',
+          ...(checkpointSaved ? { checkpointPath } : previousCheckpointPath ? { checkpointPath: previousCheckpointPath } : {}),
+        })
         await writePrivateJson(statePath, state)
-        await thread.close?.()
+        await thread?.close?.()
         thread = undefined
         threadId = undefined
       }

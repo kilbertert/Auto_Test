@@ -533,6 +533,7 @@ process.stdin.on('end', () => {
               yield { type: 'thread_started' as const, threadId: 'portable-session' }
               yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'test_contract', status: 'completed' as const }
               yield { type: 'agent_message' as const, text: 'preflight complete' }
+              yield { type: 'turn_completed' as const }
             })(),
           }
         }
@@ -550,6 +551,7 @@ process.stdin.on('end', () => {
               yield { type: 'tool_completed' as const, server: 'auto-test-control', tool: 'case_execution_end', arguments: { caseId: 'case-one' }, status: 'completed' as const }
             }
             yield { type: 'agent_message' as const, text }
+            yield { type: 'turn_completed' as const }
           })(),
         }
       },

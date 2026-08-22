@@ -71,6 +71,8 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 如果最终 JSON 响应在传输中断，但 epoch recovery artifact 已存在，Runner 只在确定性校验通过后采用它。Runner 不从日志、标题或页面残片补造 case 结果。
 
+AgentHost 输出的 `Reconnecting... n/m` 是同一 turn 内的有界传输重试，Runner 只记录进度并等待终态；嵌套 quota 文本不会在第一次尝试时触发关闭。最终 TPS/TPM、429 或额度错误保存为 `provider_rate_limited`，等待外部额度恢复。真正的上下文/输出容量错误才触发有限调度恢复：权威 Ledger 为空的多 case epoch 可以二分，已有业务写入的 epoch 不得拆分重做，只能保留原 case 集并换一代线程恢复；finalization 最多恢复一次。case 结果已落盘后的 checkpoint 是可选记忆，超限时跳过，禁止为它继续消耗线程。
+
 ## 结果边界
 
 最终 `codex-agent.result.json` 是逐 case 业务结论的结构化权威结果，`codex-agent.state.json.runInterruption` 是运行中断事实，`codex-agent.events.jsonl` 是脱敏技术事件流；Windows 控制台只确定性投影这三层事实，不另行裁决。`agent-workspace/case-results.json` 是给恢复和交付使用的版本化 artifact，Excel 结果文件是同一 case 事实的确定性投影。没有真实故障案例时，fixture、模型调用、合成数据和自适应调度测试只能证明框架行为，不能写成业务准确率或生产诊断准确率验收。

@@ -46,11 +46,12 @@ npm run check
 - 已完成 case 的记录在恢复后不被重写；
 - pending Mutation 会阻止后续 epoch，并为未调度 case 生成明确的 `blocked` 结果；
 - `version: 1.0` 及旧 `single_thread/case_windows` 状态不会被猜测迁移。
-- 明确的额度、限流、上下文或输出容量错误会立即关闭当前物理 session，并清除 Run 与 active epoch 的 thread ID；下一次 `--resume` 启动新物理线程，不复用已膨胀 session；
-- 没有容量标记的普通网络 `Reconnecting...` 仍可在当前 turn 内继续；
+- `Reconnecting... n/m` 始终作为 AgentHost 的有界重连进度保留；即使嵌套错误提到 quota，Runner 也不会在第一次尝试时关闭线程。重连恢复后继续同一 turn；流结束或最终错误仍保留最后一次真实原因；
+- 错误说明 URL 在分类前移除。阿里云 `Allocated quota exceeded ... error-code#token-limit` 映射为 `provider_rate_limited`，不能因 URL fragment 误判成上下文容量；
+- 真正的上下文/输出容量错误允许有限自动恢复：无 Ledger 的多 case epoch 二分后继续；单 case、已有 Ledger 或 finalization 保留原事实并最多换一代物理线程；case 已落盘后的 checkpoint 超限直接跳过。`at capacity`/`overloaded` 只报告 `provider_capacity`，不拆分或重复线程调用；最终额度或 TPS/TPM 限流仍保存可恢复 `blocked`，不会循环创建线程；
 - 执行 turn 已写出的合法 epoch 交付会在 finalization 前被采用，不再调用模型重复生成同一结构化结果。
 
-以上新增边界由合成 AgentHost/Runner fixture 验证，证明的是错误归一化、物理 session 生命周期和确定性交付恢复，不是业务准确率验收。
+以上新增边界由合成 AgentHost/Runner fixture 验证，包括重连成功、重连流终止、动态二分和 Ledger 非空禁止二分。它们证明的是错误归一化、物理 session 生命周期和确定性交付恢复，不是业务准确率或 Windows 长套件通过验收。
 
 ## 真实 LTA 只读 canary
 

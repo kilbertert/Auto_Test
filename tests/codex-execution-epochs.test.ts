@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCodexExecutionEpochs, limitManifestToCases, manifestForExecutionEpoch } from '../src/agent/execution-epochs.js'
+import { buildCodexExecutionEpochs, limitManifestToCases, manifestForExecutionEpoch, splitCodexExecutionEpoch } from '../src/agent/execution-epochs.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 function manifest(): WorkflowIntakeManifest {
@@ -28,6 +28,19 @@ describe('Codex execution epoch planning', () => {
       ['epoch-0002', ['case-2']],
       ['epoch-0003', ['case-3']],
     ])
+  })
+
+  it('bisects a capacity-exhausted epoch without changing case order or identity', () => {
+    const workflow = manifest()
+    const [left, right] = splitCodexExecutionEpoch(workflow, {
+      id: 'epoch-0001', index: 0, total: 1,
+      caseIds: ['case-1', 'case-2', 'case-3'],
+      estimatedInputTokens: 1_500, estimatedOutputTokens: 2_700,
+    })
+
+    expect(left).toMatchObject({ id: 'epoch-0001-a', caseIds: ['case-1'], estimatedOutputTokens: 900 })
+    expect(right).toMatchObject({ id: 'epoch-0001-b', caseIds: ['case-2', 'case-3'], estimatedOutputTokens: 1_800 })
+    expect([...left!.caseIds, ...right!.caseIds]).toEqual(workflow.phases.map((phase) => phase.id))
   })
 
   it('limits a canary manifest and retains only its referenced images', () => {
