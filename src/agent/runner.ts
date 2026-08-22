@@ -371,6 +371,28 @@ function isOperationalBlock(message: string, error?: unknown): boolean {
   return /usage limit|quota|credit|rate limit|tpm rate limit|rpm rate limit|at capacity|capacity|context (?:length|window)|maximum context|too many tokens|token limit|output limit|try a different model|resource exhausted|overloaded|\b429\b|\b5\d\d\b|bad gateway|upstream|reconnect|timed? out|timeout|connection|network|dns|certificate|tls|unauthorized|forbidden|\b401\b|\b403\b|mcp|mutation ledger|chromium executable|spawn .*enoent|no final response|不可用/i.test(normalized)
 }
 
+function isTransientProviderRateLimitError(error: unknown): boolean {
+  if (!(error instanceof AgentHostError) || error.kind !== 'quota') return false
+  const normalized = agentHostErrorMessageForMatching(error.message)
+  if (/insufficient quota|credit (?:depleted|exhausted)|quota (?:depleted|exhausted)|usage limit exceeded/i.test(normalized)) return false
+  return /allocated quota exceeded|rate limit|too many requests|tpm|rpm|\b429\b/i.test(normalized)
+}
+
+function providerRetryDelayMs(error: AgentHostError): number {
+  const match = error.message.match(/(?:retry[- ]after|retry in|try again in)\s*:?\s*(\d+)\s*(milliseconds?|ms|seconds?|s)?/i)
+  if (match) {
+    const amount = Number(match[1])
+    const unit = match[2]?.toLowerCase() ?? 's'
+    return Math.min(60_000, Math.max(0, amount * (unit.startsWith('ms') ? 1 : 1_000)))
+  }
+  return 15_000
+}
+
+async function waitForProviderRateLimit(error: AgentHostError): Promise<void> {
+  const delayMs = providerRetryDelayMs(error)
+  if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+}
+
 function isMutationLedgerViolation(message: string): boolean {
   return /mutation ledger is invalid|mutation ledger is not valid json/i.test(message)
 }
@@ -1136,6 +1158,7 @@ export async function runAgentTest(
     let thread: AgentHostSession | undefined
     let threadId = state.threadId ?? resumeThreadId
     const capacityRecoveryAttempts = new Set<string>()
+    const rateLimitRecoveryAttempts = new Set<string>()
     const freshlySplitEpochIds = new Set<string>()
     for (let epochIndex = 0; epochIndex < epochs.length; epochIndex += 1) {
       const epoch = epochs[epochIndex]!
@@ -1339,7 +1362,19 @@ export async function runAgentTest(
           return response
         } catch (error) {
           if (error instanceof AgentHostError && error.kind === 'quota') {
-            const recoveryKey = `${epoch.id}:${state.activeEpoch?.stage ?? state.stage}`
+            const recoveryKey = epoch.id
+            if (isTransientProviderRateLimitError(error) && !rateLimitRecoveryAttempts.has(recoveryKey)) {
+              rateLimitRecoveryAttempts.add(recoveryKey)
+              const delayMs = providerRetryDelayMs(error)
+              progress.report('warning', `Provider 暂时限流，${delayMs > 0 ? `等待 ${Math.ceil(delayMs / 1000)} 秒后` : ''}自动恢复当前 epoch`)
+              await waitForProviderRateLimit(error)
+              const stageBeforeRecovery = state.activeEpoch?.stage ?? state.stage
+              await startReplacementSession('已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复限流中的工作')
+              const recoveryInput = isResumePrompt || stageBeforeRecovery === 'checkpointing' || stageBeforeRecovery === 'finalizing'
+                ? input
+                : hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
+              return invokeEpochTurn(recoveryInput, outputSchema)
+            }
             if (allowCapacityRecovery && isContextOrOutputCapacityError(error) && !capacityRecoveryAttempts.has(recoveryKey)) {
               capacityRecoveryAttempts.add(recoveryKey)
               await startReplacementSession('当前物理线程已达到模型容量，正在保留原 Run 并自动换新线程继续')
@@ -1378,7 +1413,7 @@ export async function runAgentTest(
         try {
           await runEpochTurn(input, undefined, resumingEpoch)
         } catch (error) {
-          if (!isContextOrOutputCapacityError(error)) throw error
+          if (!isContextOrOutputCapacityError(error) && !isTransientProviderRateLimitError(error)) throw error
           const deliveryExists = await access(deliveryPath).then(() => true, () => false)
           if (deliveryExists) {
             state = updateCodexTestState(state, {
@@ -1390,7 +1425,9 @@ export async function runAgentTest(
           } else {
             const ledger = await readMutationLedger(workspace.mutationLedgerPath)
             const hasPendingMutation = ledger.some((entry) => entry.status === 'pending')
-            if (capabilityPreflightCompleted && ledger.length === 0 && epoch.caseIds.length > 1) {
+            const receipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+            const hasInteractionReceipt = receipts.some((receipt) => epoch.caseIds.includes(receipt.caseId ?? '') && receipt.kind === 'interaction')
+            if (isContextOrOutputCapacityError(error) && capabilityPreflightCompleted && ledger.length === 0 && !hasInteractionReceipt && epoch.caseIds.length > 1) {
               const replacements = splitAgentExecutionEpoch(options.manifest, epoch)
               epochs.splice(epochIndex, 1, ...replacements)
               epochs = epochs.map((item, index, items) => ({ ...item, index, total: items.length }))
@@ -1410,10 +1447,11 @@ export async function runAgentTest(
               await activateExecutionEpoch(workspace, nextEpoch)
               await writePrivateJson(statePath, state)
               progress.setContext({ epochIndex: nextEpoch.index + 1, epochTotal: nextEpoch.total, threadGeneration: state.threadGeneration })
-              progress.report('warning', `当前 epoch 达到模型容量，已自动拆分为 ${replacements.map((item) => item.caseIds.length).join(' + ')} 条并继续执行`)
+              progress.report('warning', `当前 epoch 遭遇可恢复的模型容量/限流边界，已自动拆分为 ${replacements.map((item) => item.caseIds.length).join(' + ')} 条并继续执行`)
               epochIndex -= 1
               continue
             }
+            if (!isContextOrOutputCapacityError(error)) throw error
             const recoveryKey = `${epoch.id}:execution`
             if (capacityRecoveryAttempts.has(recoveryKey)) throw error
             capacityRecoveryAttempts.add(recoveryKey)

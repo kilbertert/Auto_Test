@@ -43,6 +43,21 @@ describe('Codex execution epoch planning', () => {
     expect([...left!.caseIds, ...right!.caseIds]).toEqual(workflow.phases.map((phase) => phase.id))
   })
 
+  it('keeps long suites in bounded automatic working sets', () => {
+    const workflow = manifest()
+    workflow.phases = [...workflow.phases, {
+      id: 'case-4', title: 'Case 4', sourceRow: 5, risk: 'read',
+      steps: [{ id: 'step-4', sourceText: 'x', confidence: 1 }], resources: [], secretBindings: [], imageIds: [],
+      review: { status: 'draft', ambiguities: [] },
+    }]
+    expect(buildCodexExecutionEpochs(workflow, {
+      contextWindowTokens: 1_000_000, maxOutputTokens: 1_000_000, caseOutputTokens: 1,
+      maxCasesPerEpoch: 2, targetContextRatio: 0.9, targetOutputRatio: 0.9,
+    }).map((epoch) => epoch.caseIds)).toEqual([
+      ['case-1', 'case-2'], ['case-3', 'case-4'],
+    ])
+  })
+
   it('limits a canary manifest and retains only its referenced images', () => {
     const limited = limitManifestToCases(manifest(), 1)
     expect(limited.phases.map((phase) => phase.id)).toEqual(['case-1'])
