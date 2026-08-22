@@ -99,7 +99,7 @@ AgentHost 在页面、网络响应或浏览器存储中观察到的运行期凭�
 
 OMP RPC 的 `message_update` 和 `tool_execution_update` 是包含累计完整内容的瞬时帧；适配器不会把它们送入 Core 事件日志。完整 `message_end`、工具开始/完成、错误和 turn 终态仍按共同 AgentHost 事件合同保留，因此诊断、进度、执行回执和最终交付不受影响。
 
-进度回调是同一事件合同的安全投影，不是第二个执行裁决器。每个宿主动作会归一化为已知白名单中的 `server.tool`（或 `command_execution` / `file_change`）类别；点击、填写、导航、Control MCP、失败和恢复在控制台回显 `started`、`completed` 或 `failed`、动作序号和耗时。页面 snapshot/find/evaluate 等高频观察动作只更新心跳计数，不逐条刷屏；推理、待办和普通 Agent 回执不直接打印。同一线程只提示一次，短时间完全相同的摘要也会抑制；未知宿主或工具标识只显示固定通用类别，不回显原标识。回调还携带安全的 `hostId`、当前 epoch 和 thread generation。相同物理 thread generation 内，同一 `callId` 的重复开始/完成帧只报告一次；线程切换会清空短期关联状态。心跳显示当前动作或阶段、关键动作数、页面观察数、Agent 回合数和恢复状态。参数、结果、命令正文、表单值、Cookie、验证码和模型推理正文永远不进入该投影；需要逐帧审计时查看同一 Run 的脱敏 `codex-agent.events.jsonl`、执行回执和证据制品。
+进度回调是同一事件合同的安全投影，不是第二个执行裁决器。每个宿主动作会归一化为已知白名单中的 `server.tool`（或 `command_execution` / `file_change`）类别；点击、填写、导航、Control MCP、失败和恢复在控制台回显 `started`、`completed` 或 `failed`、动作序号和耗时。Runner 进入一个 epoch 时先从不可变 Manifest 显示人员可读的批次和真实用例范围，例如 `批次=1/6 | 用例范围=1-8/41`；在收到 `case_execution_begin` 前，心跳明确说明正在为该范围探索/准备、尚未进入单条用例的可验证执行边界。收到 `case_execution_begin/end` 后，切换为当前用例序号、总数、来源 Excel 行和脱敏标题摘要；逐 case 结果落盘后，心跳显示已完成、通过、产品不符预期和阻断统计。该状态只投影已有确定性事实，不让模型另行汇报进度，也不裁决业务结果。页面 snapshot/find/evaluate 等高频观察动作只更新心跳计数，不逐条刷屏；推理、待办和普通 Agent 回执不直接打印。同一线程只提示一次，短时间完全相同的摘要也会抑制；未知宿主或工具标识只显示固定通用类别，不回显原标识。回调还携带安全的执行宿主、当前批次、执行线程代次、用例范围和用例位置；结构化 context 继续使用既有字段。相同物理线程代次内，同一 `callId` 的重复开始/完成帧只报告一次；线程切换会清空短期关联状态。参数、结果、命令正文、表单值、Cookie、验证码、内部用例 ID 和模型推理正文永远不进入该投影；需要逐帧审计时查看同一 Run 的脱敏 `codex-agent.events.jsonl`、执行回执和证据制品。
 
 ## 公平比较
 

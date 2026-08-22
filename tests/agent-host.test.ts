@@ -855,8 +855,8 @@ process.stdin.on('end', () => {
 
       const output = progress.map((event) => event.message).join('\n')
       expect(progress.filter((event) => event.kind === 'activity' && event.action?.phase === 'started' && event.action.tool === 'browser_click')).toHaveLength(2)
-      expect(output).toContain('[Host=Codex | epoch=1/2 | thread generation=3]')
-      expect(output).toContain('[Host=Codex | epoch=1/2 | thread generation=4]')
+      expect(output).toContain('[宿主=Codex | 批次=1/2 | 执行线程=第3代]')
+      expect(output).toContain('[宿主=Codex | 批次=1/2 | 执行线程=第4代]')
       expect(output).toContain('当前动作：点击页面控件 [playwright.browser_click]')
       expect(output).toContain('动作 #1，状态=完成，耗时 1 秒')
       expect(output).toContain('运行测试辅助命令或脚本返回失败')
@@ -893,6 +893,68 @@ process.stdin.on('end', () => {
       expect(output).toContain('页面观察 1 次')
       expect(output).toContain('关键动作 1 个')
       expect(output).not.toContain('读取页面结构')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows safe current-case progress without exposing case values', () => {
+    vi.useFakeTimers()
+    try {
+      const progress: AgentTestProgress[] = []
+      const reporter = new AgentTestProgressReporter((event) => progress.push(event), 1_000)
+      reporter.setCaseCatalog([
+        { id: 'case-one', title: '筛选时间范围 13800138000', sourceRow: 8 },
+        { id: 'case-two', title: '查看结果', sourceRow: 9 },
+      ])
+      reporter.startHeartbeat()
+      reporter.observe({
+        type: 'item.completed',
+        item: { id: 'begin-1', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', status: 'completed', arguments: { caseId: 'case-one' } },
+      })
+      vi.advanceTimersByTime(1_500)
+      reporter.observe({
+        type: 'item.completed',
+        item: { id: 'result-1', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_result_record', status: 'completed', arguments: { caseId: 'case-one', outcome: 'passed' } },
+      })
+      reporter.recordCaseResults([{ caseId: 'case-one', outcome: 'passed' }])
+      vi.advanceTimersByTime(1_000)
+      reporter.close()
+
+      const output = progress.map((event) => event.message).join('\n')
+      expect(output).toContain('用例=1/2')
+      expect(output).toContain('Excel第8行')
+      expect(output).toContain('筛选时间范围 <redacted-phone>')
+      expect(output).toContain('用例进度 1/2（通过 1，产品不符预期 0，阻断 0）')
+      expect(output).toContain('第 1/2 条用例结果=通过')
+      expect(output).not.toContain('case-one')
+      expect(output).not.toContain('13800138000')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the immutable epoch range before a case execution boundary exists', () => {
+    vi.useFakeTimers()
+    try {
+      const progress: AgentTestProgress[] = []
+      const reporter = new AgentTestProgressReporter((event) => progress.push(event), 1_000)
+      reporter.setCaseCatalog([
+        { id: 'case-one', title: '第一条', sourceRow: 2 },
+        { id: 'case-two', title: '第二条', sourceRow: 3 },
+        { id: 'case-three', title: '第三条', sourceRow: 4 },
+      ])
+      reporter.setContext({ hostId: 'codex', epochIndex: 1, epochTotal: 2, threadGeneration: 1 })
+      reporter.setExecutionEpoch(['case-one', 'case-two'])
+      reporter.startHeartbeat()
+      reporter.report('stage', '正在准备当前 epoch')
+      vi.advanceTimersByTime(1_000)
+      reporter.close()
+
+      const output = progress.map((event) => event.message).join('\n')
+      expect(output).toContain('用例范围=1-2/3')
+      expect(output).toContain('当前状态：正在为第 1-2/3 条用例探索/准备，尚未进入单条用例的可验证执行边界')
+      expect(output).toContain('当前阶段：正在准备当前 epoch')
     } finally {
       vi.useRealTimers()
     }
