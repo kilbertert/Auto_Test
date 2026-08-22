@@ -494,7 +494,7 @@ describe('adaptive Codex epochs', () => {
     expect(resumed.state.threadId).toBe('thread-old')
   })
 
-  it('fails fast on provider quota reconnects, closes the physical session, and clears its id', async () => {
+  it('replaces a capacity-exhausted physical session once and continues the same logical run', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-quota-'))
     directories.push(directory)
     const workflow = manifest()
@@ -503,7 +503,7 @@ describe('adaptive Codex epochs', () => {
     const interrupted = await createInterruptedExecution(directory, workflow, files)
     await removeSessionBindingFingerprint(interrupted.outputDirectory)
     let closed = 0
-    let resumedCalls = 0
+    let startedNew = 0
 
     const resumed = await runCodexTestAgent({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
@@ -517,45 +517,275 @@ describe('adaptive Codex epochs', () => {
         id: threadId,
         async close() { closed += 1 },
         runStreamed: async () => failedEventStream(
-          'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, token-limit)',
+          'context_length_exceeded: maximum context length exceeded',
           threadId,
         ),
       }),
-      startThread: () => { throw new Error('quota must not start an automatic replacement thread') },
+      startThread: () => {
+        startedNew += 1
+        return {
+          id: 'thread-after-capacity',
+          runStreamed: async (_input, options) => options?.outputSchema
+            ? eventStream(resultFor(workflow, ['case-one']), 'thread-after-capacity')
+            : eventStream('recovered after provider capacity', 'thread-after-capacity'),
+        }
+      },
     })
 
     expect(closed).toBe(1)
-    expect(resumed.state.status).toBe('completed')
-    expect(resumed.state.outcome).toBe('blocked')
-    expect(resumed.state.threadId).toBeUndefined()
-    expect(resumed.state.activeEpoch?.threadId).toBeUndefined()
-    expect(resumed.state.runInterruption).toMatchObject({ code: 'provider_capacity' })
+    expect(startedNew).toBe(1)
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
+    expect(resumed.state.threadId).toBe('thread-after-capacity')
+    expect(resumed.result?.outcome).toBe('passed')
+  })
 
-    const continued = await runCodexTestAgent({
-      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+  it('bisects a multi-case epoch after provider capacity exhaustion and continues automatically', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-capacity-split-'))
+    directories.push(directory)
+    const workflow = manifest()
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const prompts: string[] = []
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: { ...profile(), contextWindowTokens: 100_000, maxOutputTokens: 1_000 }, environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        const index = started++
+        const threadId = `thread-capacity-${index + 1}`
+        return {
+          id: threadId,
+          async close() {},
+          runStreamed: async (input, options) => {
+            const prompt = typeof input === 'string' ? input : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
+            prompts.push(prompt)
+            if (index === 0) return failedEventStream(
+              'context_length_exceeded: maximum context length exceeded',
+              threadId,
+            )
+            const caseIds = index === 1 ? ['case-one'] : ['case-two']
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, caseIds), threadId)
+              : eventStream('capacity recovery turn completed', threadId)
+          },
+        }
+      },
+    })
+
+    expect(started).toBe(3)
+    expect(run.state.epochCount).toBe(2)
+    expect(run.state.threadGeneration).toBe(3)
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.result?.cases.map((item) => item.caseId)).toEqual(['case-one', 'case-two'])
+    expect(prompts.some((prompt) => prompt.includes('epoch-0001-a'))).toBe(true)
+    expect(prompts.some((prompt) => prompt.includes('epoch-0001-b'))).toBe(true)
+  })
+
+  it('does not rotate sessions for provider rate limits or exhausted billing quota', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rate-limit-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    let startedNew = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        if (startedNew++ > 0) throw new Error('rate limits must not create a replacement session')
+        return {
+          id: 'thread-rate-limited',
+          runStreamed: async () => ({
+            events: (async function* () {
+              yield { type: 'thread.started', thread_id: 'thread-rate-limited' } as ThreadEvent
+              yield { type: 'item.completed', item: { id: 'progress-before-disconnect', type: 'agent_message', text: 'partial progress only' } } as ThreadEvent
+              yield { type: 'error', message: 'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit)' } as ThreadEvent
+            })(),
+          }),
+        }
+      },
+    })
+
+    expect(startedNew).toBe(1)
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited' })
+  })
+
+  it('does not retry a provider that reports generic model capacity', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-model-capacity-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        started += 1
+        return {
+          id: 'thread-model-capacity',
+          runStreamed: async () => failedEventStream('Selected model is at capacity. Try a different model.', 'thread-model-capacity'),
+        }
+      },
+    })
+
+    expect(started).toBe(1)
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.state.runInterruption).toMatchObject({ code: 'provider_capacity' })
+  })
+
+  it('does not bisect a capacity-exhausted epoch after a business mutation was recorded', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-capacity-ledger-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases[0]!.risk = 'write'
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const prompts: string[] = []
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
       agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
-      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+      modelProfile: { ...profile(), contextWindowTokens: 100_000, maxOutputTokens: 1_000 }, environment: { FIXTURE_KEY: 'fixture-key' },
     }, {
       browserExecutablePath: files.browserPath,
-      resumeThread: () => {
-        resumedCalls += 1
-        throw new Error('a quota-invalidated session must not be resumed')
+      startThread: () => {
+        const index = started++
+        const threadId = `thread-capacity-ledger-${index + 1}`
+        return {
+          id: threadId,
+          async close() {},
+          runStreamed: async (input, options) => {
+            const prompt = typeof input === 'string' ? input : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
+            prompts.push(prompt)
+            if (index === 0) {
+              await writeFile(resolve(outputDirectory, '.agent-private', 'mutation-ledger.json'), JSON.stringify([{
+                id: 'accepted-write', caseId: 'case-one', description: 'Fixture write already happened', risk: 'write', status: 'accepted',
+                createdAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-08-21T00:01:00.000Z', evidence: [],
+              }]))
+              return failedEventStream('context_length_exceeded: maximum context length exceeded', threadId)
+            }
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, ['case-one', 'case-two']), threadId)
+              : eventStream('recovered the original epoch without replaying its write', threadId)
+          },
+        }
       },
-      startThread: () => ({
-        id: 'thread-after-quota',
-        runStreamed: async (_input, options) => options?.outputSchema
-          ? eventStream(resultFor(workflow, ['case-one']), 'thread-after-quota')
-          : eventStream('recovered after provider capacity', 'thread-after-quota'),
-      }),
     })
 
-    expect(resumedCalls).toBe(0)
-    expect(continued.result?.outcome).toBe('passed')
+    expect(started).toBe(2)
+    expect(run.state.epochCount).toBe(1)
+    expect(run.result?.outcome).toBe('passed')
+    expect(prompts.some((prompt) => /epoch-0001-[ab]/.test(prompt))).toBe(false)
   })
 
-  it('keeps an ordinary reconnect advisory non-fatal within the current turn', async () => {
+  it('retries finalization once on a fresh physical session without replaying execution', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-final-capacity-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    let started = 0
+    let executionTurns = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        const index = started++
+        const threadId = `thread-final-capacity-${index + 1}`
+        return {
+          id: threadId,
+          async close() {},
+          runStreamed: async (_input, options) => {
+            if (!options?.outputSchema) {
+              executionTurns += 1
+              return eventStream('execution complete', threadId)
+            }
+            return index === 0
+              ? failedEventStream('context_length_exceeded: maximum context length exceeded', threadId)
+              : eventStream(resultFor(workflow, ['case-one']), threadId)
+          },
+        }
+      },
+    })
+
+    expect(started).toBe(2)
+    expect(executionTurns).toBe(1)
+    expect(run.result?.outcome).toBe('passed')
+  })
+
+  it('skips a capacity-exhausted optional checkpoint after case results are committed', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-checkpoint-capacity-'))
+    directories.push(directory)
+    const workflow = manifest()
+    const files = await fixtureFiles(directory)
+    let started = 0
+    const turnsByThread: number[] = []
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        const index = started++
+        const threadId = `thread-checkpoint-capacity-${index + 1}`
+        turnsByThread[index] = 0
+        return {
+          id: threadId,
+          async close() {},
+          runStreamed: async (_input, options) => {
+            turnsByThread[index]! += 1
+            if (index === 0 && turnsByThread[index] === 3) {
+              return failedEventStream('context_length_exceeded: maximum context length exceeded', threadId)
+            }
+            const caseIds = index === 0 ? ['case-one'] : ['case-two']
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, caseIds), threadId)
+              : eventStream('turn complete', threadId)
+          },
+        }
+      },
+    })
+
+    expect(started).toBe(2)
+    expect(turnsByThread).toEqual([3, 2])
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.state.checkpointPath).toBeUndefined()
+  })
+
+  it('lets the AgentHost finish its bounded reconnect sequence before classifying a rate limit', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-reconnect-'))
     directories.push(directory)
     const workflow = manifest()
@@ -577,7 +807,7 @@ describe('adaptive Codex epochs', () => {
           : {
               events: (async function* () {
                 yield { type: 'thread.started', thread_id: 'thread-reconnect' } as ThreadEvent
-                yield { type: 'error', message: 'Reconnecting... 1/5 (stream disconnected before completion)' } as ThreadEvent
+                yield { type: 'error', message: 'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit)' } as ThreadEvent
                 yield { type: 'item.completed', item: { id: 'reconnect-message', type: 'agent_message', text: 'execution resumed' } } as ThreadEvent
                 yield { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } } as ThreadEvent
               })(),

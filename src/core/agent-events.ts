@@ -130,6 +130,7 @@ export function isAgentSessionIncompatibleMessage(message: string): boolean {
 /** Normalize common provider error spellings before applying host-neutral rules. */
 export function agentHostErrorMessageForMatching(message: string): string {
   return message
+    .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -138,8 +139,8 @@ export function agentHostErrorMessageForMatching(message: string): string {
 
 /**
  * Normalize provider capacity/usage failures at the host boundary. Codex and
- * OMP may use different wire errors, but the Core must make the same
- * fail-fast decision for both.
+ * OMP may use different wire errors, but the Core must expose the same
+ * host-neutral error kind for both.
  */
 export function agentHostErrorKindForMessage(message: string): AgentHostErrorKind | undefined {
   const normalized = agentHostErrorMessageForMatching(message)

@@ -77,6 +77,28 @@ export function buildAgentExecutionEpochs(
   return pending.map((epoch, index) => ({ ...epoch, index, total: pending.length }))
 }
 
+export function splitAgentExecutionEpoch(
+  manifest: WorkflowIntakeManifest,
+  epoch: AgentExecutionEpoch,
+): AgentExecutionEpoch[] {
+  if (epoch.caseIds.length < 2) return [epoch]
+  const midpoint = Math.floor(epoch.caseIds.length / 2)
+  const outputPerCase = Math.max(1, Math.ceil(epoch.estimatedOutputTokens / epoch.caseIds.length))
+  return [epoch.caseIds.slice(0, midpoint), epoch.caseIds.slice(midpoint)].map((caseIds, index) => {
+    const required = new Set(caseIds)
+    const phases = manifest.phases.filter((phase) => required.has(phase.id))
+    if (phases.length !== required.size) throw new Error(`Execution epoch ${epoch.id} contains case IDs outside the immutable manifest`)
+    return {
+      id: `${epoch.id}-${index === 0 ? 'a' : 'b'}`,
+      index: epoch.index + index,
+      total: epoch.total + 1,
+      caseIds,
+      estimatedInputTokens: phases.reduce((total, phase) => total + estimatePhaseInputTokens(phase), 0),
+      estimatedOutputTokens: caseIds.length * outputPerCase,
+    }
+  })
+}
+
 export function manifestForAgentExecutionEpoch(
   manifest: WorkflowIntakeManifest,
   epoch: AgentExecutionEpoch,
@@ -127,6 +149,7 @@ export type CodexExecutionEpoch = AgentExecutionEpoch
 export const DEFAULT_CODEX_EXECUTION_CAPACITY = DEFAULT_AGENT_EXECUTION_CAPACITY
 export const capacityForModelProfile = capacityForAgentProfile
 export const buildCodexExecutionEpochs = buildAgentExecutionEpochs
+export const splitCodexExecutionEpoch = splitAgentExecutionEpoch
 export const manifestForExecutionEpoch = manifestForAgentExecutionEpoch
 
 function estimatePhaseInputTokens(phase: WorkflowPhaseDraft): number {
