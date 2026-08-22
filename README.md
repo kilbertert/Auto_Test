@@ -77,6 +77,8 @@ npm run agent:test -- \
 
 ## 多模型供应商
 
+长套件由 Runner 自动分成最多 8 条 case 的通用 execution epoch；这不是业务规则或人工 batch 参数，而是防止过于乐观的 Provider 容量元数据把整份工作簿压成一个超长工具回合。可识别的瞬时 429/TPS/TPM 限流会按服务端提示等待一次、换一代 AgentHost 线程并用 resume 继续；明确余额耗尽或第二次限流仍会保存 `provider_rate_limited`，供原 Run 在额度恢复后 `--resume`，不会伪造业务结果，也不会无限重试。
+
 当模型供应商返回容量不足（如 `Selected model is at capacity`）或临时不可用时，可切换到另一个 Profile 继续。Model Profile 是 AgentHost 无关的端点描述：`api` 使用统一模型协议名，Core 只负责选择、恢复和容量提示；每个 `AgentHost.modelProvider` 负责把同一 descriptor 翻译为自己的隔离配置、环境和模型 selector。Codex 与 OMP 是两个内置实现，注入第三方 Host 时也走同一契约，Core 不增加供应商或宿主 ID 分支。宿主不支持某个协议时，会在模型请求前 fail closed。注册表位于 `~/.config/auto-test/model-profiles.json`（Linux/macOS）或 `%APPDATA%\auto-test\model-profiles.json`（Windows），模板见 [model-profiles.example.json](templates/model-profiles.example.json)。Profile 只保存模型、公开 Base URL、协议、输入模态、推理/容量能力和 API Key 环境变量名，不保存 Key。
 
 仓库内置两个无密钥 Profile。新 Run 未显式选择时默认使用 `deepseek`，Codex 与 OMP 都消费同一选择；即使尚未创建注册表也可直接运行：

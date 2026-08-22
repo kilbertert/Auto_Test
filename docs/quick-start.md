@@ -80,7 +80,7 @@ npm run agent:test -- \
 - `--headed` / `--headless`：显示或隐藏浏览器；
 - `--resume`：继续同一 Run，必须复用原 `--output-dir`；不指定宿主时自动复用原 Run 的宿主。
 
-不存在 `--case-batch-size`。容量调度由 Model Profile 的可选字段控制：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio`、`targetOutputRatio`。`inputModalities`、`reasoningEfforts` 和 `supportsParallelToolCalls` 描述模型能力。Profile 元数据由 Core 用于调度和输入选择；各 AgentHost 决定如何写入自己的目录（例如 Codex `models.json` 或 OMP `models.yml`）。协议字段使用统一 `api` 名称；宿主不支持该 API 时会在模型请求前 fail closed。旧注册表中的 `wireApi: "responses"|"chat"` 仅作为兼容输入读取。
+不存在 `--case-batch-size`。容量调度由 Model Profile 的可选字段控制：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio`、`targetOutputRatio`，并对每个 epoch 自动施加最多 8 条 case 的通用工作集上限。`inputModalities`、`reasoningEfforts` 和 `supportsParallelToolCalls` 描述模型能力。Profile 元数据由 Core 用于调度和输入选择；各 AgentHost 决定如何写入自己的目录（例如 Codex `models.json` 或 OMP `models.yml`）。协议字段使用统一 `api` 名称；宿主不支持该 API 时会在模型请求前 fail closed。旧注册表中的 `wireApi: "responses"|"chat"` 仅作为兼容输入读取。
 
 ### 使用 OMP
 

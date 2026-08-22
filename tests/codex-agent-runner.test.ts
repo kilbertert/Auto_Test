@@ -587,8 +587,8 @@ describe('adaptive Codex epochs', () => {
     expect(prompts.some((prompt) => prompt.includes('epoch-0001-b'))).toBe(true)
   })
 
-  it('does not rotate sessions for provider rate limits or exhausted billing quota', async () => {
-    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rate-limit-'))
+  it('does not rotate sessions for exhausted billing quota', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-exhausted-quota-'))
     directories.push(directory)
     const workflow = manifest()
     workflow.phases = workflow.phases.slice(0, 1)
@@ -604,14 +604,14 @@ describe('adaptive Codex epochs', () => {
     }, {
       browserExecutablePath: files.browserPath,
       startThread: () => {
-        if (startedNew++ > 0) throw new Error('rate limits must not create a replacement session')
+        if (startedNew++ > 0) throw new Error('exhausted quota must not create a replacement session')
         return {
           id: 'thread-rate-limited',
           runStreamed: async () => ({
             events: (async function* () {
               yield { type: 'thread.started', thread_id: 'thread-rate-limited' } as ThreadEvent
               yield { type: 'item.completed', item: { id: 'progress-before-disconnect', type: 'agent_message', text: 'partial progress only' } } as ThreadEvent
-              yield { type: 'error', message: 'Reconnecting... 1/5 (stream disconnected before completion: Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit)' } as ThreadEvent
+              yield { type: 'error', message: 'insufficient quota: billing balance exhausted' } as ThreadEvent
             })(),
           }),
         }
@@ -621,6 +621,42 @@ describe('adaptive Codex epochs', () => {
     expect(startedNew).toBe(1)
     expect(run.result?.outcome).toBe('blocked')
     expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited' })
+  })
+
+  it('waits once and resumes a transient provider rate limit on a replacement session', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-transient-rate-limit-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        started += 1
+        if (started === 1) {
+          return {
+            id: 'thread-rate-limited-before-recovery',
+            runStreamed: async () => failedEventStream('rate limit exceeded; retry after 0ms', 'thread-rate-limited-before-recovery'),
+          }
+        }
+        return {
+          id: 'thread-rate-limited-recovered',
+          runStreamed: async () => eventStream(resultFor(workflow, ['case-one']), 'thread-rate-limited-recovered'),
+        }
+      },
+    })
+
+    expect(started).toBe(2)
+    expect(run.result?.outcome).toBe('passed')
+    expect(run.state.runInterruption).toBeUndefined()
   })
 
   it('does not retry a provider that reports generic model capacity', async () => {

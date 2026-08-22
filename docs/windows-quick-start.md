@@ -239,7 +239,7 @@ OMP 与 Codex 使用同一个 Auto-Test Model Profile 选择层；真正的请�
   --headed
 ```
 
-恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。执行 turn 已写出合法的当前 epoch 交付时也会直接采用，不再额外调用模型重写结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。窗口出现 `Reconnecting... 1/5` 时表示 AgentHost 正在做有界重连，Runner 会等待它恢复或完成全部尝试，不会立即关闭线程。若最终显示 `provider_rate_limited`，说明额度、429 或 TPS/TPM 限流仍未恢复；修复额度或显式切换 Profile 后对原 Run 使用 `--resume`。只有真正的上下文/输出容量错误才会在本轮自动缩小 epoch 或换一代线程：没有任何 Ledger 写入的多 case epoch 可以二分，已有写入记录的 epoch 保持原样并走 resume 协议，避免重复业务操作；finalization 最多恢复一次，case 已落盘后的 checkpoint 超限会直接跳过。模型 `at capacity`/`overloaded` 只会明确阻断，不会靠拆分或重复线程调用碰运气。错误说明 URL 中的 `#token-limit` 等 fragment 不参与分类。普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍失败也不会无限重试。
+恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。执行 turn 已写出合法的当前 epoch 交付时也会直接采用，不再额外调用模型重写结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。窗口出现 `Reconnecting... 1/5` 时表示 AgentHost 正在做有界重连，Runner 会等待它恢复或完成全部尝试，不会立即关闭线程。可识别的瞬时 429/TPS/TPM 限流会按错误中的等待提示等待一次，换一代线程并用 resume 继续；明确余额耗尽或第二次限流仍失败时显示 `provider_rate_limited`，修复额度或显式切换 Profile 后对原 Run 使用 `--resume`。每个 epoch 自动最多包含 8 条 case；真正的上下文/输出容量错误仍只在没有 Ledger 且没有交互回执的多 case epoch 中自动二分，已有写入记录保持原样并走 resume 协议，避免重复业务操作。case 已落盘后的 checkpoint 超限会直接跳过。模型 `at capacity`/`overloaded` 只会明确阻断，不会靠拆分或重复线程调用碰运气。错误说明 URL 中的 `#token-limit` 等 fragment 不参与分类。普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍失败也不会无限重试。
 
 Excel、URL、Environment Profile、风险策略和原有 origin 必须保持不变；这里的 Environment Profile 不等于可为基础设施恢复而切换的模型 Profile。旧版 v1 状态不支持恢复，其他业务环境替换或权限收窄都会拒绝恢复。
 

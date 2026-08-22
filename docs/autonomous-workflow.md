@@ -26,7 +26,7 @@ Run 的终态只有：
   -> deterministic aggregate
 ```
 
-容量策略读取 Model Profile 的可选元数据：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio` 和 `targetOutputRatio`。Runner 估算每条来源行的输入成本和结果输出成本，按预算生成 epoch；不会按固定 case 数隐式切分，也不要求工程师传入 `--case-batch-size`。
+容量策略读取 Model Profile 的可选元数据：`contextWindowTokens`、`maxOutputTokens`、`caseOutputTokens`、`targetContextRatio` 和 `targetOutputRatio`。Runner 估算每条来源行的输入成本和结果输出成本，并额外使用通用的 8-case 工作集上限，按预算生成 epoch；工程师不需要传入 `--case-batch-size`，也不需要手工规划长套件。
 
 每个 epoch 的 AgentHost 交互顺序是：
 
@@ -71,7 +71,7 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 如果最终 JSON 响应在传输中断，但 epoch recovery artifact 已存在，Runner 只在确定性校验通过后采用它。Runner 不从日志、标题或页面残片补造 case 结果。
 
-AgentHost 输出的 `Reconnecting... n/m` 是同一 turn 内的有界传输重试，Runner 只记录进度并等待终态；嵌套 quota 文本不会在第一次尝试时触发关闭。最终 TPS/TPM、429 或额度错误保存为 `provider_rate_limited`，等待外部额度恢复。真正的上下文/输出容量错误才触发有限调度恢复：权威 Ledger 为空的多 case epoch 可以二分，已有业务写入的 epoch 不得拆分重做，只能保留原 case 集并换一代线程恢复；finalization 最多恢复一次。case 结果已落盘后的 checkpoint 是可选记忆，超限时跳过，禁止为它继续消耗线程。
+AgentHost 输出的 `Reconnecting... n/m` 是同一 turn 内的有界传输重试，Runner 只记录进度并等待终态；嵌套 quota 文本不会在第一次尝试时触发关闭。明确余额耗尽仍保存为 `provider_rate_limited` 并等待外部额度恢复；可识别的瞬时 429/TPS/TPM 限流会按服务端提示等待一次，启动一代物理线程并用 resume 继续，仍失败才阻断。真正的上下文/输出容量错误才触发有限调度恢复：权威 Ledger 为空且没有交互回执的多 case epoch 可以二分，已有业务写入的 epoch 不得拆分重做，只能保留原 case 集并换一代线程恢复；finalization 最多恢复一次。case 结果已落盘后的 checkpoint 是可选记忆，超限时跳过，禁止为它继续消耗线程。
 
 ## 结果边界
 

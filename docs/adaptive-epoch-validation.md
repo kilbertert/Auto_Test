@@ -1,6 +1,6 @@
 # 自适应 Epoch Runtime 验证记录
 
-更新时间：2026-08-21
+更新时间：2026-08-22
 
 本记录只说明运行时架构和恢复契约的验证结果。当前没有新的真实故障案例，因此不得把以下 fixture、历史输入回放或模型容量估算写成业务准确率验收。
 
@@ -15,7 +15,7 @@ npm run check
 结果：
 
 - TypeScript typecheck 通过；
-- 45 个测试文件、299 个测试通过；
+- 62 个测试文件、495 个测试通过；
 - `tsc -p tsconfig.json` 构建通过；
 - 覆盖容量规划、稳定 epoch ID、单 case Manifest 限制、逐 case 幂等存储、thread 轮换、active epoch 恢复、finalization-only 恢复、pending Mutation 停止调度和旧版状态 fail closed。
 
@@ -28,9 +28,9 @@ npm run check
 | 项目 | 结果 |
 | --- | ---: |
 | case 总数 | 285 |
-| execution epoch 数 | 32 |
-| 单 epoch case 数 | 6-9 |
-| 平均单 epoch case 数 | 8.91 |
+| execution epoch 数 | 36 |
+| 单 epoch case 数 | 5-8 |
+| 平均单 epoch case 数 | 7.92 |
 | 原完整 Manifest | 294,030 bytes |
 | 最大 scoped Manifest | 14,173 bytes |
 | 估算最大 epoch 输出 | 8,100 tokens |
@@ -48,7 +48,7 @@ npm run check
 - `version: 1.0` 及旧 `single_thread/case_windows` 状态不会被猜测迁移。
 - `Reconnecting... n/m` 始终作为 AgentHost 的有界重连进度保留；即使嵌套错误提到 quota，Runner 也不会在第一次尝试时关闭线程。重连恢复后继续同一 turn；流结束或最终错误仍保留最后一次真实原因；
 - 错误说明 URL 在分类前移除。阿里云 `Allocated quota exceeded ... error-code#token-limit` 映射为 `provider_rate_limited`，不能因 URL fragment 误判成上下文容量；
-- 真正的上下文/输出容量错误允许有限自动恢复：无 Ledger 的多 case epoch 二分后继续；单 case、已有 Ledger 或 finalization 保留原事实并最多换一代物理线程；case 已落盘后的 checkpoint 超限直接跳过。`at capacity`/`overloaded` 只报告 `provider_capacity`，不拆分或重复线程调用；最终额度或 TPS/TPM 限流仍保存可恢复 `blocked`，不会循环创建线程；
+- 真正的上下文/输出容量错误允许有限自动恢复：无 Ledger 且无交互回执的多 case epoch 二分后继续；单 case、已有 Ledger 或 finalization 保留原事实并最多换一代物理线程；case 已落盘后的 checkpoint 超限直接跳过。`at capacity`/`overloaded` 只报告 `provider_capacity`，不拆分或重复线程调用；可识别的瞬时 429/TPS/TPM 限流等待一次并换一代线程用 resume 继续，明确余额耗尽或第二次限流仍保存可恢复 `blocked`，不会循环创建线程；
 - 执行 turn 已写出的合法 epoch 交付会在 finalization 前被采用，不再调用模型重复生成同一结构化结果。
 
 以上新增边界由合成 AgentHost/Runner fixture 验证，包括重连成功、重连流终止、动态二分和 Ledger 非空禁止二分。它们证明的是错误归一化、物理 session 生命周期和确定性交付恢复，不是业务准确率或 Windows 长套件通过验收。

@@ -6,6 +6,12 @@ export interface AgentExecutionCapacity {
   contextWindowTokens: number
   maxOutputTokens: number
   caseOutputTokens: number
+  /**
+   * A provider-independent working-set guard. Capacity metadata is often
+   * optimistic, while tool-loop context and provider TPM limits are not.
+   * This is automatic; callers still provide the complete manifest.
+   */
+  maxCasesPerEpoch?: number
   targetContextRatio: number
   targetOutputRatio: number
 }
@@ -23,6 +29,7 @@ export const DEFAULT_AGENT_EXECUTION_CAPACITY: AgentExecutionCapacity = {
   contextWindowTokens: 128_000,
   maxOutputTokens: 16_000,
   caseOutputTokens: 900,
+  maxCasesPerEpoch: 8,
   targetContextRatio: 0.55,
   targetOutputRatio: 0.55,
 }
@@ -32,6 +39,7 @@ export function capacityForAgentProfile(profile?: ModelProfile): AgentExecutionC
     contextWindowTokens: profile?.contextWindowTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.contextWindowTokens,
     maxOutputTokens: profile?.maxOutputTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.maxOutputTokens,
     caseOutputTokens: profile?.caseOutputTokens ?? DEFAULT_AGENT_EXECUTION_CAPACITY.caseOutputTokens,
+    maxCasesPerEpoch: DEFAULT_AGENT_EXECUTION_CAPACITY.maxCasesPerEpoch ?? 8,
     targetContextRatio: profile?.targetContextRatio ?? DEFAULT_AGENT_EXECUTION_CAPACITY.targetContextRatio,
     targetOutputRatio: profile?.targetOutputRatio ?? DEFAULT_AGENT_EXECUTION_CAPACITY.targetOutputRatio,
   }
@@ -47,11 +55,13 @@ export function buildAgentExecutionEpochs(
   const outputBudget = Math.max(1, Math.floor(capacity.maxOutputTokens * capacity.targetOutputRatio))
   const epochs: Array<Omit<AgentExecutionEpoch, 'total'>> = []
   let current: Omit<AgentExecutionEpoch, 'total'> | undefined
+  const maxCasesPerEpoch = Math.max(1, Math.floor(capacity.maxCasesPerEpoch ?? DEFAULT_AGENT_EXECUTION_CAPACITY.maxCasesPerEpoch ?? 8))
 
   for (const phase of manifest.phases) {
     const estimatedInputTokens = estimatePhaseInputTokens(phase)
     const estimatedOutputTokens = capacity.caseOutputTokens
     const exceedsBudget = current && (
+      current.caseIds.length >= maxCasesPerEpoch ||
       current.estimatedInputTokens + estimatedInputTokens > inputBudget ||
       current.estimatedOutputTokens + estimatedOutputTokens > outputBudget
     )
