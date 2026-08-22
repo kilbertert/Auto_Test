@@ -552,6 +552,9 @@ function Parse-ApiKeyOverride([string[]] $Arguments) {
 }
 
 function Get-CodexProbeFailureHint([string] $Output, [int] $ExitCode) {
+  if ($Output -match '(?i)AccessDenied[.]Unpurchased|model[^\r\n]*(access denied|not[^\r\n]*(purchased|enabled|authorized))|subscription[^\r\n]*model') {
+    return '当前 API Key 没有开通所选模型；请更换已授权模型或开通该模型。'
+  }
   if ($Output -match '(?i)\b401\b|unauthorized|invalid[^\r\n]*api[^\r\n]*key|api[_ -]?key[^\r\n]*disabled') {
     return 'API Key 被模型服务拒绝。'
   }

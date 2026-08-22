@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
-import { AgentHostError, normalizeAgentEvent, normalizeAgentHostError } from '../src/agent/host.js'
+import { AgentHostError, agentHostErrorKindForMessage, normalizeAgentEvent, normalizeAgentHostError } from '../src/agent/host.js'
 import type { AgentHost, AgentHostLaunchOptions, AgentHostProviderPrepareOptions, AgentInputPart } from '../src/agent/host.js'
 import { codexSandboxMode, codexWebSearchEnabled, codexWorkspaceIsolation, createLegacyCodexAgentHost, startCodexSdkThread } from '../src/agent/codex-host.js'
 import { OmpAgentHost, RpcFrameDecoder } from '../src/agent/omp-host.js'
@@ -202,6 +202,11 @@ describe('AgentHost contract', () => {
     })).toMatchObject({ type: 'error', errorKind: 'quota' })
     expect(normalizeAgentEvent({ type: 'error', message: 'ModelAccountTpmRateLimitExceeded' })).toMatchObject({ type: 'error', errorKind: 'quota' })
     expect(normalizeAgentEvent({ type: 'error', message: 'insufficient_quota: context_length_exceeded' })).toMatchObject({ type: 'error', errorKind: 'quota' })
+    expect(agentHostErrorKindForMessage('AccessDenied.Unpurchased: access to model denied')).toBe('provider_authorization')
+    expect(normalizeAgentEvent({
+      type: 'error', message: 'Reconnecting... 1/5 (403 AccessDenied.Unpurchased: model not purchased)',
+    })).toMatchObject({ type: 'error', errorKind: 'provider_authorization' })
+    expect(new AgentHostError('codex', 'AccessDenied.Unpurchased', 'provider_authorization').retryable).toBe(false)
     expect(normalizeAgentEvent({
       type: 'item.completed',
       item: {
@@ -858,6 +863,36 @@ process.stdin.on('end', () => {
       expect(output).toContain('[command_execution]')
       expect(output).toContain('状态=失败')
       expect(output).not.toMatch(/must-not-leak|sensitive form value/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps page inspection in the event log without flooding the operator console', () => {
+    vi.useFakeTimers()
+    try {
+      const progress: AgentTestProgress[] = []
+      const reporter = new AgentTestProgressReporter((event) => progress.push(event), 1_000)
+      reporter.setContext({ hostId: 'codex', epochIndex: 1, epochTotal: 1, threadGeneration: 1 })
+      reporter.startHeartbeat()
+      reporter.observe({ type: 'thread.started', thread_id: 'thread-one' })
+      reporter.observe({ type: 'thread.started', thread_id: 'thread-one' })
+      reporter.observe({ type: 'turn.started' })
+      reporter.observe({ type: 'item.started', item: { id: 'snapshot-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot' } })
+      reporter.observe({ type: 'item.completed', item: { id: 'snapshot-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_snapshot', status: 'completed' } })
+      reporter.observe({ type: 'item.started', item: { id: 'click-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click' } })
+      reporter.observe({ type: 'item.completed', item: { id: 'click-1', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', status: 'completed' } })
+      vi.advanceTimersByTime(1_500)
+      reporter.close()
+
+      const output = progress.map((event) => event.message).join('\n')
+      expect(progress.filter((event) => event.action?.tool === 'browser_snapshot')).toHaveLength(0)
+      expect(progress.filter((event) => event.kind === 'activity' && event.action?.tool === 'browser_click')).toHaveLength(2)
+      expect(progress.filter((event) => event.message.includes('执行线程已就绪'))).toHaveLength(1)
+      expect(output).toContain('开始执行第 1 个 Agent 回合')
+      expect(output).toContain('页面观察 1 次')
+      expect(output).toContain('关键动作 1 个')
+      expect(output).not.toContain('读取页面结构')
     } finally {
       vi.useRealTimers()
     }

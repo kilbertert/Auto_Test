@@ -21,6 +21,7 @@ export type AgentTestFailureMode =
 export type CodexTestRunInterruptionCode =
   | 'provider_capacity'
   | 'provider_rate_limited'
+  | 'provider_authorization'
   | 'provider_authentication'
   | 'provider_unavailable'
   | 'agent_host'

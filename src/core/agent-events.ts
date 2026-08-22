@@ -57,6 +57,7 @@ export type AgentHostErrorKind =
   | 'transport'
   | 'process'
   | 'quota'
+  | 'provider_authorization'
   | 'session_incompatible'
   | 'capability'
   | 'configuration'
@@ -117,6 +118,14 @@ const quotaOrCapacityMessagePatterns = [
   /\b429\b/i,
 ]
 
+const providerAuthorizationMessagePatterns = [
+  /access\s*denied\s*[.]\s*unpurchased/i,
+  /accessdenied\s*[.]\s*unpurchased/i,
+  /model (?:access )?denied/i,
+  /model .*not (?:purchased|enabled|authorized)/i,
+  /(?:subscription|entitlement).*(?:model|access)/i,
+]
+
 /** These Codex advisories do not stop the following turn from running. */
 function isAdvisoryHostMessage(message: string): boolean {
   return advisoryHostMessagePatterns.some((pattern) => pattern.test(message))
@@ -144,6 +153,9 @@ export function agentHostErrorMessageForMatching(message: string): string {
  */
 export function agentHostErrorKindForMessage(message: string): AgentHostErrorKind | undefined {
   const normalized = agentHostErrorMessageForMatching(message)
+  if (providerAuthorizationMessagePatterns.some((pattern) => pattern.test(normalized))) {
+    return 'provider_authorization'
+  }
   return quotaOrCapacityMessagePatterns.some((pattern) => pattern.test(normalized)) ? 'quota' : undefined
 }
 
