@@ -132,15 +132,19 @@ jobs:
           branch="agent/prd-${PRD_NUMBER}-${slug}"
           echo "name=$branch" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout — resume PRD branch if it exists, else create from main
+      - name: Checkout — clone with runner HOME and managed Git hooks
         if: steps.shape.outputs.mode == 'run'
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          # AGENT_PAT lets us push changes to files under .github/workflows/.
-          # Falls back to GITHUB_TOKEN if AGENT_PAT is unset.
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -d .git ]; then
+            git remote remove origin 2>/dev/null || true
+            git remote add origin "git@github.com:${GH_REPO}.git"
+            git fetch --prune origin
+            git checkout -B main origin/main
+          else
+            git clone git@github.com:${GH_REPO}.git .
+            git checkout main
+          fi
 
       - name: Set up git identity and resume/create branch
         if: steps.shape.outputs.mode == 'run'
