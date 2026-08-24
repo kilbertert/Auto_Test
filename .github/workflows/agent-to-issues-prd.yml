@@ -103,7 +103,7 @@ jobs:
       - name: Run to-issues-prd.ts
         if: steps.shape.outputs.mode == 'run'
         env:
-          AFK_PROFILE: claude-ark
+          AFK_PROFILE: psydo
           PRD_NUMBER: ${{ env.PRD_NUMBER }}
           PRD_TITLE: ${{ env.PRD_TITLE }}
           GH_REPO: ${{ env.GH_REPO }}
