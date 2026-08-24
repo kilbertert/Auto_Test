@@ -199,3 +199,17 @@ Remove or label stale acceptance claims. Never put credentials, private provider
 data, internal endpoints, or private paths in public docs. Base acceptance claims on structured
 result/plan/evidence/Ledger artifacts and state the proven scenario/platform precisely — do not
 generalize one canary into "every website works."
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs for this repo live as GitHub issues, operated via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles map to the default labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
