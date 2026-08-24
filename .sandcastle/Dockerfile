@@ -21,11 +21,11 @@ RUN groupmod -o -g ${AGENT_GID} node \
 RUN npm install --global @anthropic-ai/claude-code \
   && mv /usr/local/bin/claude /usr/local/bin/claude-real \
   && printf '%s\n' \
-    '#!/bin/sh' \
+    '#!/usr/bin/env bash' \
     'set -eu' \
     'case "${AFK_PROFILE:-claude}" in' \
     '  claude) exec /usr/local/bin/claude-real "$@" ;;' \
-    '  claude-ark) exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL /usr/local/bin/claude-real --settings /run/afk/profile-settings.json "$@" ;;' \
+    '  claude-ark) args=(); while [ "$#" -gt 0 ]; do if [ "$1" = "--model" ]; then shift 2; else args+=("$1"); shift; fi; done; exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL /usr/local/bin/claude-real --settings /home/agent/.afk-profile-settings.json "${args[@]}" ;;' \
     '  *) echo "unsupported AFK_PROFILE" >&2; exit 2 ;;' \
     'esac' > /usr/local/bin/claude \
   && chmod 755 /usr/local/bin/claude \

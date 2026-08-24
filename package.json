@@ -18,6 +18,7 @@
     "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
     "autonomous:workflow": "tsx src/cli/workflow-pipeline.ts --autonomous",
     "afk": "tsx .sandcastle/main.ts",
+    "prd:to-issues": "tsx .sandcastle/to-issues-prd/to-issues-prd.ts",
     "plan:workflow": "tsx src/cli/plan-workflow.ts",
     "plan-recovery:workflow": "tsx src/cli/plan-recovery-workflow.ts",
     "explore:workflow": "tsx src/cli/explore-workflow.ts",
