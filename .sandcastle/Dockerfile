@@ -18,7 +18,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN groupmod -o -g ${AGENT_GID} node \
   && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node
 
+RUN mkdir -p /home/agent/.codex && chown ${AGENT_UID}:${AGENT_GID} /home/agent/.codex
+
 RUN npm install --global @anthropic-ai/claude-code \
+  && npm install --global @openai/codex@0.146.1 \
   && mv /usr/local/bin/claude /usr/local/bin/claude-real \
   && printf '%s\n' \
     '#!/usr/bin/env bash' \
