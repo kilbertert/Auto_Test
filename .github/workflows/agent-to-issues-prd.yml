@@ -72,12 +72,18 @@ jobs:
           gh issue edit "$PRD_NUMBER" --remove-label "agent:blocked" || true
           gh issue edit "$PRD_NUMBER" --add-label "agent:in-progress" || true
 
-      - name: Checkout main
+      - name: Checkout main with runner HOME and managed Git hooks
         if: steps.shape.outputs.mode == 'run'
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
+        run: |
+          set -euo pipefail
+          if [ -d .git ]; then
+            git remote remove origin 2>/dev/null || true
+            git remote add origin "git@github.com:${GH_REPO}.git"
+            git fetch --depth 1 origin main
+            git checkout -B main FETCH_HEAD
+          else
+            git clone --branch main --depth 1 "git@github.com:${GH_REPO}.git" .
+          fi
 
       - name: Setup Node.js 22
         if: steps.shape.outputs.mode == 'run'
