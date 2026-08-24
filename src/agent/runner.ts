@@ -17,7 +17,7 @@ import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-rec
 import { AgentHostError, agentHostErrorKindForMessage, agentHostErrorMessageForMatching, normalizeAgentEvent, normalizeAgentHostError } from './host.js'
 import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostRuntime, AgentHostSession, AgentInputPart } from './host.js'
 import { createAgentHost } from './host-registry.js'
-import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt } from './prompt.js'
+import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt, type AgentResumeWorkspacePaths } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
@@ -993,6 +993,17 @@ export async function runAgentTest(
       ...(options.resume ? { resume: true } : {}),
     })
     await promoteReplayBrowserState(workspace, options.profile.origins)
+    // Stable run data lives in workspace files. Resume prompts carry the same
+    // pointers so a replacement physical thread can read the manifest, raw
+    // inputs, and prior checkpoint on demand instead of re-receiving them.
+    const resumeWorkspacePaths = (): AgentResumeWorkspacePaths => ({
+      inputDirectory: workspace.inputDirectory,
+      manifestPath: workspace.manifestPath,
+      ...(workspace.sourceFilePath ? { sourceFilePath: workspace.sourceFilePath } : {}),
+      ...(workspace.briefFilePath ? { briefFilePath: workspace.briefFilePath } : {}),
+      ...(workspace.runValuesPath ? { runValuesPath: workspace.runValuesPath } : {}),
+      ...(state.checkpointPath ? { checkpointPath: state.checkpointPath } : {}),
+    })
     const runtime = await host.modelProvider.prepare({
       workspaceDirectory: workspace.workspaceDirectory,
       privateDirectory: workspace.privateDirectory,
@@ -1359,7 +1370,7 @@ export async function runAgentTest(
         resumeCompatibilityPending = false
         await startReplacementSession('已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复现场')
         return invokeEpochTurn(
-          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath, resumeWorkspacePaths()), []),
         )
       }
       const runEpochTurn = async (
@@ -1387,7 +1398,7 @@ export async function runAgentTest(
               await startReplacementSession('已保留逻辑 Run、epoch 和 Mutation Ledger，并启动新的 AgentHost 线程恢复限流中的工作')
               const recoveryInput = isResumePrompt || stageBeforeRecovery === 'checkpointing' || stageBeforeRecovery === 'finalizing'
                 ? input
-                : hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
+                : hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath, resumeWorkspacePaths()), [])
               return invokeEpochTurn(recoveryInput, outputSchema)
             }
             if (allowCapacityRecovery && isContextOrOutputCapacityError(error) && !capacityRecoveryAttempts.has(recoveryKey)) {
@@ -1408,7 +1419,7 @@ export async function runAgentTest(
       if (initialEpochStage === 'executing') {
         progress.report('stage', `正在处理当前批次（${epoch.caseIds.length} 条用例）；先探索页面，再进入单条用例的可验证执行边界`)
         const input = resumingEpoch
-          ? hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), [])
+          ? hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath, resumeWorkspacePaths()), [])
           : hostInput(host, runtime, agentTestPrompt({
                 manifest: scopedManifest,
                 environmentContext: options.environmentContext,
@@ -1475,7 +1486,7 @@ export async function runAgentTest(
               ? '当前物理线程达到模型容量，正在换新线程优先核对未完成业务写入'
               : '当前单 case epoch 达到模型容量，正在换新线程自动恢复一次')
             await runEpochTurn(
-              hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+              hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath, resumeWorkspacePaths()), []),
               undefined,
               true,
             )
@@ -1495,7 +1506,7 @@ export async function runAgentTest(
       if (ledgerBeforeFinalization.some((entry) => entry.status === 'pending')) {
         progress.report('stage', `epoch ${epoch.id} 存在未核销业务写入，正在由同一线程恢复核对`)
         await runEpochTurn(
-          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath), []),
+          hostInput(host, runtime, agentTestResumePrompt(fullAgentAccess, epoch, deliveryPath, resumeWorkspacePaths()), []),
           undefined,
           true,
           true,

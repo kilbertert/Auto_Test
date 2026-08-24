@@ -17,6 +17,7 @@
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
     "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
     "autonomous:workflow": "tsx src/cli/workflow-pipeline.ts --autonomous",
+    "afk": "tsx .sandcastle/main.ts",
     "plan:workflow": "tsx src/cli/plan-workflow.ts",
     "plan-recovery:workflow": "tsx src/cli/plan-recovery-workflow.ts",
     "explore:workflow": "tsx src/cli/explore-workflow.ts",
@@ -54,6 +55,7 @@
     "tsx": "^4.20.0"
   },
   "devDependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
     "@playwright/test": "^1.62.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/he": "^1.2.3",

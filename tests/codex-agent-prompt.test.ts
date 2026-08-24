@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentTestFinalPrompt, codexTestAgentPrompt } from '../src/agent/prompt.js'
+import { agentTestFinalPrompt, agentTestResumePrompt, codexTestAgentPrompt, compactCaseIndex } from '../src/agent/prompt.js'
 import { codexTestResultSchema } from '../src/agent/result.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
@@ -16,6 +16,28 @@ function manifest(): WorkflowIntakeManifest {
     supplementalImages: [],
     review: { status: 'draft', reasons: [] },
   }
+}
+
+function compactManifest(): WorkflowIntakeManifest {
+  const workflow = manifest()
+  workflow.phases = [{
+    id: 'case-a',
+    sourceCaseId: 'A-1',
+    title: '登录后核对订单列表',
+    sourceRow: 7,
+    risk: 'write',
+    steps: [{ id: 'step-a', sourceText: '打开订单列表并逐行核对金额与状态', confidence: 1 }],
+    resources: [{ sourceCell: 'D7', text: 'https://app.example.test/orders', urls: ['https://app.example.test/orders'] }],
+    secretBindings: [],
+    imageIds: ['image-a'],
+    outcome: { observable: ['订单列表展示已支付订单'], evidence: ['interaction', 'observation'], cleanup: ['删除本单创建的草稿订单'] },
+    review: { status: 'draft', ambiguities: ['步骤顺序未在来源行中明确'] },
+  }]
+  workflow.embeddedImages = [{
+    id: 'image-a', sheetName: 'Cases', sourceCell: 'E7', sourceRow: 7, fileName: 'image-a.png',
+    mediaType: 'image/png', bytes: 2048, sha256: 'b'.repeat(64), reviewStatus: 'required',
+  }]
+  return workflow
 }
 
 describe('AgentHost test prompt safety rules', () => {
@@ -91,5 +113,74 @@ describe('AgentHost test prompt safety rules', () => {
     expect(prompt).toContain(`Use only these keys in every case: ${caseKeys}.`)
     expect(prompt).toContain('Do not add case-level blockers, productDefects, or nextActions')
     expect(prompt).toContain(`Every evidence item must contain exactly ${evidenceKeys}.`)
+  })
+})
+
+describe('compact execution context', () => {
+  it('keeps immutable identity and source pointers without embedding the full manifest JSON', () => {
+    const workflow = compactManifest()
+    const index = compactCaseIndex(workflow)
+
+    expect(index).toContain('workflowId prompt-fixture')
+    expect(index).toContain('a'.repeat(64))
+    expect(index).toContain('case-a')
+    expect(index).toContain('source case id A-1')
+    expect(index).toContain('登录后核对订单列表')
+    expect(index).toContain('row 7')
+    expect(index).toContain('write')
+    expect(index).toContain('image-a')
+    expect(index).toContain('outcome evidence interaction+observation')
+    expect(index).toContain('1 intake ambiguity note(s)')
+    // Source-row business text stays in the immutable manifest file; a turn
+    // carries only the pointer to it.
+    expect(index).not.toContain('打开订单列表并逐行核对金额与状态')
+    expect(index).not.toContain('"steps"')
+    expect(index).not.toContain('workflow-intake')
+    expect(index.length).toBeLessThan(JSON.stringify(workflow, null, 2).length)
+  })
+
+  it('references the manifest file instead of re-embedding manifest JSON in both access modes', () => {
+    const workflow = compactManifest()
+    const phase = workflow.phases[0]!
+    const embeddedImage = workflow.embeddedImages[0]!
+    const base = {
+      manifest: workflow,
+      environmentContext: '',
+      secretAliases: [],
+      manifestPath: '/run/agent-workspace/test-manifest.json',
+    }
+    const direct = codexTestAgentPrompt({ ...base, testDataAccess: 'direct' })
+    const restricted = codexTestAgentPrompt({ ...base, testDataAccess: 'opaque' })
+
+    for (const prompt of [direct, restricted]) {
+      expect(prompt).toContain('/run/agent-workspace/test-manifest.json')
+      expect(prompt).toContain('read it from the workspace on demand')
+      expect(prompt).toContain('workflowId prompt-fixture')
+      expect(prompt).toContain('- case-a')
+      expect(prompt).not.toContain('"kind": "workflow-intake"')
+      expect(prompt).not.toContain('打开订单列表并逐行核对金额与状态')
+      expect(prompt).not.toContain(JSON.stringify(phase, null, 2))
+      expect(prompt).not.toContain(JSON.stringify(embeddedImage, null, 2))
+    }
+  })
+
+  it('gives a replacement physical thread the stable workspace paths on resume', () => {
+    const epoch = { id: 'epoch-0001', index: 0, total: 1, caseIds: ['case-a'], estimatedInputTokens: 10, estimatedOutputTokens: 10 }
+    const prompt = agentTestResumePrompt(true, epoch, '/run/agent-workspace/case-results.epoch-0001.json', {
+      inputDirectory: '/run/agent-workspace/input',
+      sourceFilePath: '/run/agent-workspace/input/original/fixture.xlsx',
+      manifestPath: '/run/agent-workspace/test-manifest.json',
+      runValuesPath: '/run/.agent-private/run-values.json',
+      checkpointPath: '/run/.agent-private/checkpoints/epoch-0001.json',
+    })
+
+    expect(prompt).toContain('/run/agent-workspace/input')
+    expect(prompt).toContain('/run/agent-workspace/test-manifest.json')
+    expect(prompt).toContain('/run/.agent-private/run-values.json')
+    expect(prompt).toContain('/run/.agent-private/checkpoints/epoch-0001.json')
+    expect(prompt).toContain('read these files on demand')
+
+    // Without workspace pointers the resume prompt keeps its historical shape.
+    expect(agentTestResumePrompt()).not.toContain('Unchanged run workspace paths')
   })
 })

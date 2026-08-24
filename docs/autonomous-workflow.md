@@ -30,7 +30,7 @@ Run 的终态只有：
 
 每个 epoch 的 AgentHost 交互顺序是：
 
-1. 读取当前有界 Manifest、原始材料和相关图片；
+1. 读取当前 epoch 的紧凑 case 索引（不可变 workflow/source 身份、来源行、风险、图片和结果证据指针）与相关图片；完整解析 Manifest 是工作区内不可变的 `test-manifest.json` 文件，由 AgentHost 按需读取，不再逐 turn 内嵌完整 Manifest JSON；
 2. 自主探索、执行、断言和恢复业务状态；
 3. 如有 pending Mutation Ledger，继续使用同一 thread 重新观察并恢复；
 4. 只为当前 epoch 生成有界结构化结果和 recovery artifact；
@@ -39,6 +39,8 @@ Run 的终态只有：
 7. 若还有后续 epoch，AgentHost 写入 checkpoint，Runner 轮换 thread。
 
 AgentHost 不必调用 `case_execution_begin/end`、`case_result_record` 或环境审计 turn 才能操作浏览器。回执是被动审计通道；只有结果中引用的回执需要校验归属和状态。`case_result_record` 不能覆盖逐 case store 的恢复事实。
+
+执行上下文按 token 成本设计，但不改变任何执行语义：每个 thread 的首个执行 turn 只携带固定协议文本、紧凑 case 索引和稳定工作区指针（原始 Excel、brief、图片、run 值、完整 Manifest、checkpoint）；稳定运行数据都留在工作区文件里由 AgentHost 按需读取，不在每个 turn 重复传输。resume 提示会重复这些稳定指针，使容量恢复换线后的新物理线程仍能找到同一批运行数据。比较 token 消耗时使用 `npm run agent:compare`：它按 run 聚合脱敏事件日志中每个已完成 turn 的 usage，把输入、缓存输入和输出 tokens 分开列报，并显示相对 baseline 的增量；case 结论、证据、Ledger 终态和回放校验仍由同一确定性合同比较。
 
 ## 薄外壳职责
 
@@ -63,7 +65,7 @@ Runner 不实现第二个 Planner、Locator 解释器、字段组合引擎或业
 
 1. 校验原始 workflow ID、source SHA、Environment Profile 和 Mutation Ledger；
 2. 读取逐 case store，将已完成 case 从待执行集合移除；
-3. active epoch 有 thread ID 且 AgentHost/Provider/模型绑定指纹未变化时恢复该 thread，否则保留逻辑 Run 并启动下一代 thread；
+3. active epoch 有 thread ID 且 AgentHost/Provider/模型绑定指纹未变化时恢复该 thread，否则保留逻辑 Run 并启动下一代 thread；resume 提示始终携带稳定工作区指针（完整 Manifest、原始输入、run 值和 checkpoint 路径），使换线后的新物理线程按需读取同一批运行数据，而不依赖上一线程的记忆；
 4. 仍有 pending Mutation 时，选定 AgentHost 先重新观察真实业务状态，禁止盲目重放写入；
 5. 读取所有逐 case 记录，按 Manifest 不可变顺序聚合最终结果。
 
