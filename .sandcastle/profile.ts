@@ -5,10 +5,11 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 const profiles = {
   claude: undefined,
   "claude-ark": process.env.AFK_CLAUDE_ARK_SETTINGS ?? "/home/claude/cliproxyapi/settings.ark.json",
+  psydo: process.env.AFK_PSYDO_SETTINGS ?? "/home/claude/.config/auto-test/settings.psydo.json",
 } as const;
 
 export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<string, string>) {
-  if (profile && !(profile in profiles)) throw new Error("Unsupported profile; use claude or claude-ark.");
+  if (profile && !(profile in profiles)) throw new Error("Unsupported profile; use claude, claude-ark, or psydo.");
   const settingsPath = profile ? profiles[profile as keyof typeof profiles] : undefined;
   if (settingsPath && !existsSync(settingsPath)) throw new Error(`Profile settings not found: ${settingsPath}`);
 
@@ -19,7 +20,7 @@ export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<st
     sandbox: docker({
       imageName: process.env.AFK_IMAGE ?? "auto-test-sandcastle:local",
       env,
-      network: profile === "claude-ark" ? "host" : undefined,
+      network: profile === "claude-ark" || profile === "psydo" ? "host" : undefined,
       mounts: settingsPath
         ? [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }]
         : undefined,

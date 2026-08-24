@@ -183,7 +183,7 @@ jobs:
         if: steps.shape.outputs.mode == 'run'
         id: implement
         env:
-          AFK_PROFILE: claude-ark
+          AFK_PROFILE: psydo
           BRANCH: ${{ steps.branch.outputs.name }}
           PRD_NUMBER: ${{ env.PRD_NUMBER }}
           PRD_TITLE: ${{ env.PRD_TITLE }}
@@ -220,7 +220,7 @@ jobs:
       - name: Write PR title and description (only when opening a new PR)
         if: steps.shape.outputs.mode == 'run' && success() && steps.pr_lookup.outputs.existing_pr == ''
         env:
-          AFK_PROFILE: claude-ark
+          AFK_PROFILE: psydo
           PRD_NUMBER: ${{ env.PRD_NUMBER }}
           PRD_TITLE: ${{ env.PRD_TITLE }}
           OUTPUT_DIR: ${{ runner.temp }}
