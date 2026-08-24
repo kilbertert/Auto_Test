@@ -19,6 +19,16 @@ RUN groupmod -o -g ${AGENT_GID} node \
   && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node
 
 RUN npm install --global @anthropic-ai/claude-code \
+  && mv /usr/local/bin/claude /usr/local/bin/claude-real \
+  && printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'case "${AFK_PROFILE:-claude}" in' \
+    '  claude) exec /usr/local/bin/claude-real "$@" ;;' \
+    '  claude-ark) exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL /usr/local/bin/claude-real --settings /run/afk/profile-settings.json "$@" ;;' \
+    '  *) echo "unsupported AFK_PROFILE" >&2; exit 2 ;;' \
+    'esac' > /usr/local/bin/claude \
+  && chmod 755 /usr/local/bin/claude \
   && npm cache clean --force
 
 USER ${AGENT_UID}:${AGENT_GID}
