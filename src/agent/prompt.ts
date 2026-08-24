@@ -4,6 +4,40 @@ import type { AgentSecretAlias } from './workspace.js'
 import { environmentTargetUrls } from '../workflow/target-urls.js'
 import { selectSkillBriefs, skillBriefContext } from './skill-brief.js'
 
+/**
+ * Compact per-case context for the execution prompt. The complete parsed
+ * manifest is stable run data: it stays in the immutable workspace file and is
+ * read on demand, so a turn carries only immutable identity and source
+ * pointers instead of the full manifest JSON repeated into every thread.
+ */
+export function compactCaseIndex(manifest: WorkflowIntakeManifest): string {
+  return [
+    `Run identity (immutable): workflowId ${manifest.workflowId}; source ${manifest.source.fileName} (${manifest.source.sheetName}) sha256 ${manifest.source.sha256}.`,
+    ...(manifest.requiredCapabilities.length > 0
+      ? [`Required capabilities: ${manifest.requiredCapabilities.join(', ')}.`]
+      : []),
+    'Case index (source pointers only; full details live in the manifest file):',
+    ...manifest.phases.map((phase) => {
+      const parts = [
+        phase.id,
+        ...(phase.sourceCaseId && phase.sourceCaseId !== phase.id ? [`source case id ${phase.sourceCaseId}`] : []),
+        phase.title,
+        `row ${phase.sourceRow}`,
+        phase.risk,
+        `${phase.steps.length} step(s)`,
+        phase.imageIds.length > 0 ? `images ${phase.imageIds.join(',')}` : 'no images',
+      ]
+      if (phase.outcome) parts.push(`outcome evidence ${phase.outcome.evidence.join('+')}`)
+      if (phase.review.ambiguities.length > 0) parts.push(`${phase.review.ambiguities.length} intake ambiguity note(s)`)
+      return `- ${parts.join(' | ')}`
+    }),
+  ].join('\n')
+}
+
+function manifestReference(path?: string): string {
+  return path ?? '<run workspace>/test-manifest.json'
+}
+
 function executionEpochContext(window?: AgentExecutionEpoch): string {
   if (!window) return [
     'Execution mode: native persistent AgentHost context.',
@@ -82,8 +116,9 @@ ${options.environmentContext || '(none)'}
 Registered target origins:
 ${registeredOrigins.map((origin) => `- ${origin}`).join('\n') || '- (none)'}
 
-Active case manifest index:
-${JSON.stringify(options.manifest, null, 2)}
+Active case index (stable run identity and source pointers only):
+${compactCaseIndex(options.manifest)}
+The complete parsed manifest is the immutable file at ${manifestReference(options.manifestPath)}; read it from the workspace on demand for full case details (steps, outcome contract, resources, secret bindings, review notes) instead of pasting it into the conversation.
 `
   }
 
@@ -144,17 +179,49 @@ ${registeredOrigins.map((origin) => `- ${origin}`).join('\n') || '- (none)'}
 Scenario experience briefs (loaded on demand; protocol stays in Core):
 ${skillBriefContext(selectedBriefs)}
 
-Parsed active case manifest (use as an index; read the raw source for complete business meaning):
-${JSON.stringify(options.manifest, null, 2)}
+Active case index (immutable identity and source pointers; use as an index only):
+${compactCaseIndex(options.manifest)}
+The complete parsed manifest is the immutable file at ${manifestReference(options.manifestPath)}; read it from the workspace on demand for full case details instead of pasting it into the conversation, and confirm complete business meaning against the raw source rows.
 `
 }
 
-export function agentTestResumePrompt(fullAgentAccess = true, executionEpoch?: AgentExecutionEpoch, deliveryArtifactPath?: string): string {
+export interface AgentResumeWorkspacePaths {
+  inputDirectory?: string
+  sourceFilePath?: string
+  briefFilePath?: string
+  runValuesPath?: string
+  manifestPath?: string
+  checkpointPath?: string
+}
+
+export function agentTestResumePrompt(
+  fullAgentAccess = true,
+  executionEpoch?: AgentExecutionEpoch,
+  deliveryArtifactPath?: string,
+  workspacePaths?: AgentResumeWorkspacePaths,
+): string {
+  const workspaceLines = workspacePaths
+    ? [
+        ...(workspacePaths.inputDirectory ? [`- Input directory: ${workspacePaths.inputDirectory}`] : []),
+        ...(workspacePaths.sourceFilePath ? [`- Original Excel: ${workspacePaths.sourceFilePath}`] : []),
+        ...(workspacePaths.briefFilePath ? [`- Test brief: ${workspacePaths.briefFilePath}`] : []),
+        ...(workspacePaths.runValuesPath ? [`- Run-scoped values: ${workspacePaths.runValuesPath}`] : []),
+        ...(workspacePaths.manifestPath ? [`- Full manifest file: ${workspacePaths.manifestPath}`] : []),
+        ...(workspacePaths.checkpointPath ? [`- Prior checkpoint: ${workspacePaths.checkpointPath}`] : []),
+      ]
+    : []
+  const workspaceBlock = workspaceLines.length > 0
+    ? [
+        'Unchanged run workspace paths (stable run data; read these files on demand instead of relying on remembered contents):',
+        ...workspaceLines,
+        '',
+      ].join('\n')
+    : ''
   return `Resume the interrupted Auto-Test execution in this same persistent AgentHost run.
 
 The browser process may be new, but the original materials, your workspace files, prior event history, evidence artifacts, and Mutation Ledger belong to the same run.
 
-Recovery protocol:
+${workspaceBlock}Recovery protocol:
 1. Inspect mutation_list before performing another externally persisted write.
 2. Treat the recovered browser authentication state as current evidence, not as the required precondition. For an authentication-transition case, re-establish the exact source-case precondition; clear cookies, localStorage, and sessionStorage when an unauthenticated or isolated state is required. Do not pass the case from an inherited session.
 3. Re-observe the live application and determine the actual state of every pending business operation.

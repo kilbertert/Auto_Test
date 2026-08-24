@@ -587,6 +587,66 @@ describe('adaptive Codex epochs', () => {
     expect(prompts.some((prompt) => prompt.includes('epoch-0001-b'))).toBe(true)
   })
 
+  it('hands a replacement session the stable workspace paths without re-embedding the manifest JSON', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-compact-resume-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const prompts: string[] = []
+    let started = 0
+
+    const run = await runCodexTestAgent({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        const index = started++
+        const threadId = `thread-compact-${index + 1}`
+        return {
+          id: threadId,
+          async close() {},
+          runStreamed: async (input, options) => {
+            const prompt = typeof input === 'string' ? input : input.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
+            prompts.push(prompt)
+            if (index === 0) return failedEventStream(
+              'context_length_exceeded: maximum context length exceeded',
+              threadId,
+            )
+            return options?.outputSchema
+              ? eventStream(resultFor(workflow, ['case-one']), threadId)
+              : eventStream('capacity recovery turn completed', threadId)
+          },
+        }
+      },
+    })
+
+    expect(run.result?.outcome).toBe('passed')
+    expect(started).toBe(2)
+    const manifestPath = resolve(outputDirectory, 'agent-workspace', 'test-manifest.json')
+    const [initialPrompt, resumePrompt] = prompts
+
+    // The execution turn carries only the compact case index plus the pointer
+    // to the immutable manifest file; the manifest payload is not re-sent.
+    expect(initialPrompt).toContain('Run identity (immutable): workflowId adaptive-fixture')
+    expect(initialPrompt).toContain('- case-one')
+    expect(initialPrompt).toContain(manifestPath)
+    expect(initialPrompt).not.toContain('"kind": "workflow-intake"')
+    expect(initialPrompt).not.toContain('观察第一条')
+
+    // The replacement physical session receives the same stable workspace
+    // pointers so it can read the compacted run data on demand.
+    expect(resumePrompt).toContain('Resume the interrupted Auto-Test execution')
+    expect(resumePrompt).toContain(manifestPath)
+    expect(resumePrompt).toContain(resolve(outputDirectory, 'agent-workspace', 'input'))
+    expect(resumePrompt).not.toContain('"kind": "workflow-intake"')
+  })
+
   it('does not rotate sessions for exhausted billing quota', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-exhausted-quota-'))
     directories.push(directory)
