@@ -8,7 +8,7 @@ describe("AFK runner", () => {
 
     expect(prompt).toContain("npm run check");
     expect(prompt).toContain("Do not merge, push, close issues");
-    expect(runner).toContain('branchStrategy: { type: "branch", branch }');
+    expect(runner).toContain('branchStrategy: { type: "branch", branch, baseBranch: "origin/main" }');
     expect(runner).toContain('maxIterations: Number(process.env.AFK_ITERATIONS ?? 3)');
     expect(runner).toContain('claude|claude-ark|psydo|aliyun-deepseek');
   });
