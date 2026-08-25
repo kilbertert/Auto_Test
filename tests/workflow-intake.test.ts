@@ -15,7 +15,7 @@ afterEach(async () => {
 describe('workflow xlsx intake', () => {
   it('bridges a standard test-case sheet into the autonomous workflow manifest', async () => {
     const result = await intakeWorkflowXlsx({
-      filePath: resolve(import.meta.dirname, 'fixtures', 'legacy-14.xlsx'),
+      filePath: resolve(import.meta.dirname, 'fixtures', 'historical-14.xlsx'),
       additionalUrls: ['https://admin.example.test/', 'https://simulator.example.test/login'],
     })
     const serialized = JSON.stringify(result.manifest)

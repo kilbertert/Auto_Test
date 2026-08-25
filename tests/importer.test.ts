@@ -34,7 +34,7 @@ describe('xlsx importer', () => {
 
   it('maps the legacy 14-column format by header instead of position', async () => {
     const result = await importXlsxToIr({
-      filePath: resolve(root, 'tests/fixtures/legacy-14.xlsx'),
+      filePath: resolve(root, 'tests/fixtures/historical-14.xlsx'),
       baseUrl: 'https://legacy.example.test/',
     })
 
@@ -68,7 +68,7 @@ describe('xlsx importer', () => {
 
   it('supports the old 16-column project and port hierarchy', async () => {
     const result = await importXlsxToIr({
-      filePath: resolve(root, 'tests/fixtures/legacy-16.xlsx'),
+      filePath: resolve(root, 'tests/fixtures/historical-16.xlsx'),
       baseUrl: 'https://legacy16.example.test/',
     })
 
