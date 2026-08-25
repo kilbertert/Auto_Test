@@ -44,7 +44,6 @@ interface EasyRunOptions {
   model?: string
   headed?: boolean
   slowMo?: number
-  legacyRuntime?: boolean
   resume?: boolean
   testDataAccess?: 'direct' | 'opaque'
   modelProfileId?: string
@@ -156,10 +155,6 @@ async function registerInteractive(
   return result.profile.id
 }
 
-function npmExecutable(): string {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm'
-}
-
 async function windowsExcelPicker(): Promise<string | undefined> {
   if (process.platform !== 'win32') return undefined
   const script = [
@@ -202,9 +197,6 @@ async function printSummary(statePath: string): Promise<void> {
 }
 
 export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> {
-  if (options.legacyRuntime && options.caseLimit !== undefined) {
-    throw new Error('--one/--case-limit 只适用于 AgentHost 入口；旧 IR/Runtime 不提供等价的 Manifest 限制')
-  }
   const filePath = resolve(stripDraggedPath(options.filePath))
   if (extname(filePath).toLowerCase() !== '.xlsx') throw new Error('请选择 .xlsx 测试用例文件')
   const configuredHost = process.env.AUTO_TEST_AGENT_HOST
@@ -257,50 +249,33 @@ export async function runEasyWorkflow(options: EasyRunOptions): Promise<number> 
   const outputDirectory = resolve(options.outputDirectory ?? defaultRunDirectory(filePath))
   await mkdir(outputDirectory, { recursive: true, mode: 0o750 })
   console.log(`\n本次结果目录：${outputDirectory}`)
-  let exitCode: number
-  let statePath: string
-  if (options.legacyRuntime) {
-    const args = [
-      'run', 'autonomous:workflow', '--',
-      '--file', filePath,
-      ...agentExecutionUrls.flatMap((url) => ['--url', url]),
-      ...(profileId ? ['--profile', profileId] : []),
-      ...(options.maxIterations ? ['--max-iterations', String(options.maxIterations)] : []),
-      options.headed ? '--headed' : '--headless',
-      ...(options.slowMo !== undefined ? ['--slow-mo', String(options.slowMo)] : []),
-      '--output-dir', outputDirectory,
-    ]
-    exitCode = await spawnInherited(npmExecutable(), args)
-    statePath = resolve(outputDirectory, 'autonomous-job.state.json')
-  } else {
-    exitCode = await runAgentTestCli({
-      filePath,
-      urls: agentExecutionUrls,
-      images: options.images ?? [],
-      ...(options.briefPath ? { briefPath: resolve(options.briefPath) } : {}),
-      ...(profileId ? { profileId } : {}),
-      profileRegistryPath: defaultEnvironmentProfileRegistryPath(),
-      outputDirectory,
-      ...(options.model ? { model: options.model } : {}),
-      headed: options.headed === true,
-      ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
-      ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
-      ...(options.caseLimit !== undefined ? { caseLimit: options.caseLimit } : {}),
-      ...(options.resume ? { resume: true } : {}),
-      ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
-      ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
-      ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
-      ...(options.agentSourceHome ? { agentSourceHome: options.agentSourceHome } : {}),
-      modelProfileRegistryPath: defaultModelProfileRegistryPath(),
-      testDataAccess: options.testDataAccess ?? 'direct',
-    })
-    statePath = resolve(outputDirectory, 'codex-agent.state.json')
-  }
+  const exitCode = await runAgentTestCli({
+    filePath,
+    urls: agentExecutionUrls,
+    images: options.images ?? [],
+    ...(options.briefPath ? { briefPath: resolve(options.briefPath) } : {}),
+    ...(profileId ? { profileId } : {}),
+    profileRegistryPath: defaultEnvironmentProfileRegistryPath(),
+    outputDirectory,
+    ...(options.model ? { model: options.model } : {}),
+    headed: options.headed === true,
+    ...(options.slowMo !== undefined ? { slowMo: options.slowMo } : {}),
+    ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+    ...(options.caseLimit !== undefined ? { caseLimit: options.caseLimit } : {}),
+    ...(options.resume ? { resume: true } : {}),
+    ...(options.modelProfileId ? { modelProfileId: options.modelProfileId } : {}),
+    ...(effectiveAgentHostId ? { agentHostId: effectiveAgentHostId } : {}),
+    ...(options.agentExecutable ? { agentExecutable: options.agentExecutable } : {}),
+    ...(options.agentSourceHome ? { agentSourceHome: options.agentSourceHome } : {}),
+    modelProfileRegistryPath: defaultModelProfileRegistryPath(),
+    testDataAccess: options.testDataAccess ?? 'direct',
+  })
+  const statePath = resolve(outputDirectory, 'codex-agent.state.json')
   try {
     await printSummary(statePath)
   } catch {
     console.log('\n框架未能生成结果摘要，请查看上方错误信息。')
-    console.log(`运行诊断：${resolve(outputDirectory, options.legacyRuntime ? 'run-events.jsonl' : 'codex-agent.events.jsonl')}`)
+    console.log(`运行诊断：${resolve(outputDirectory, 'codex-agent.events.jsonl')}`)
   }
   return exitCode
 }
@@ -379,14 +354,24 @@ async function runInteractive(): Promise<void> {
 
 async function latestStatePath(): Promise<string | undefined> {
   const root = defaultRunRoot()
+  const candidates: { path: string; modified: number }[] = []
   try {
-    const entries = await readdir(root, { recursive: true, withFileTypes: true })
-    const candidates = await Promise.all(entries
-      .filter((entry) => entry.isFile() && ['codex-agent.state.json', 'autonomous-job.state.json'].includes(entry.name))
-      .map(async (entry) => {
-        const path = resolve(entry.parentPath, entry.name)
-        return { path, modified: (await stat(path)).mtimeMs }
-      }))
+    // Walk one directory at a time: `readdir(recursive + withFileTypes)`
+    // reports unreliable Dirent types on Windows, so `isFile()` there can
+    // miss every candidate. A per-directory walk keeps the same result on
+    // every platform.
+    const pending = [root]
+    while (pending.length > 0) {
+      const directory = pending.pop()!
+      const entries = await readdir(directory, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isDirectory()) pending.push(resolve(directory, entry.name))
+        else if (entry.isFile() && entry.name === 'codex-agent.state.json') {
+          const path = resolve(directory, entry.name)
+          candidates.push({ path, modified: (await stat(path)).mtimeMs })
+        }
+      }
+    }
     return candidates.sort((left, right) => right.modified - left.modified)[0]?.path
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -583,13 +568,13 @@ async function main(): Promise<void> {
     return
   }
   if (command === 'run') {
+    if (args.includes('--legacy-runtime')) throw new Error('未知参数：--legacy-runtime')
     const filePath = valueAfter(args, '--file')
     const urls = valuesAfter(args, '--url')
     if (!filePath) throw new Error('run 必须提供 --file')
     if (urls.length === 0) throw new Error('run 必须至少提供一个 --url；Excel 中的链接仅作为测试材料上下文')
     if (args.includes('--headed') && args.includes('--headless')) throw new Error('--headed 与 --headless 不能同时使用')
     if (args.includes('--resume') && !valueAfter(args, '--output-dir')) throw new Error('--resume 必须同时提供原运行的 --output-dir')
-    if (args.includes('--resume') && args.includes('--legacy-runtime')) throw new Error('--resume 仅适用于 AgentHost 测试代理')
     const slowMoValue = valueAfter(args, '--slow-mo')
     const slowMo = slowMoValue === undefined ? undefined : Number(slowMoValue)
     if (slowMo !== undefined && (!Number.isInteger(slowMo) || slowMo < 0)) throw new Error('--slow-mo 必须是非负整数')
@@ -631,7 +616,6 @@ async function main(): Promise<void> {
       ...(agentHome || codexHome || ompHome ? { agentSourceHome: resolve((agentHome ?? codexHome ?? ompHome)!) } : {}),
       headed: args.includes('--headed'),
       ...(slowMo !== undefined ? { slowMo } : {}),
-      legacyRuntime: args.includes('--legacy-runtime'),
       resume: args.includes('--resume'),
       testDataAccess: args.includes('--opaque-test-data') ? 'opaque' : 'direct',
     })
@@ -651,7 +635,7 @@ async function main(): Promise<void> {
     console.log('      Codex 和 OMP 获得相同原始材料、可写 run 工作区、shell、网络、完整 Playwright 与结果合同')
     console.log('      中断恢复：在原命令后加入 --resume，并复用原 --output-dir')
     console.log('      AgentHost 通用模型供应商：默认 deepseek；--model-profile volcengine 或自定义 Profile 可切换；Codex/OMP 各自生成原生隔离配置')
-    console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC；仅兼容旧链路时使用 --legacy-runtime')
+    console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
