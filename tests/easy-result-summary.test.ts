@@ -4,66 +4,61 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { friendlyRunSummary } from '../src/usability/result-summary.js'
 import type { CodexTestAgentResult, CodexTestAgentState } from '../src/agent/types.js'
-import type { AutonomousWorkflowJobState, WorkflowHumanInputRequest } from '../src/workflow/autonomy-types.js'
 
-function state(overrides: Partial<AutonomousWorkflowJobState>): AutonomousWorkflowJobState {
-  return {
-    version: '1.0',
-    jobId: 'fixture-job',
-    requestSha256: 'a'.repeat(64),
-    status: 'completed',
-    stage: 'completed',
-    round: 2,
-    environmentRetries: 0,
-    executionAttempts: 1,
-    events: [],
-    createdAt: '2026-07-31T00:00:00.000Z',
-    updatedAt: '2026-07-31T00:01:00.000Z',
-    ...overrides,
-  }
-}
-
-describe('friendly autonomous result summary', () => {
-  it('summarizes a passed job without exposing internal state fields', async () => {
+describe('friendly AgentHost result summary', () => {
+  it('summarizes a passed AgentHost run from the structured result', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-result-'))
     try {
-      const path = resolve(directory, 'state.json')
-      await writeFile(path, JSON.stringify(state({ outcome: 'passed', runtimeResultPath: resolve(directory, 'runtime.json') })))
+      const resultPath = resolve(directory, 'codex-agent.result.json')
+      const statePath = resolve(directory, 'codex-agent.state.json')
+      const result: CodexTestAgentResult = {
+        version: '1.0', workflowId: 'catalog', sourceSha256: 'b'.repeat(64), outcome: 'passed',
+        summary: 'The catalog behaved as expected.', startedAt: '2026-08-01T00:00:00.000Z', finishedAt: '2026-08-01T00:01:00.000Z',
+        cases: [{
+          caseId: 'filter', title: 'Filter', outcome: 'passed', summary: 'Count matched.',
+          evidence: [{ kind: 'observation', description: 'Two rows remained.' }],
+        }],
+        mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+      }
+      const agentState: CodexTestAgentState = {
+        version: '2.0', status: 'completed', stage: 'completed', workflowId: 'catalog', sourceSha256: 'b'.repeat(64),
+        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0,
+        completedCaseIds: ['filter'], outcome: 'passed', resultPath,
+      }
+      await writeFile(resultPath, JSON.stringify(result))
+      await writeFile(statePath, JSON.stringify(agentState))
 
-      const result = await friendlyRunSummary(path)
+      const summary = await friendlyRunSummary(statePath)
 
-      expect(result.title).toBe('测试通过')
-      expect(result.lines.join(' ')).toContain('1 次正式执行')
+      expect(summary.outcome).toBe('passed')
+      expect(summary.lines).toContain('完成情况：1/1 个用例已验证通过。')
+      expect(summary.lines).toContain('业务残留：Mutation Ledger 未记录待恢复写入（pending=0）。')
+      expect(summary.lines).toContain(`详细结果和证据索引：${resultPath}`)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
   })
 
-  it('turns structured human-input questions into concise Chinese actions', async () => {
+  it('rejects legacy autonomous workflow state files', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-blocked-'))
     try {
-      const requestPath = resolve(directory, 'request.json')
       const statePath = resolve(directory, 'state.json')
-      const request: WorkflowHumanInputRequest = {
-        version: '1.0', kind: 'workflow-human-input-request', requestId: 'request', jobId: 'fixture-job',
-        status: 'pending', createdAt: '2026-07-31T00:00:00.000Z', blockedBy: 'missing data',
-        questions: [{
-          id: 'test-data.private-input', kind: 'test_data', prompt: 'internal prompt', reasons: [], sourceRefs: [],
-        }],
-        responseInstructions: [],
-      }
-      await writeFile(requestPath, JSON.stringify(request))
-      await writeFile(resolve(directory, 'run-events.jsonl'), '{}\n')
-      await writeFile(statePath, JSON.stringify(state({
-        status: 'blocked', stage: 'blocked', outcome: 'blocked', humanInputRequestPath: requestPath,
-      })))
+      await writeFile(statePath, JSON.stringify({
+        version: '1.0',
+        jobId: 'fixture-job',
+        requestSha256: 'a'.repeat(64),
+        status: 'blocked',
+        stage: 'blocked',
+        outcome: 'blocked',
+        round: 2,
+        environmentRetries: 0,
+        executionAttempts: 1,
+        events: [],
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:01:00.000Z',
+      }))
 
-      const result = await friendlyRunSummary(statePath)
-
-      expect(result.title).toBe('测试暂时无法继续')
-      expect(result.lines).toContain('缺少账号、验证码来源或其他私有测试数据。')
-      expect(result.lines.some((line) => line.includes('run-events.jsonl'))).toBe(true)
-      expect(result.lines).not.toContain('internal prompt')
+      await expect(friendlyRunSummary(statePath)).rejects.toThrow(/只支持当前 AgentHost 状态文件/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

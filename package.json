@@ -15,8 +15,6 @@
     "eval:suite": "tsx src/cli/run-eval-suite.ts",
     "import": "tsx src/cli/import-xlsx.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
-    "pipeline:workflow": "tsx src/cli/workflow-pipeline.ts",
-    "autonomous:workflow": "tsx src/cli/workflow-pipeline.ts --autonomous",
     "afk": "tsx .sandcastle/main.ts",
     "prd:to-issues": "tsx .sandcastle/to-issues-prd/to-issues-prd.ts",
     "plan:workflow": "tsx src/cli/plan-workflow.ts",
