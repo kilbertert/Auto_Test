@@ -29,12 +29,11 @@
     "@openai/codex-sdk": "^0.146.0",
     "@playwright/mcp": "^0.0.78",
     "ajv": "^8.18.0",
-    "ajv-formats": "^3.0.1",
     "cross-spawn": "^7.0.6",
     "fast-xml-parser": "^5.10.1",
     "he": "^1.2.0",
-    "zod": "^4.4.3",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",

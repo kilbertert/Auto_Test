@@ -32,7 +32,7 @@ Set-Location "D:\Auto-Test"
 .\Auto-Test.cmd doctor
 ```
 
-继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 使用 Windows 默认 Provider 时必须通过启动器探针；显式 Model Profile 不运行无关的默认探针，而由实际 Codex canary 验证。OMP 路径至少通过 `omp --version`，然后由 OMP 适配器使用同一个 Model Profile 生成隔离 `models.yml` 并在真实 canary 中验证 Provider。只有 legacy/native Run 才需要 `--agent-home` 或 `AUTO_TEST_AGENT_HOME` 提供宿主 provider/auth 源目录；省略时 Codex 可回退到 `%USERPROFILE%\.codex`，并保留当前 Provider 的 header 子表。子表引用的额外环境变量必须通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出。`--omp-home` / `AUTO_TEST_OMP_HOME` 是兼容别名。实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
+继续验收前，应确认 Node.js、Chromium 和所选 AgentHost 的启动层均可用。Codex 使用 Windows 默认 Provider 时必须通过启动器探针；显式 Model Profile 不运行无关的默认探针，而由实际 Codex canary 验证。OMP 路径至少通过 `omp --version`，然后由 OMP 适配器使用同一个 Model Profile 生成隔离 `models.yml` 并在真实 canary 中验证 Provider。只有未选择 Model Profile 的 AgentHost Run 才需要 `--agent-home` 或 `AUTO_TEST_AGENT_HOME` 提供宿主 provider/auth 源目录；省略时 Codex 可回退到 `%USERPROFILE%\.codex`，并保留当前 Provider 的 header 子表。子表引用的额外环境变量必须通过 `AUTO_TEST_AGENT_FORWARD_ENV` 显式列出。`--omp-home` / `AUTO_TEST_OMP_HOME` 是兼容别名。实际运行只复制允许的配置文件和当前 `agent.db` auth store 到私有 run，不应把用户 MCP、插件或历史 session 当作验收前置；复制前关闭正在写该 auth store 的 OMP 进程。启动层检查失败时先解决宿主问题，不要直接开始业务测试。
 
 每个 Codex Run 都会关闭 Apps、插件和远程插件目录，避免隔离 Agent Home 在测试启动时同步 marketplace；测试工具只来自 Auto-Test 注入的 Playwright 和 Control MCP。
 

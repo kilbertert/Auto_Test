@@ -16,7 +16,7 @@ npx playwright install chromium
 npm run check
 ```
 
-Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖和 Chromium，并验证默认模型 API。OMP 是可选宿主，需要在测试机另行安装；模型 Provider 可由同一个 Auto-Test Model Profile 交给 OMP 适配器，legacy/native Run 也可使用 OMP 自身配置。公开源码运行时，请通过宿主适配器、宿主配置或 Model Profile/环境变量提供 Provider，密钥不要写入仓库。
+Windows 私有包会自动安装固定版本 Node.js、默认 Codex CLI、依赖和 Chromium，并验证默认模型 API。OMP 是可选宿主，需要在测试机另行安装；模型 Provider 可由同一个 Auto-Test Model Profile 交给 OMP 适配器，未选择 Model Profile 的 AgentHost Run 也可直接使用 OMP 自身配置。公开源码运行时，请通过宿主适配器、宿主配置或 Model Profile/环境变量提供 Provider，密钥不要写入仓库。
 
 ## 2. 注册环境
 

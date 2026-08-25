@@ -87,7 +87,7 @@ Codex 使用受管 Model Profile 时，会在 AgentHost 内启动仅监听 `127.
 
 ## OMP 前置条件
 
-Auto-Test 不把 OMP 二进制或用户 OMP 配置复制进仓库或公开包。内部私有 Windows 包可以携带一个默认 Provider 的一次性引导凭据；首次启动会导入 DPAPI 并删除解压目录中的明文文件，随后 Codex 或 OMP 都可消费对应 Model Profile。使用 OMP 前仍需在测试机安装 `omp` 并确认 `omp --version` 能运行。选择 Auto-Test `--model-profile` 时，OMP 适配器在私有 `agentHome/models.yml` 中生成本次 Profile，并通过选定环境变量认证；不选择 Profile 的 legacy/native Run 才会复制 OMP 自身的 provider/auth 文件。两种路径都会设置 `PI_CODING_AGENT_DIR` 与隔离 session 目录，不继承调用者的 OMP profile、用户 MCP、插件或历史 session。Auto-Test 会在每个 run 工作区生成 `.omp/mcp.json`，其中只包含本次 Playwright 和 `auto-test-control` MCP 的隔离命令与路径；不会复用用户的 Codex MCP 配置。
+Auto-Test 不把 OMP 二进制或用户 OMP 配置复制进仓库或公开包。内部私有 Windows 包可以携带一个默认 Provider 的一次性引导凭据；首次启动会导入 DPAPI 并删除解压目录中的明文文件，随后 Codex 或 OMP 都可消费对应 Model Profile。使用 OMP 前仍需在测试机安装 `omp` 并确认 `omp --version` 能运行。选择 Auto-Test `--model-profile` 时，OMP 适配器在私有 `agentHome/models.yml` 中生成本次 Profile，并通过选定环境变量认证；未选择 Model Profile 的 AgentHost Run 才会复制 OMP 自身的 provider/auth 文件。两种路径都会设置 `PI_CODING_AGENT_DIR` 与隔离 session 目录，不继承调用者的 OMP profile、用户 MCP、插件或历史 session。Auto-Test 会在每个 run 工作区生成 `.omp/mcp.json`，其中只包含本次 Playwright 和 `auto-test-control` MCP 的隔离命令与路径；不会复用用户的 Codex MCP 配置。
 
 OMP 启动时会在 run 工作区写入一个项目级 `.omp/config.yml`：关闭 OMP 自带 browser、memory/autolearn 和用户扩展，并强制启用项目 MCP。这样 OMP 与 Codex 都通过同一份 run-scoped Playwright/Control MCP 操作浏览器；OMP 自带 browser 不会悄悄替换 Playwright 会话。`shell`、网络和高风险业务操作仍受测试环境 Profile、run 工作区约定和 Mutation Ledger 约束。`--auto-approve` 只表示已授权的测试动作不被宿主交互提示卡住，不扩大目标 URL 或业务权限。
 

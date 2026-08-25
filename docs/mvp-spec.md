@@ -1,5 +1,7 @@
 # Auto-Test MVP 规格
 
+> **Legacy 已移除、不可执行、仅供历史参考。**
+
 > 历史文档：本节描述已移除的旧 IR→Playwright 编译/探索/修复/分类规格，仅供审计。
 > 当前默认执行链路是 AgentHost；请以 [README](../../README.md)、[快速指南](quick-start.md) 和 [AgentHost 宿主契约](agent-hosts.md) 为准。
 
