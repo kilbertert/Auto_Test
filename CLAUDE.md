@@ -53,8 +53,8 @@ It records why the project migrated off IR/Runtime and the constraints that prev
 src/cli/easy.ts | src/cli/agent-test.ts
   -> intakeWorkflowXlsx (src/workflow/intake.ts): manifest + embedded/supplemental images + secret material
   -> assessAgentIntakeReadiness (src/agent/intake-readiness.ts): stable execution contract or pre-execution block
-  -> selectEnvironmentProfile + scopeEnvironmentProfile + ensureEnvironmentAuthentication (src/workflow/auth-broker.ts)
-  -> runAgentTest (src/agent/runner.ts)
+  -> selectEnvironmentProfile + scopeEnvironmentProfile + mergeAgentSecrets + load profile context (src/workflow/environment-profile.ts, src/cli/agent-test.ts)
+  -> runAgentTest (src/agent/runner.ts): the selected AgentHost executes authentication per case
 ```
 
 `runner.ts`:
@@ -114,8 +114,8 @@ failure mode the project migrated away from:
   (`src/workflow/input-bundle.ts`): `<stem>.auto-test/brief.md` (or `brief.txt`) and
   `<stem>.auto-test/images/`. The sidecar is auto-discovered, but packaging/copying/acceptance must
   keep them together. A `passed` claim covers only what `test-manifest.json` actually lists.
-- Real `.xlsx` inputs are git-ignored (private). Only `examples/`, `templates/`, and
-  `tests/fixtures/` xlsx are committed.
+- Real `.xlsx` inputs are git-ignored (private). Only `templates/` and `tests/fixtures/`
+  xlsx are committed.
 - Each run writes to `artifacts/runs/<timestamp>-<stem>-<rand>/` (git-ignored) plus a private
   `.agent-private/` (`mutation-ledger.json`, `environment-requirements.json`,
   `execution-receipts.json`, secret values) at `0600`/`0700`. Events JSONL is redacted of secrets,
@@ -136,9 +136,11 @@ workspace, no shell/search, a restricted Playwright tool allowlist). Page conten
 Profiles live at `~/.config/auto-test/environment-profiles.json` (Linux/macOS) or
 `%APPDATA%\auto-test\environment-profiles.json` (Windows); template at
 `templates/environment-profiles.example.json`. A profile registers origins, `read`/`write`/
-`destructive` policy, and an optional form-login auth adapter. The Auth Broker refreshes
-`storageState`/`sessionStorage` per run; auth files must be `0600`. Write permission is governed
-only by the Profile, never by inferred per-case risk.
+`destructive` policy, and an optional form-login auth adapter. Registered `storageState`/
+`sessionStorage` files are only reusable session seeds; the selected AgentHost establishes and
+asserts authentication per case, including clearing stored state when a case must start from an
+unauthenticated or isolated state. Auth files must be `0600`. Write permission is governed only by
+the Profile, never by inferred per-case risk.
 
 ## Model API credentials (consensus)
 
