@@ -18,7 +18,8 @@
     "prd:to-issues": "tsx .sandcastle/to-issues-prd/to-issues-prd.ts",
     "compile:replay": "tsx src/cli/compile-mcp-replay.ts",
     "report:workflow": "tsx src/cli/workflow-acceptance-report.ts",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "ralph": "tsx .sandcastle/planner.ts"
   },
   "engines": {
     "node": ">=24"

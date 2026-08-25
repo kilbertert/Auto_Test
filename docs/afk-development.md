@@ -40,5 +40,34 @@ to the host. The container may edit, test, and commit, but must not push,
 merge, close issues, or mutate GitHub state. Review the resulting branch and
 run the repository checks before opening a pull request.
 
-The current tracer bullet does not yet include grill-me, PRD decomposition,
-GitHub Actions, QA issue automation, or parallel agents.
+## Planner orchestration (`pnpm ralph`)
+
+Beyond the single-issue runner, a planner loop ports the upstream
+`course-video-manager` orchestration: Plan → parallel Implement + Review →
+Merge.
+
+```bash
+# Planner loop over `ready-for-agent` open issues (max 4 in parallel)
+AFK_PROFILE=claude-ark pnpm ralph
+```
+
+Each iteration:
+
+1. **Plan** — a planner agent lists open issues labelled `ready-for-agent`,
+   builds a dependency graph, and emits `<plan>{issues[]}</plan>` for the
+   unblocked ones.
+2. **Execute + Review** — each issue is implemented and reviewed in its own
+   Docker worktree (`agent/issue-<n>-<slug>`), up to `AFK_RALPH_PARALLEL`
+   (default 4) at once. `AFK_INSTALL_CMD` (default `npm ci`) runs on the host
+   worktree before each agent starts.
+3. **Merge** — a merger agent merges the completed branches into `main`, runs
+   `npm run check`, then **pushes `main` and closes the issues from inside the
+   container**. This deliberately overrides the "host owns delivery" rule for
+   the planner loop (container needs a GH token, injected from the server's
+   `~/.config/gh/hosts.yml`).
+
+Tuning: `AFK_RALPH_ITERATIONS` (default 10), `AFK_RALPH_PARALLEL` (default 4).
+
+The single-issue runner and the PRD Actions keep the original "host owns
+delivery" boundary — only the planner loop's merge phase pushes from the
+container.

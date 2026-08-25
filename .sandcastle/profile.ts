@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { claudeCode, codex } from "@ai-hero/sandcastle";
+import { claudeCode, codex, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 const profiles = {
@@ -51,7 +51,10 @@ function ensureAliyunSettings(baseUrl: string): void {
   writeFileSync(aliyunSettings, content, { mode: 0o600 });
 }
 
-export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<string, string>) {
+export function claudeProfile(
+  profile = process.env.AFK_PROFILE,
+  env?: Record<string, string>,
+): { agent: AgentProvider; sandbox: SandboxProvider } {
   if (profile && !(profile in profiles)) throw new Error("Unsupported profile; use claude, claude-ark, psydo, or aliyun-deepseek.");
   const settingsPath = profile ? profiles[profile as keyof typeof profiles] : undefined;
   if (settingsPath && !existsSync(settingsPath)) throw new Error(`Profile settings not found: ${settingsPath}`);
@@ -66,7 +69,7 @@ export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<st
     agent: useCodex
       ? codex(process.env.AFK_MODEL ?? (useAliyun ? "deepseek-v4-pro-0813" : "gpt-5.6-sol"), { env: { CODEX_HOME: "/home/agent/.codex" } })
       : claudeCode(process.env.AFK_MODEL ?? "claude-sonnet-4-6", {
-      env: profile ? { AFK_PROFILE: profile } : undefined,
+      ...(profile ? { env: { AFK_PROFILE: profile } } : {}),
     }),
     sandbox: docker({
       // Use the same image name that `npx sandcastle docker build-image`
@@ -79,12 +82,12 @@ export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<st
         ...(usePsydo ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
         ...(aliyun ? { DASHSCOPE_API_KEY: aliyun.apiKey } : {}),
       },
-      network: profile === "claude-ark" || useCodex ? "host" : undefined,
-      mounts: useCodex
-        ? [{ hostPath: useAliyun ? aliyunSettings : codexSettings, sandboxPath: "/home/agent/.codex/config.toml", readonly: true }]
+      ...(profile === "claude-ark" || useCodex ? { network: "host" as const } : {}),
+      ...(useCodex
+        ? { mounts: [{ hostPath: useAliyun ? aliyunSettings : codexSettings, sandboxPath: "/home/agent/.codex/config.toml", readonly: true }] }
         : settingsPath
-          ? [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }]
-          : undefined,
+          ? { mounts: [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }] }
+          : {}),
     }),
   };
 }
