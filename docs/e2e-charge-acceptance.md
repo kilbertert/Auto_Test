@@ -1,6 +1,6 @@
 # 历史充电闭环端到端验收
 
-> 当前结论（2026-07-29）：AI 自动生成 Execution Plan 的产品验收已通过。下文保留首次受控勘察、历史手工 reviewed plan 和失败批次，最新生成链路见文末“AI 生成 Execution Plan 验收”。
+> 本文除“AgentHost 当前版本边界”外，其余 Planner/Explorer/Refiner/Runtime/Autonomous 段落描述已移除的旧 Workflow 执行链（issue #94），仅作历史记录。当前结论以 AgentHost 边界为准：2026-08-06 在同一冻结 Manifest 上，Codex 与 OMP 均为 `3/3 passed`、Mutation Ledger `pending=0`。
 
 ## AgentHost 当前版本边界
 

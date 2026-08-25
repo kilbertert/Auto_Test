@@ -118,7 +118,7 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 框架会先解析 Excel；新 Run 只使用你粘贴的 URL 作为环境入口。单元格中的教程、连通性参照和外部资料链接只作为 Agent 材料上下文，不会自动扩大 Profile 或触发注册。环境完整后，框架会自动选择 Profile；选定 AgentHost 根据原始用例决定使用、清理或重新建立会话。Windows 默认在 `%LOCALAPPDATA%\auto-test\runs` 下创建每次运行目录，不再把结果绑定到 ZIP 解压目录、移动盘或映射盘；命令行显式传入 `--output-dir` 时仍使用指定目录。
 
-默认执行主体是 Codex AgentHost；也可以在命令行选择 OMP AgentHost。Runner 根据模型容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。选定宿主可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan。旧 Planner/Refiner/Runtime 只在命令行显式加入 `--legacy-runtime` 时使用。
+默认执行主体是 Codex AgentHost；也可以在命令行选择 OMP AgentHost。Runner 根据模型容量自动规划 execution epoch；每个 epoch 使用有界 case Manifest，完成后写入逐 case store，并在需要时通过 checkpoint 轮换物理 thread。选定宿主可以使用 shell、临时脚本、网络、Web Search 和完整 Playwright MCP，自主理解、规划、探索、执行、断言并恢复。epoch 调度只分配 case ID，不解释业务步骤或生成 Execution Plan；旧的 Planner/Refiner/Runtime 命令行入口已移除。
 
 Windows 上的 Codex CLI 0.146.0 对 `workspace-write` 的原生策略会拒绝启动子 MCP 进程和可写 shell 命令。Auto-Test 的 Codex AgentHost 在 `direct` 模式自动选择 Codex 的 `danger-full-access` 启动模式，才能实际消费 Playwright/Control MCP；这不是业务补丁，而是该宿主的已验证平台能力差异。运行目录、Profile origin、风险策略、Control MCP、Mutation Ledger 和结果合同仍由 Auto-Test 约束，但 Windows 的 `agent-host-selection.json` 会如实标记 `workspaceIsolation: prompt_only`，不宣称有操作系统级工作区隔离。若必须要宿主强制的文件系统隔离，请在 Linux/macOS 使用 Codex `workspace-write`，或在 Windows 仅执行受限的 `--opaque-test-data` 兼容路径。
 
@@ -242,12 +242,6 @@ OMP 与 Codex 使用同一个 Auto-Test Model Profile 选择层；真正的请�
 恢复继续使用同一个逻辑 Run 和 Mutation Ledger。框架会先校验已有交付；如果输入身份、证据、环境需求和 Ledger 全部完整且没有 pending Mutation，就直接生成正式结果。执行 turn 已写出合法的当前 epoch 交付时也会直接采用，不再额外调用模型重写结果。否则恢复 active epoch 的 thread，或从 checkpoint 启动下一代 thread；已经写入逐 case store 的 case 不会重跑。窗口出现 `Reconnecting... 1/5` 时表示 AgentHost 正在做有界重连，Runner 会等待它恢复或完成全部尝试，不会立即关闭线程。可识别的瞬时 429/TPS/TPM 限流会按错误中的等待提示等待一次，换一代线程并用 resume 继续；明确余额耗尽或第二次限流仍失败时显示 `provider_rate_limited`，修复额度或显式切换 Profile 后对原 Run 使用 `--resume`。每个 epoch 自动最多包含 8 条 case；真正的上下文/输出容量错误仍只在没有 Ledger 且没有交互回执的多 case epoch 中自动二分，已有写入记录保持原样并走 resume 协议，避免重复业务操作。case 已落盘后的 checkpoint 超限会直接跳过。模型 `at capacity`/`overloaded` 只会明确阻断，不会靠拆分或重复线程调用碰运气。错误说明 URL 中的 `#token-limit` 等 fragment 不参与分类。普通页面或 Agent 执行错误不会触发 thread 轮换，替换后的 session 仍失败也不会无限重试。
 
 Excel、URL、Environment Profile、风险策略和原有 origin 必须保持不变；这里的 Environment Profile 不等于可为基础设施恢复而切换的模型 Profile。旧版 v1 状态不支持恢复，其他业务环境替换或权限收窄都会拒绝恢复。
-
-只有排查旧链路兼容性时才使用：
-
-```powershell
-.\Auto-Test.cmd run --file "C:/TestData/cases.xlsx" --url "https://app.example.test/" --legacy-runtime
-```
 
 其他命令：
 

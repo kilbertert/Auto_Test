@@ -192,25 +192,11 @@ Playwright CLI 页面探索与定位器确认由 Phase 3 实现。
 - 运行时订单 ID 捕获/传递、数据表与操作表对齐、中断恢复尚未进入新 runtime；
 - 新工程尚未串行执行 Excel 中的全部账号。
 
-上述缺口中的 Workflow IR/runtime 已在 Phase 7 实现；在在线全账号验收完成前，仍不能把浏览器勘察成功当成产品自动化已验收通过。
+上述 Workflow IR/runtime 路线（Phase 7）已作为旧执行链移除；工作流 Intake 与验收报告仍保留，首次执行改由 AgentHost 承担。不能把浏览器勘察成功当成产品自动化已验收通过。
 
-### Phase 7 Workflow Runtime 实现状态
+### Phase 7 Workflow Runtime（历史）
 
-已实现：
-
-- 审核后的 `workflow-execution-plan` 类型、结构校验和确定性执行入口；
-- group/phase/iteration 编排，以及 `shared`、`freshPhase`、`freshPerIteration` Context 生命周期；
-- write/destructive 显式门禁与逐动作 allowed origin 检查；
-- 表格唯一实体捕获、`entities.<name>.id` 运行时引用、数据表/操作表按行重新校验；
-- table row count 业务断言和排除已完成状态的活跃对象查询；
-- 阶段、步骤、断言和多次实体捕获证据；
-- 原子私有状态文件（Linux/macOS 为 `0600`，Windows 使用 NTFS ACL），中断时保留 cursor，但不持久化 secret 或整行业务文本；
-- 中断后必须显式指定恢复 target，可在当前 phase 内回退重建页面状态；
-- FakeDriver 覆盖多账号隔离、风险门禁、跨阶段实体、origin 逃逸和显式恢复。
-
-充电闭环 reviewed plan 已建立，并已在新 runtime 下完成单账号线上 canary：11/11 phase、61/61 步骤和 14/14 断言通过，充电强停、占位费结算与最终零活跃订单审计均由 Runtime 自动完成。后台图形验证码通过私有 storageState + sessionStorage adapter 处理，显式跨 phase 恢复也已完成真实演练。
-
-当前单账号产品 canary 为 `passed`。剩余范围是 adapter 到期检测/刷新规程和测试工程师另行批准后的 7 账号串行回归，不能把单账号 canary 扩大解释为全量账号验收。
+Phase 7 曾实现审核后的 `workflow-execution-plan`、确定性 runtime、表格实体捕获和显式中断恢复，并在真实充电场景完成过单账号 canary。该 Planner/Explorer/Refiner/Runtime 执行链已移除，不再提供 `plan:workflow`、`execute:workflow`、`pipeline:workflow` 等入口；历史结论见 [从 IR/Runtime 到 Codex-native](architecture-journey-ir-runtime-to-codex-native.md)，不作为当前验收声明。
 
 ## 4. Test Case IR
 
