@@ -10,6 +10,7 @@ describe("AFK runner", () => {
     expect(prompt).toContain("Do not merge, push, close issues");
     expect(runner).toContain('branchStrategy: { type: "branch", branch }');
     expect(runner).toContain('maxIterations: Number(process.env.AFK_ITERATIONS ?? 3)');
+    expect(runner).toContain('claude|claude-ark|psydo');
   });
 
   it("keeps the copied PRD workflow wired to native sub-issues and server profiles", async () => {

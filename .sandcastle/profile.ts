@@ -25,9 +25,11 @@ export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<st
     }),
     sandbox: docker({
       imageName: process.env.AFK_IMAGE ?? "auto-test-sandcastle:local",
-      env,
+      env: {
+        ...env,
+        ...(useCodex ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
+      },
       network: profile === "claude-ark" || useCodex ? "host" : undefined,
-      env: useCodex ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : undefined,
       mounts: useCodex
         ? [{ hostPath: codexSettings, sandboxPath: "/home/agent/.codex/config.toml", readonly: true }]
         : settingsPath

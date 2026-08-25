@@ -9,7 +9,7 @@ const issue = process.argv.slice(2).find((arg, index) =>
   /^\d+$/.test(arg) && (profileIndex < 0 || index + 2 !== profileIndex + 1),
 );
 if (!issue || !/^\d+$/.test(issue)) {
-  throw new Error("Usage: npm run afk -- [--profile claude|claude-ark] <issue-number>");
+  throw new Error("Usage: npm run afk -- [--profile claude|claude-ark|psydo] <issue-number>");
 }
 
 const root = resolve(import.meta.dirname, "..");
