@@ -4,7 +4,7 @@ import {
   type RunOptions,
   type RunResult,
 } from "@ai-hero/sandcastle";
-import { runWithRetry } from "./run-with-retry";
+import { runWithRetry } from "./run-with-retry.js";
 
 /**
  * Options for {@link runWithExtraction} — the standard `run()` options, but with
@@ -77,18 +77,18 @@ export async function runWithExtraction<T>(
   }
 
   // The extraction pass uses an inline `prompt` (extractionPrompt), so drop the
-  // produce phase's `promptArgs` — Sandcastle only allows promptArgs alongside
-  // a promptFile, and the extraction prompt needs no substitution.
-  const { promptArgs: _produceArgs, ...extractionOptions } = produceOptions;
+  // produce phase's `promptArgs` and `promptFile` — Sandcastle only allows
+  // promptArgs alongside a promptFile, and the extraction prompt needs no
+  // substitution.
+  const { promptArgs: _produceArgs, promptFile: _produceFile, ...extractionOptions } = produceOptions;
 
   const extraction = await runWithRetry({
     ...extractionOptions,
-    name: produceOptions.name ? `${produceOptions.name} (extract)` : undefined,
-    promptFile: undefined,
+    ...(produceOptions.name ? { name: `${produceOptions.name} (extract)` } : {}),
     prompt: extractionPrompt,
     resumeSession: sessionId,
     output,
-    maxAttempts,
+    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
   });
 
   // Commits/branch come from the produce run (extraction does no work); only
