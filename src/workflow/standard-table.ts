@@ -15,6 +15,13 @@ import type { WorkflowRisk } from './types.js'
  * diagnostics reach the intake report. Row validity, case IDs, risk, priority,
  * step and assertion wording, and diagnostic codes/messages preserve the
  * behavior the standard branch exposed through the legacy importer.
+ *
+ * Unlike the legacy importer + IR schema path, this parser does not emit IR
+ * `schema_validation` diagnostics (including the former non-`/cases`
+ * `uniqueItems` findings for duplicate dependencies or labels). Plaintext
+ * sensitive-value probing is no longer a schema concern here; neutral fields
+ * are redacted in this module and test-data/instruction text is further
+ * handled by `sanitizeText` during intake.
  */
 
 /** Upper bound of valid cases one workbook may contribute; rows past the cap stay in intake as fallback phases. */

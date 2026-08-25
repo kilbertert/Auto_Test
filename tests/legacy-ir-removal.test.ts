@@ -23,6 +23,8 @@ const removedScriptNames = [
   'refine:workflow',
   'approve:workflow',
   'execute:workflow',
+  'pipeline:workflow',
+  'autonomous:workflow',
 ] as const
 
 const historicalDocuments = new Set([
@@ -136,6 +138,8 @@ describe('legacy IR to Playwright chain removal', () => {
       './workflow/runtime-validation.js',
       './workflow/structured-model-cli.js',
       './workflow/table-entities.js',
+      './workflow/auth-broker.js',
+      './workflow/diagnostics.js',
       './agent/competition.js',
     ]) {
       expect(source, specifier).not.toContain(specifier)
@@ -186,7 +190,6 @@ describe('legacy IR to Playwright chain removal', () => {
       './workflow/intake-secrets.js',
       './workflow/target-urls.js',
       './workflow/acceptance-report.js',
-      './workflow/auth-broker.js',
       './workflow/environment-profile.js',
       './workflow/model-profile.js',
       './workflow/types.js',

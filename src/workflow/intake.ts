@@ -408,7 +408,6 @@ async function intakeStandardTestCases(
     const key = JSON.stringify(item)
     if (seenDiagnostics.has(key)) continue
     seenDiagnostics.add(key)
-    if (item.code === 'plaintext_secret') continue
     diagnostics.items.push(caseLocalDiagnostics.has(item.code) && item.severity === 'error'
       ? { ...item, severity: 'warning' }
       : item)
