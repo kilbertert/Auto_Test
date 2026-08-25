@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { redactReportValue } from '../src/report/redact.js'
+import { redactReportValue } from '../src/workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../src/workflow/acceptance-report.js'
 import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest } from '../src/workflow/types.js'
 
