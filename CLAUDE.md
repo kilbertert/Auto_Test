@@ -36,14 +36,13 @@ CI (`.github/workflows/ci.yml`) has two required jobs: `verify` (Ubuntu — `npm
 private-Windows-package assembly) and `windows-verify` (Windows — bootstrap, Codex provider config,
 probe timeout/rollback, DPAPI secret handling). Both must pass.
 
-## Architecture: two execution paths
+## Architecture
 
 **Codex-native (default, product path)** — core is `src/agent/runner.ts`.
-**Legacy IR (Phases 1–5)** — `src/cli/{import,compile,explore,validate-locators,classify,repair,
-report}.ts` and `src/{importer,compiler,exploration,repair,runtime,report}`. The old Workflow
-Runtime/Planner/Recovery chain (`*-workflow` CLI and `src/workflow/{planner,runtime,autonomous,
-recovery}-*`) has been removed. Legacy IR is kept for compatibility, audit, and future
-stable-regression acceleration — **not** for new scenarios.
+**Replay projection** — MCP replay compilation (`src/compiler/mcp-replay.ts`,
+`src/cli/compile-mcp-replay.ts`) turns successful Codex-native runs into Playwright regression specs.
+The legacy IR→Playwright compiler/exploration/repair/classification chain and the old Workflow
+Runtime/Planner/Recovery chain have been removed; they are **not** an execution path.
 
 Read `docs/architecture-journey-ir-runtime-to-codex-native.md` before changing the execution model.
 It records why the project migrated off IR/Runtime and the constraints that prevent regressing.

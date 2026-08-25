@@ -1,5 +1,8 @@
 # Auto-Test MVP 规格
 
+> 历史文档：本节描述已移除的旧 IR→Playwright 编译/探索/修复/分类规格，仅供审计。
+> 当前默认执行链路是 AgentHost；请以 [README](../../README.md)、[快速指南](quick-start.md) 和 [AgentHost 宿主契约](agent-hosts.md) 为准。
+
 ## 1. MVP 目标
 
 用户提供一个 Web 站点 URL 和一个测试用例 Excel。系统完成：
@@ -200,7 +203,7 @@ Phase 7 曾实现审核后的 `workflow-execution-plan`、确定性 runtime、�
 
 ## 4. Test Case IR
 
-权威定义见 `schemas/test-case-ir.schema.json`。核心结构：
+旧 `test-case-ir.schema.json` 与 IR 编译器已移除，以下结构仅作历史记录：
 
 ```text
 TestSuiteIR
