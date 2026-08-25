@@ -1,0 +1,170 @@
+name: Agent Review
+
+on:
+  # pull_request_target rather than pull_request: the standard pull_request
+  # trigger depends on a generated merge commit, which GitHub fails to
+  # produce when the PR is out-of-date or conflicting. pull_request_target
+  # runs in the base context and does not need the merge commit, so the
+  # labeled event fires reliably.
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  review:
+    if: github.event.label.name == 'agent:review'
+    runs-on: self-hosted
+    timeout-minutes: 60
+    concurrency:
+      group: agent-mutate-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Transition labels — remove trigger + blocked, add in-progress
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
+          gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
+
+      - name: Checkout PR branch
+      - name: Checkout PR branch with runner HOME and managed Git hooks
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          if [ -d .git ]; then
+            git remote remove origin 2>/dev/null || true
+            git remote add origin "https://github.com/\${GH_REPO}.git"
+          else
+            git clone "https://github.com/\${GH_REPO}.git" .
+          fi
+          git fetch --depth 1 origin "${{ github.event.pull_request.head.sha }}"
+          git checkout -B "$BRANCH" FETCH_HEAD
+
+      - name: Ensure main is available for diffing
+        run: |
+          git fetch origin main:main || git fetch origin main
+          git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
+
+      - name: Capture pre-run HEAD
+        id: pre
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # latest — every run exercises the current version of the skill. Global
+      # (not project) install keeps it outside the git work tree so the review
+      # agent's commit step can never sweep it into the PR branch. Scoped to the
+      # claude-code agent so the step exits 0 (other agents reject -g installs).
+      - name: Install code-review skill
+        run: pnpm dlx skills@latest add mattpocock/skills -g -s code-review -a claude-code -y --copy
+
+      - name: Configure git identity
+        run: |
+          git config user.name "claude-code[bot]"
+          git config user.email "claude-code[bot]@users.noreply.github.com"
+
+      - name: Run review.ts
+        id: review
+        env:
+          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
+          OUTPUT_DIR: ${{ runner.temp }}
+        run: npm exec tsx .sandcastle/review/review.ts
+
+      - name: Push branch (abort cleanly if non-fast-forward)
+        id: push
+        if: success()
+        run: |
+          # Lease against the SHA we checked out — fails cleanly if anything
+          # pushed to the branch during our run.
+          set +e
+          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH" 2> push_err.txt
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            if grep -qiE "non-fast-forward|rejected|fetch first|stale info" push_err.txt; then
+              echo "Branch advanced during review run." > "${RUNNER_TEMP}/failure_reason.txt"
+              echo "race=true" >> "$GITHUB_OUTPUT"
+              cat push_err.txt
+              exit 1
+            fi
+            cat push_err.txt
+            exit $status
+          fi
+
+      - name: Post PR review (inline comments + summary)
+        if: success()
+        env:
+          PAYLOAD: ${{ runner.temp }}/review_payload.json
+        run: |
+          gh api \
+            --method POST \
+            "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" \
+            --input "$PAYLOAD"
+
+      - name: Mark PR ready for review
+        if: success()
+        run: gh pr ready "$PR_NUMBER" || true
+
+      - name: Post thread replies
+        if: success()
+        env:
+          REPLIES: ${{ runner.temp }}/replies.json
+        run: |
+          count=$(jq 'length' "$REPLIES")
+          for i in $(seq 0 $((count - 1))); do
+            commentId=$(jq -r ".[$i].commentId" "$REPLIES")
+            body=$(jq -r ".[$i].body" "$REPLIES")
+            # GraphQL node ID → numeric REST id via the node lookup.
+            rest_id=$(gh api graphql -f query="query(\$id:ID!){ node(id:\$id){ ... on PullRequestReviewComment { databaseId } } }" -F id="$commentId" --jq '.data.node.databaseId')
+            if [ -z "$rest_id" ] || [ "$rest_id" = "null" ]; then
+              echo "Could not resolve REST id for $commentId — skipping" >&2
+              continue
+            fi
+            gh api \
+              --method POST \
+              "repos/{owner}/{repo}/pulls/${PR_NUMBER}/comments/${rest_id}/replies" \
+              -f body="$body"
+          done
+
+      - name: Mark blocked on failure
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          reason="(no reason file written — check workflow logs)"
+          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          fi
+          gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
+          gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          \`agent:review\` run failed.
+
+          **Reason:** $reason
+
+          **Workflow run:** $RUN_URL
+
+          Re-add \`agent:review\` to retry.
+          EOF
+          )"
+
+      - name: Always remove in-progress label
+        if: always()
+        run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
