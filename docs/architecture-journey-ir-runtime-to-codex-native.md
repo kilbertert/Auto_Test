@@ -1,5 +1,7 @@
 # Auto-Test 架构实践复盘：从 IR/Runtime 到 Codex-native 测试代理
 
+> **Legacy 已移除、不可执行、仅供历史参考。**
+
 记录日期：2026-08-01，2026-08-03 补记 thin harness 实施与 Windows 验收
 
 记录范围：从旧仓库审计与清理开始，到 IR/Runtime 方案建设、真实业务闭环验收、跨场景与 Windows 复验、Codex-native 架构决策，再到 thin harness 重构、真实 Windows 运行和输入包边界复核。

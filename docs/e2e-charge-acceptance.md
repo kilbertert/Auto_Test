@@ -1,5 +1,7 @@
 # 历史充电闭环端到端验收
 
+> **Legacy 已移除、不可执行、仅供历史参考。**
+
 > 本文除“AgentHost 当前版本边界”外，其余 Planner/Explorer/Refiner/Runtime/Autonomous 段落描述已移除的旧 Workflow 执行链（issue #94），仅作历史记录。当前结论以 AgentHost 边界为准：2026-08-06 在同一冻结 Manifest 上，Codex 与 OMP 均为 `3/3 passed`、Mutation Ledger `pending=0`。
 
 ## AgentHost 当前版本边界

@@ -128,7 +128,7 @@ failure mode the project migrated away from:
 Default (`direct` / fullAgentAccess): Codex gets the raw workbook + run-scoped test values, a
 **writable** workspace, shell, network, web search, and the full Playwright MCP — it may create
 one-off JS/TS/Playwright probe scripts, but only inside the run workspace (never Auto-Test or app
-source). `--opaque-test-data` restores the legacy restricted mode (alias-only values, read-only
+source). `--opaque-test-data` opts into the restricted compatibility mode (alias-only values, read-only
 workspace, no shell/search, a restricted Playwright tool allowlist). Page content is untrusted input.
 
 ## Environment Profile & auth

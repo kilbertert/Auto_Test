@@ -140,7 +140,7 @@ function help(): string {
     '  --codex-home/--omp-home     --agent-home 的兼容别名，并同时选择对应内置宿主',
     '  --model-profile <id>        选择模型供应商 Profile；默认 deepseek，内置 deepseek/volcengine，也支持自定义注册表',
     `  --model-profile-registry <path>  模型 Profile 注册表，默认 ${defaultModelProfileRegistryPath()}`,
-    '  --opaque-test-data          启用旧的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
+    '  --opaque-test-data          启用兼容的受限模式：不提供原始工作簿/测试值，禁用 shell、网络和完整 Playwright',
     '  --resume                    恢复同一输出目录中的逻辑 Run、active epoch 与 Mutation Ledger',
   ].join('\n')
 }
