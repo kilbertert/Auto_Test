@@ -1,40 +1,72 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 const root = resolve(import.meta.dirname, '..')
 const tsxCli = resolve(root, 'node_modules/tsx/dist/cli.mjs')
 const easyCli = resolve(root, 'src/cli/easy.ts')
+const temporaryDirectories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
+
+/**
+ * The packaging environment can override the resolved version; strip it so each
+ * test only sees the version sources it arranges itself.
+ */
+function envWithoutVersionOverride(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.AUTO_TEST_PACKAGE_VERSION
+  return env
+}
 
 function runEasy(...args: string[]): SpawnSyncReturns<string> {
-  // The package version can be overridden by the packaging environment; pin the
-  // test to what `package.json` declares so the assertion stays deterministic.
-  const env = { ...process.env }
-  delete env.AUTO_TEST_PACKAGE_VERSION
-  return spawnSync(process.execPath, [tsxCli, easyCli, ...args], { cwd: root, env, encoding: 'utf8' })
+  return runEasyIn({}, ...args)
+}
+
+function runEasyIn(
+  { cwd = root, env = envWithoutVersionOverride() }: { cwd?: string; env?: NodeJS.ProcessEnv },
+  ...args: string[]
+): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [tsxCli, easyCli, ...args], { cwd, env, encoding: 'utf8' })
 }
 
 describe('easy CLI --version', () => {
-  it('prints the package version and exits 0 for --version', async () => {
+  it.each(['--version', '-v'])('prints the package version and exits 0 for %s', async (flag) => {
     const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')) as { version: string }
 
-    const result = runEasy('--version')
+    const result = runEasy(flag)
 
-    expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout.trim()).toBe(manifest.version)
+    expect(result.status, `${flag}: ${result.stderr}`).toBe(0)
+    expect(result.stdout.trim(), `${flag} stdout`).toBe(manifest.version)
   })
 
-  it('prints the same package version for -v', async () => {
-    const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')) as { version: string }
+  it('prefers the packaging override and Auto-Test.build.json over package.json', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-version-'))
+    temporaryDirectories.push(directory)
+    await writeFile(resolve(directory, 'Auto-Test.build.json'), JSON.stringify({
+      packageVersion: '9.8.7-fixture-build',
+      commit: 'fixture000',
+    }))
 
-    const result = runEasy('-v')
+    // Build metadata found in the working directory outranks the source package.json.
+    const fromMetadata = runEasyIn({ cwd: directory }, '--version')
+    expect(fromMetadata.status, fromMetadata.stderr).toBe(0)
+    expect(fromMetadata.stdout.trim()).toBe('9.8.7-fixture-build')
 
-    expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout.trim()).toBe(manifest.version)
+    // The packaging environment override outranks the build metadata.
+    const fromOverride = runEasyIn(
+      { cwd: directory, env: { ...envWithoutVersionOverride(), AUTO_TEST_PACKAGE_VERSION: '9.9.9-fixture-override' } },
+      '--version',
+    )
+    expect(fromOverride.status, fromOverride.stderr).toBe(0)
+    expect(fromOverride.stdout.trim()).toBe('9.9.9-fixture-override')
   })
 
-  it('still rejects unknown commands after the version flag', () => {
+  it('still rejects unknown commands', () => {
     const result = runEasy('definitely-not-a-command')
 
     expect(result.status).toBe(1)
