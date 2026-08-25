@@ -12,7 +12,7 @@ const profiles = {
 const codexSettings = process.env.AFK_CODEX_SETTINGS ?? "/home/claude/.config/auto-test/codex.psydo.toml";
 const psydoKey = process.env.AFK_PSYDO_KEY_FILE ?? "/home/claude/.config/aiops-diagnostics/keys/psydo-primary.key";
 const aliyunSettings = process.env.AFK_ALIYUN_SETTINGS ?? "/home/claude/.config/auto-test/codex.aliyun-deepseek.toml";
-const aliyunCsv = process.env.AFK_ALIYUN_CSV ?? "/home/claude/Projects/Auto-Test/ai ali-apiKey-6789048.csv";
+const aliyunCsv = process.env.AFK_ALIYUN_CSV ?? "/home/claude/.config/auto-test/aliyun-deepseek.csv";
 
 function readAliyunCsv(path: string): { apiKey: string; baseUrl: string } {
   const values = new Map<string, string>();
