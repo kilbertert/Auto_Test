@@ -68,9 +68,7 @@ export function claudeProfile(
   return {
     agent: useCodex
       ? codex(process.env.AFK_MODEL ?? (useAliyun ? "deepseek-v4-pro-0813" : "gpt-5.6-sol"), { env: { CODEX_HOME: "/home/agent/.codex" } })
-      : claudeCode(process.env.AFK_MODEL ?? "claude-sonnet-4-6", {
-      ...(profile ? { env: { AFK_PROFILE: profile } } : {}),
-    }),
+      : claudeCode(process.env.AFK_MODEL ?? "claude-sonnet-4-6"),
     sandbox: docker({
       // Use the same image name that `npx sandcastle docker build-image`
       // produces (defaultImageName = sandcastle:<repo>). A hardcoded custom
@@ -79,6 +77,11 @@ export function claudeProfile(
       imageName: process.env.AFK_IMAGE ?? "sandcastle:auto-test",
       env: {
         ...env,
+        // AFK_PROFILE lives in the sandbox env (not the agent env) so that
+        // both run() and createSandbox() containers see it — createSandbox
+        // does not re-inject agent env into an already-started container, and
+        // the Dockerfile claude wrapper dispatches on it.
+        ...(profile ? { AFK_PROFILE: profile } : {}),
         ...(usePsydo ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
         ...(aliyun ? { DASHSCOPE_API_KEY: aliyun.apiKey } : {}),
       },
