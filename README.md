@@ -34,6 +34,8 @@ npx playwright install chromium
 npm run easy
 ```
 
+`npm run easy -- --version`（或 `-v`）打印 `package.json` 中的当前包版本并直接退出，不会进入交互菜单或启动 Run。
+
 命令行方式：
 
 ```bash
