@@ -4,7 +4,7 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需登录 Codex/ChatGPT 账号或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
 
-默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。既有 IR/Runtime 只作为显式 `--legacy-runtime` 兼容路径和未来稳定回归加速器。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
+默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。旧 IR 工具链只作为独立兼容命令和未来稳定回归加速器保留；Workflow Runtime/Planner/Recovery 执行链已移除。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
 
 认证状态是测试状态，不是 AgentHost 的固定前置。环境注册默认只登记 URL 范围和权限，不要求人工预登录；显式保存的登录状态只是普通受保护业务用例的可选会话种子。登录、登出、错误凭据、会话失效和角色隔离等认证用例必须由选定 AgentHost 先建立 Excel 要求的初始状态，再真实操作和断言，不能因继承会话已登录而跳过。
 
@@ -97,7 +97,7 @@ npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profil
 
 ## Legacy IR/Runtime
 
-以下 Phase 1 到 Phase 5 文档描述旧的 IR/Runtime 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。通过 `npm run easy -- run ... --legacy-runtime` 才会显式启动旧自治链路。
+以下 Phase 1 到 Phase 5 文档描述旧的 IR 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。旧 Workflow Runtime/Planner/Recovery 运维链及其 `*-workflow` 命令已删除，当前只保留工作流 intake 与验收报告入口。
 
 ## Phase 1 使用
 
@@ -327,175 +327,6 @@ npm run report:workflow -- \
 历史充电闭环和当前 AgentHost 宿主验收的边界见 [充电闭环端到端验收](docs/e2e-charge-acceptance.md)。PR #28 后，Codex 与 OMP 已在 Linux x64 使用同一冻结 Manifest 分别完成一次真实写入型充电 canary，均为 `3/3 passed`、7 条业务写入全部核销且 `pending=0`；该结果证明的是这一输入合同和场景，不代表任意未知网站都能一次成功。
 
 Model Profile/Provider 适配层的独立验收记录见 [AgentHost：宿主无关执行](docs/agent-hosts.md)：commit `88f8e5c` 上，Codex 与 OMP 使用同一内置 DeepSeek Profile 完成了三 case 合成写入型 canary，比较合同为 `valid/equivalent`，两次 Ledger 均为 `pending=0`。该结果用于证明 Provider 适配与共同测试合同，不替代 Windows 或真实业务场景验收。
-
-## Workflow Runtime
-
-### AI Workflow Pipeline
-
-顶层 pipeline 将原始工作流输入串成一条受控链路：
-
-`Workflow Intake → AI Planner → 页面探索 → Draft Execution Plan → Refiner → 审核门 → Runtime`
-
-无人值守控制器入口：
-
-```bash
-npm run autonomous:workflow -- \
-  --file /private/workflow.xlsx \
-  --url https://target.example/ \
-  --storage-state app=/private/app.storage-state.json \
-  --allow-write \
-  --allow-destructive \
-  --output-dir artifacts/pipeline/autonomous
-```
-
-如果目标 origin 已在默认 Registry 中唯一注册，任务调用可以缩减为：Linux/macOS 使用 `~/.config/auto-test/environment-profiles.json`，Windows 使用 `%APPDATA%\auto-test\environment-profiles.json`。
-
-```bash
-npm run autonomous:workflow -- \
-  --file /private/workflow.xlsx \
-  --url https://target.example/ \
-  --output-dir artifacts/pipeline/autonomous
-```
-
-Registry 模板见 [environment-profiles.example.json](templates/environment-profiles.example.json)。Profile 一次性登记 origin、权限策略及认证 adapter；认证文件在 Linux/macOS 必须为 `0600`，Windows 必须由当前用户的 NTFS ACL 保护，相对路径按 Registry 所在目录解析。CLI 显式参数仍可用于临时覆盖 Profile 的认证映射，但不会扩大 Profile 未授权的 URL origin。
-
-自治模式会将阶段和产物持久化到 `autonomous-job.state.json`，自动完成探索、受保护 Refiner、策略审核和 Runtime。终态只有：
-
-- `passed`：Execution Plan 和 Runtime 断言均通过；
-- `product_failed`：在修订预算内仍不能满足不可变业务断言；
-- `blocked`：认证、数据、权限、恢复能力或环境条件不足。
-
-每个 `write` / `destructive` phase 必须提供可追溯的恢复契约：
-
-```json
-{
-  "strategy": "compensate",
-  "phaseIds": ["capture-created-order", "stop-created-order", "final-zero-active-audit"],
-  "maxAttempts": 2,
-  "sourceRefs": ["phase:cleanup", "policy:owned-entity-only"]
-}
-```
-
-确认整阶段可幂等重放时可使用 `strategy: "retry"`。Runtime 会记录不含 Secret 和订单行文本的 Mutation Ledger；失败后只有补偿完成或被明确标记为幂等可重试，Controller 才会进入下一轮。缺少恢复契约或补偿失败会直接 `blocked`。
-
-为旧 Draft 补充受保护的恢复契约：
-
-```bash
-npm run plan-recovery:workflow -- \
-  --draft artifacts/planning/workflow.plan-draft.json \
-  --output artifacts/planning/workflow.recovery.plan-draft.json
-```
-
-Recovery Planner 只能修改 phase 的 `recovery` 字段；任何步骤、断言、风险、阶段顺序、数据绑定或审核语义变化都会被拒绝。
-
-Environment Profile Registry 会按 URL origin 自动解析 `storageState` / `sessionStorage`、写入权限和重试预算。完全陌生且尚未登记凭据或风险策略的 origin 会返回 `blocked`；系统不会从页面或 Excel 猜测认证信息。
-
-Profile 可配置基于 Secret 引用的表单登录 adapter。仅在显式 `--legacy-runtime` 的旧 pipeline 中，Auth Broker 才会在每轮前验证认证后 pathname，并在 Session 过期时使用已验证 locator 自动刷新私有 `storageState` 和可选 `sessionStorage`；默认 AgentHost 不会在用例执行前替用例先登录。
-
-```bash
-npm run pipeline:workflow -- \
-  --file /private/workflow.xlsx \
-  --url https://first-target.example/ \
-  --url https://second-target.example/ \
-  --brief /private/source-brief.txt \
-  --image /private/supplemental-step.png \
-  --storage-state simulator=/private/simulator.storage-state.json \
-  --storage-state admin=/private/admin.storage-state.json \
-  --session-storage admin=/private/admin.session-storage.json \
-  --allow-write \
-  --allow-destructive \
-  --max-iterations 1 \
-  --iteration-offset 0 \
-  --output-dir artifacts/pipeline/canary
-```
-
-未提供 `--approve` 时，pipeline 在完整探索通过后停在审核门，并输出 Draft 与 Exploration Report。审核后显式生成 Execution Plan 并执行：
-
-```bash
-npm run pipeline:workflow -- \
-  --file /private/workflow.xlsx \
-  --draft artifacts/pipeline/canary/workflow.plan-draft.json \
-  --seed-exploration artifacts/pipeline/canary/workflow.exploration.json \
-  --storage-state simulator=/private/simulator.storage-state.json \
-  --storage-state admin=/private/admin.storage-state.json \
-  --session-storage admin=/private/admin.session-storage.json \
-  --allow-write \
-  --allow-destructive \
-  --approve \
-  --reviewer tester \
-  --execute \
-  --max-iterations 1 \
-  --iteration-offset 1 \
-  --output-dir artifacts/pipeline/accepted
-```
-
-普通模式仍保留显式人工审核。自治模式对只读失败自动 Refine；写入或破坏性阶段失败后，Runtime 会按照恢复契约执行补偿和清理断言。未恢复副作用不会被后续安全审计覆盖，也不会进入下一轮。
-
-审核后的 Workflow Execution Plan 可以通过确定性 runtime 执行：
-
-```bash
-npm run execute:workflow -- \
-  --plan artifacts/planning/charge/charge.generated-v2.execution-plan.json \
-  --validate-only
-
-npm run execute:workflow -- \
-  --plan artifacts/planning/charge/charge.generated-v2.execution-plan.json \
-  --allow-write \
-  --allow-destructive \
-  --storage-state simulator=artifacts/auth/charge-simulator.storage-state.json \
-  --storage-state admin=artifacts/auth/charge-admin.storage-state.json \
-  --session-storage admin=artifacts/auth/charge-admin.session-storage.json \
-  --state artifacts/workflow-state/charge.state.json \
-  --output artifacts/workflow-runs/charge.result.json
-```
-
-真实充电流程的预认证文件必须保持 `0600`，且不能提交到 Git。后台认证同时依赖 Playwright `storageState` 和 `sessionStorage` adapter；只注入其中一个不能恢复登录态。
-
-先执行单账号 canary 时，使用循环上限和从 0 开始的账号偏移：
-
-```bash
-npm run execute:workflow -- \
-  --plan artifacts/acceptance/charge/charging.execution-plan.json \
-  --allow-write \
-  --allow-destructive \
-  --storage-state simulator=artifacts/auth/charge-simulator.storage-state.json \
-  --storage-state admin=artifacts/auth/charge-admin.storage-state.json \
-  --session-storage admin=artifacts/auth/charge-admin.session-storage.json \
-  --max-iterations 1 \
-  --iteration-offset 2 \
-  --state artifacts/workflow-state/charge-canary.state.json \
-  --output artifacts/workflow-runs/charge-canary.result.json
-```
-
-`--max-iterations 1 --iteration-offset 2` 表示只执行手机号列表索引 2 的一个账号。完整批量回归应移除这两个参数，并使用独立的 state/output 路径。`--stop-before <target-id>` 可用于在指定步骤或断言前生成不继续改变业务状态的 partial 证据。
-
-runtime 当前提供：
-
-- group 内按数据列表串行执行跨站点 phase；
-- `shared`、`freshPhase`、`freshPerIteration` 三种 BrowserContext 生命周期；
-- 每个动作和断言后的 `allowedOrigins` 检查；
-- `write` 和 `destructive` 两级显式门禁；
-- 表格实体唯一捕获、实体 ID 跨阶段引用，以及数据表/独立操作表重新对齐；
-- 阶段、步骤、断言和实体捕获的结构化证据；
-- 原子写入的私有中断状态，Linux/macOS 权限为 `0600`，且不保存秘密值或匹配行文本；
-- 中断状态绑定 execution plan 的 SHA-256，计划改变后禁止继续使用旧状态；
-- 中断后禁止自动猜测恢复点，必须同时使用 `--resume --resume-from <target-id>`。
-
-恢复点可以回退到当前中断 phase 的较早步骤，用于重新建立页面状态或重新捕获实体。由于浏览器动作无法提供通用的 exactly-once 保证，恢复前仍必须先审计目标系统的实际状态；对真实强停、结算等动作不能盲目重放。显式跳到后续安全审计只能证明现场已清理，未被同一 phase 成功重试覆盖的失败仍保持权威，最终 run 不会因此改判为通过。
-
-当前 AI 生成的充电 Execution Plan 将 7 个手机号建模为 `freshPerIteration` 循环，包含幂等模拟桩准备、每轮枪口复位、H5 登录/启动、充电订单精确捕获与强停、关联占位费结算、每轮和最终零活跃订单审计。
-
-2026-07-29 的最新产品验收结果：
-
-- AI Draft `charge.refined12.plan-draft.json` 完整探索通过，75 个 locator、13 个 table contract、0 unresolved；
-- 审核门生成 `charge.generated-v2.execution-plan.json`，不是历史 `charging.execution-plan.json` 的复制，两者 SHA-256 不同；
-- 正常 Runtime 使用另一条未参与最终探索的数据执行通过：15/15 phase、88/88 steps、21/21 assertions、2 次实体捕获；
-- 充电订单终态为 `Charging complete`，关联占位费订单为 `Occupancy Ended / Paid`，每轮和最终活跃订单审计均为 0；
-- 另有一条测试数据在充电强停后超过 5 分钟仍未生成占位费订单，该次 Runtime 保持 `failed`，没有伪造订单或把清理状态误判为业务通过。
-
-同日新增的自治链路 canary 位于 `artifacts/acceptance/charge/autonomous-canary-offset6-v2`。单次 `autonomous:workflow` 命令自动完成 Environment Profile、Auth Broker、新 Draft hash Exploration、Policy Gate 和独立 Runtime：两段执行均为 15/15 phase、88/88 steps、21/21 assertions，Policy Gate 无阻断原因，充电 mutation 最终 `compensated`，每轮和最终零活跃订单审计通过。全程没有聊天代理手动续跑或编辑 Execution Plan。
-
-最终通过证据位于 `artifacts/acceptance/charge/generated-v2-runtime-offset6.result.json`。后台认证仍通过权限 `0600` 的 storageState + sessionStorage adapter 处理，需要继续维护到期检测和人工刷新规程。
 
 ## 私有审计资产
 

@@ -4,7 +4,6 @@ import { parsePlaywrightLocator } from '../src/exploration/locator-parser.js'
 import type { LocatorCandidateReport } from '../src/exploration/types.js'
 import type { TestSuiteIR } from '../src/core/types.js'
 import { resolveDataBindings, secretEnvironmentName } from '../src/runtime/data.js'
-import { resolveWorkflowBindings } from '../src/workflow/runtime-data.js'
 import { workflowSecretEnvironment } from '../src/workflow/intake-secrets.js'
 import { locatorExpression } from '../src/runtime/locator.js'
 
@@ -67,20 +66,8 @@ describe('runtime data resolution', () => {
     )).toThrow('AUTO_TEST_SECRET_ADMIN_PASSWORD')
   })
 
-  it('rejects empty secret references and redacts malformed secret-list JSON errors', () => {
+  it('rejects empty secret references', () => {
     expect(() => secretEnvironmentName('')).toThrow(/must not be empty/i)
-    expect(() => resolveWorkflowBindings(
-      [{ name: 'phones', source: 'secret', valueType: 'stringList', secretRef: 'workflow.phones' }],
-      { AUTO_TEST_SECRET_WORKFLOW_PHONES: '["private-phone"' },
-    )).toThrow('Secret list must be valid JSON: AUTO_TEST_SECRET_WORKFLOW_PHONES')
-    try {
-      resolveWorkflowBindings(
-        [{ name: 'phones', source: 'secret', valueType: 'stringList', secretRef: 'workflow.phones' }],
-        { AUTO_TEST_SECRET_WORKFLOW_PHONES: '["private-phone"' },
-      )
-    } catch (error) {
-      expect(String(error)).not.toContain('private-phone')
-    }
   })
 
   it('rejects secret references that normalize to the same environment variable', () => {

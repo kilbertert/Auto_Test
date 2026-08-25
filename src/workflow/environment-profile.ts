@@ -3,7 +3,12 @@ import { dirname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import type { LocatorIR } from '../core/types.js'
 import { redactSensitiveContent } from '../input/text.js'
-import type { WorkflowRuntimeTarget } from './runtime-types.js'
+
+export interface EnvironmentProfileTarget {
+  id: string
+  baseUrl: string
+  allowedOrigins: string[]
+}
 
 export interface EnvironmentLoginAdapter {
   loginUrl: string
@@ -203,7 +208,7 @@ export function selectEnvironmentProfile(
 
 export function resolveEnvironmentProfileTargets(
   profile: EnvironmentProfile,
-  targets: WorkflowRuntimeTarget[],
+  targets: EnvironmentProfileTarget[],
 ): ResolvedEnvironmentProfile {
   const auth = new Map(profile.auth.map((adapter) => [adapter.origin, adapter]))
   const storageStateByTarget: Record<string, string> = {}

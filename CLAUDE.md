@@ -39,10 +39,11 @@ probe timeout/rollback, DPAPI secret handling). Both must pass.
 ## Architecture: two execution paths
 
 **Codex-native (default, product path)** — core is `src/agent/runner.ts`.
-**Legacy IR/Runtime (Phases 1–5 + Workflow Runtime)** — `src/cli/{import,compile,explore,
-validate-locators,classify,repair,report,*-workflow}.ts` and `src/{importer,compiler,exploration,
-repair,runtime,report,workflow}`. Reached only via `npm run easy -- run ... --legacy-runtime`. Kept
-for compatibility, audit, and future stable-regression acceleration — **not** for new scenarios.
+**Legacy IR (Phases 1–5)** — `src/cli/{import,compile,explore,validate-locators,classify,repair,
+report}.ts` and `src/{importer,compiler,exploration,repair,runtime,report}`. The old Workflow
+Runtime/Planner/Recovery chain (`*-workflow` CLI and `src/workflow/{planner,runtime,autonomous,
+recovery}-*`) has been removed. Legacy IR is kept for compatibility, audit, and future
+stable-regression acceleration — **not** for new scenarios.
 
 Read `docs/architecture-journey-ir-runtime-to-codex-native.md` before changing the execution model.
 It records why the project migrated off IR/Runtime and the constraints that prevent regressing.

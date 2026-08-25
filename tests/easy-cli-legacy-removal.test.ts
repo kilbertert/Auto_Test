@@ -81,6 +81,12 @@ describe('AgentHost-only easy CLI surface', () => {
 
     expect(manifest.scripts['pipeline:workflow']).toBeUndefined()
     expect(manifest.scripts['autonomous:workflow']).toBeUndefined()
+    expect(manifest.scripts['plan:workflow']).toBeUndefined()
+    expect(manifest.scripts['plan-recovery:workflow']).toBeUndefined()
+    expect(manifest.scripts['explore:workflow']).toBeUndefined()
+    expect(manifest.scripts['refine:workflow']).toBeUndefined()
+    expect(manifest.scripts['approve:workflow']).toBeUndefined()
+    expect(manifest.scripts['execute:workflow']).toBeUndefined()
     expect(manifest.scripts['easy']).toBe('tsx src/cli/easy.ts')
     expect(manifest.scripts['agent:test']).toBe('tsx src/cli/agent-test.ts')
   })
