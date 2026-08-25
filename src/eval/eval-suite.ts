@@ -71,10 +71,10 @@ export function canonicalEvalSuite(): EvalSuite {
         id: 'local-fixture-site',
         category: 'fixture',
         title: '本地 fixture 站点回归',
-        description: '在 tests/fixtures/site 上验证定位、导航、断言和输入解析，不产生外部副作用。',
+        description: '在 tests/fixtures/agent-site 上验证定位、导航、断言和输入解析，不产生外部副作用。',
         probes: ['input', 'locator_navigation', 'business_assertion', 'environment'],
         requiresOracleMatch: true,
-        inputContract: { kind: 'manifest', path: 'tests/fixtures/site' },
+        inputContract: { kind: 'manifest', path: 'tests/fixtures/agent-site' },
       },
       {
         id: 'windows-acceptance',

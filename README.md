@@ -4,7 +4,7 @@
 
 Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动安装 Node.js、默认 Codex CLI、项目依赖和 Chromium，并配置自定义模型 API；随后通过中文菜单注册环境、选择 Excel、粘贴 URL 并查看结果，无需登录 Codex/ChatGPT 账号或手工编辑 Profile JSON。也可以在已安装 OMP 的机器上选择 `--agent-host omp`，让 OMP 通过同一测试合同执行。
 
-默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。旧 IR 工具链只作为独立兼容命令和未来稳定回归加速器保留；Workflow Runtime/Planner/Recovery 执行链已移除。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
+默认主链路是 AgentHost 薄外壳：输入测试用例 Excel 和已注册环境后，原始 Excel、图片和测试说明进入隔离的可写 run 工作区，本轮运行值只写入 `.agent-private` 私有目录。选定的 Codex 或 OMP 会话自主完成理解、规划、页面探索、真实执行、业务断言、恢复和结构化交付；框架根据模型容量自动规划有界 execution epoch（执行纪元），必要时在 checkpoint 后轮换物理代理线程。业务上下文、浏览器状态、证据、Mutation Ledger 和逐 case 事实始终属于同一个 Run，Core 不替宿主做业务规划或裁决。旧的 IR→Playwright 编译/探索/修复/分类链和 Workflow Runtime/Planner/Recovery 执行链已移除；回归资产由 AgentHost replay 生成，`npm run compile:replay` 可迁移历史 Run。详见 [AgentHost 宿主契约](docs/agent-hosts.md)。
 
 认证状态是测试状态，不是 AgentHost 的固定前置。环境注册默认只登记 URL 范围和权限，不要求人工预登录；显式保存的登录状态只是普通受保护业务用例的可选会话种子。登录、登出、错误凭据、会话失效和角色隔离等认证用例必须由选定 AgentHost 先建立 Excel 要求的初始状态，再真实操作和断言，不能因继承会话已登录而跳过。
 
@@ -23,11 +23,8 @@ Windows 测试工程师可以直接双击 `Auto-Test.cmd`：启动器会自动�
 - [Windows 从零验收清单](docs/windows-acceptance-runbook.md)
 - [自适应 Epoch Runtime 验证记录](docs/adaptive-epoch-validation.md)
 - [仓库与历史方案审计](docs/repository-audit.md)
-- [MVP 规格与执行链路](docs/mvp-spec.md)
-- [测试用例 IR JSON Schema](schemas/test-case-ir.schema.json)
+- [MVP 规格与执行链路（历史）](docs/mvp-spec.md)
 - [标准 Excel 测试用例模板](templates/test-cases.xlsx)
-- [最小登录 IR 示例](examples/login-suite.ir.json)
-- [可执行本地登录 IR 示例](examples/local-login-suite.ir.json)
 
 ## 默认使用
 
@@ -95,200 +92,9 @@ npm run agent:test -- --file cases.xlsx --url https://app.example.test/ --profil
 
 受管 Codex Profile 会在 AgentHost 边界把 Codex namespace MCP 工具转换为标准 Responses function tools，再把 Provider 的调用恢复给 Codex。第三方 Provider 不必实现 Codex 的 namespace 扩展，但必须支持标准 function tools、SSE 和工具结果续传。每个物理线程仍必须通过只读 `auto-test-control.test_contract` 能力预检；模型探针或旧包绕过 MCP 得到的页面结果不能替代该门。
 
-## Legacy IR/Runtime
-
-以下 Phase 1 到 Phase 5 文档描述旧的 IR 工具链。它仍保留用于兼容、审计和后续稳定回归加速，但不是新场景的默认首次执行路线。旧 Workflow Runtime/Planner/Recovery 运维链及其 `*-workflow` 命令已删除，当前只保留工作流 intake 与验收报告入口。
-
-## Phase 1 使用
-
-```bash
-npm install
-npm run check
-
-npm run import -- \
-  --file templates/test-cases.xlsx \
-  --url https://example.test/ \
-  --output artifacts/import/example.ir.json
-```
-
-命令会同时生成 IR 和诊断报告。存在缺失字段、重复 ID、明文秘密或缺少清理步骤等阻断问题时，仍会保留脱敏后的草稿供审核，但默认返回非零退出码。使用 `--allow-errors` 只能用于审计预览，不能表示用例已具备执行条件。
-
-单次最多处理 20 条有效用例：
-
-```bash
-npm run import -- --file /private/cases.xlsx --url https://example.test/ --limit 5
-```
-
-Phase 1 不会启动浏览器或访问目标网站。
-
-## Phase 2 使用
-
-编译已经审核批准、定位器和秘密引用均已补全的 IR：
-
-```bash
-npm run compile -- \
-  --ir examples/local-login-suite.ir.json \
-  --output artifacts/compiled/local-login.spec.ts
-```
-
-编译器会在生成代码前阻断以下输入：
-
-- 未批准或仍有歧义的用例；
-- `manual` 步骤、缺失定位器和不存在的数据引用；
-- 未解析的 `secretRef` 或 IR 中的秘密明文；
-- 不兼容的断言操作符/期望值；
-- 被策略阻止的破坏性操作和缺少清理步骤的写操作；
-- 不在 `allowedOrigins` 内的目标站点。
-
-编译成功时会同时生成 `<suite>.spec.ts` 和 `<suite>.spec.map.json`。source map 保存源 Excel 文件、工作表、hash、用例行号，以及 IR 步骤/断言/清理步骤对应的生成代码行，供后续报告建立可验证的追溯关系。
-
-安装 Chromium 后，可以使用合成凭据运行仓库内的真实浏览器演示：
-
-```bash
-npx playwright install chromium
-
-AUTO_TEST_SECRET_DEMO_USERNAME=demo-user \
-AUTO_TEST_SECRET_DEMO_PASSWORD=demo-pass \
-npm run demo:test
-```
-
-演示会启动仅监听 `127.0.0.1:43117` 的本地登录站点，真实填写表单并断言跳转 URL 与当前用户文本。HTML 报告、截图、Trace 和生成脚本均写入被 Git 忽略的 `artifacts/`。
-
-Phase 2 的编译和回放不调用 LLM。当前仍需人工或后续探索模块把导入草稿中的 `manual` 步骤转换为经验证的稳定定位器。
-
-## Phase 3 使用
-
-为已完成业务语义审核的用例启动 Playwright CLI 探索会话：
-
-```bash
-npm run explore -- open \
-  --ir examples/local-login-suite.ir.json \
-  --case local-login-001 \
-  --session login-explore
-
-npm run explore -- snapshot --session login-explore
-```
-
-探索账号类页面时，使用 IR 数据绑定注入秘密，不把值写进命令或报告：
-
-```bash
-AUTO_TEST_SECRET_DEMO_USERNAME=demo-user \
-npm run explore -- action \
-  --session login-explore \
-  --action fill \
-  --target e6 \
-  --value-ref username
-```
-
-从快照 ref 生成候选定位器，并检查当前页面与刷新后的唯一性和可操作性：
-
-```bash
-npm run explore -- candidate \
-  --session login-explore \
-  --target step-2 \
-  --ref e6
-```
-
-候选通过后，显式应用到新的 IR 文件。该命令不会覆盖原 IR，也不会修改动作、断言预期或审核状态：
-
-```bash
-npm run explore -- apply \
-  --ir examples/local-login-suite.ir.json \
-  --candidate artifacts/exploration/candidates/<candidate>.json \
-  --output artifacts/exploration/applied/login.ir.json
-
-npm run explore -- close --session login-explore
-```
-
-对完整 IR 进行两次独立 BrowserContext 重放，验证所有定位器的实际计数和动作状态：
-
-```bash
-AUTO_TEST_SECRET_DEMO_USERNAME=demo-user \
-AUTO_TEST_SECRET_DEMO_PASSWORD=demo-pass \
-npm run validate:locators -- \
-  --ir examples/local-login-suite.ir.json \
-  --replays 2
-```
-
-探索工作区、脱敏快照、候选和验证报告均位于私有且被 Git 忽略的 `artifacts/`。写入和破坏性用例默认阻断，需要显式风险参数；快照 ref 只保留在探索报告中，不会进入回归 IR。
-
-刷新检查会把刷新后消失的弹窗、菜单等瞬态状态标记为不稳定。这类结果需要测试工程师判断是否改为通过前序步骤重建状态，不能直接自动批准。
-
-## Phase 4 使用
-
-对定位器验证报告进行规则式失败分类：
-
-```bash
-npm run classify -- \
-  --ir artifacts/exploration/applied/login.ir.json \
-  --report artifacts/validation/login.locator-report.json \
-  --output artifacts/classification/login.classification.json
-```
-
-分类类别为：
-
-- `product_defect`：定位器和操作已成功，但测试工程师定义的断言未满足；
-- `test_code`：定位器零匹配、多匹配、不可操作或间歇性明确等待失败；
-- `environment`：浏览器、BrowserContext、DNS、连接或导航环境故障；
-- `data`：秘密环境变量、上传文件或其他运行数据缺失；
-- `policy`：风险策略或 `allowedOrigins` 阻断；
-- `unknown`：当前证据不足，必须人工分析。
-
-使用 Phase 3 已验证候选执行受限修复：
-
-```bash
-AUTO_TEST_SECRET_DEMO_USERNAME=demo-user \
-AUTO_TEST_SECRET_DEMO_PASSWORD=demo-pass \
-npm run repair -- \
-  --ir artifacts/exploration/applied/login.ir.json \
-  --candidate artifacts/exploration/candidates/login-step-2.json \
-  --max-attempts 2 \
-  --replays 2 \
-  --output artifacts/repair/login.repair-report.json \
-  --output-ir artifacts/repair/login.repaired.ir.json
-```
-
-修复器先执行基线重放，再按 `policy.repair` 最多尝试两次。locator 修复必须引用已经通过刷新稳定性检查的候选；wait 修复只能增加现有明确 `waitCondition.timeoutMs`，且仅适用于跨重放呈现间歇性的等待失败。
-
-每次尝试记录前后 locator/wait、理由、IR SHA-256、分类和完整重跑结果。保护投影会阻止动作、测试数据、风险等级、审核状态以及断言 kind/operator/expected 的变化。只有修复后的全部用例重放通过才写出 `repaired.ir.json`；产品缺陷、环境、数据和策略问题不会生成修复 IR。
-
-## Phase 5 使用
-
-将当前 IR 和对应 source map 与 Playwright、定位器验证、失败分类、受限修复证据聚合为一份 JSON 和一份可直接打开的静态 HTML 报告：
-
-```bash
-npm run report -- \
-  --ir artifacts/repair/login.repaired.ir.json \
-  --source-map artifacts/compiled/login.spec.map.json \
-  --playwright-report artifacts/playwright/results.json \
-  --validation artifacts/validation/login.locator-report.json \
-  --classification artifacts/classification/login.classification.json \
-  --repair artifacts/repair/login.repair-report.json \
-  --output-json artifacts/report/login.run-report.json \
-  --output-html artifacts/report/login.run-report.html
-```
-
-`--ir` 和 `--source-map` 必填，其余证据参数可选。报告关联以下链路：
-
-- Excel 文件、sheet、hash 和原始行号；
-- IR 用例、步骤、断言、清理步骤和不可变 oracle；
-- 生成 Playwright Test 文件和准确代码行；
-- Playwright 执行状态、重试、步骤耗时、错误和附件；
-- locator 多次重放验证、失败分类证据，以及修复前后的结构化 diff。
-
-报告生成器会校验 source map 的 IR hash、生成源码 hash；聚合 `repaired` 修复报告时还会校验其最终 IR hash。任何版本错配都会拒绝生成，避免把旧执行证据挂到新用例上。JSON 和 HTML 都写入私有且被 Git 忽略的 `artifacts/`，只记录秘密的 `secretRef`，不会保存 `AUTO_TEST_SECRET_*` 的实际值。HTML 不依赖外部 CDN，支持按状态筛选和搜索用例。
-
-运行仓库内的端到端演示并生成基础集成报告：
-
-```bash
-AUTO_TEST_SECRET_DEMO_USERNAME=demo-user \
-AUTO_TEST_SECRET_DEMO_PASSWORD=demo-pass \
-npm run demo:report
-```
-
 ## 工作流型 Excel Intake 与真实验收
 
-标准 `npm run import` 只接受带“用例ID、用例标题、测试步骤、预期结果”表头的测试用例表。对于“阶段标题 + 操作说明 + 资源 + 截图”的工作流型 Excel，使用独立 intake：
+标准测试用例表与工作流型 Excel 都由 AgentHost 直接读取；阶段式工作流需要额外保留来源图片和行索引时，使用独立 intake：
 
 ```bash
 npm run intake:workflow -- \
