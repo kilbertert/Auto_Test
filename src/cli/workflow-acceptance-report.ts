@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
-import { redactReportValue } from '../report/redact.js'
+import { redactReportValue } from '../workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../workflow/acceptance-report.js'
 import type { WorkflowAcceptanceEvidence, WorkflowAcceptanceReport, WorkflowIntakeManifest } from '../workflow/types.js'
 
