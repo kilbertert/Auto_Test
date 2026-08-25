@@ -44,6 +44,9 @@ Write tests for anything that isn't already covered.
 
 ## 3. Analyze for code quality improvements
 
+Apply the project's `.sandcastle/CODING_STANDARDS.md` alongside these
+opportunities:
+
 Look for opportunities to:
 
 - Reduce unnecessary complexity and nesting

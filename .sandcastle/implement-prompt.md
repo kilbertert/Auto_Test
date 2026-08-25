@@ -8,9 +8,9 @@ PRD, pull that in too. Only work on the issue specified.
 # CONTEXT
 
 Read the relevant files under `docs/` and any ADRs under `docs/adr/` before
-starting. Explore the repo and fill your context window with the parts
-relevant to this issue — especially test files that touch the area you'll
-change.
+starting. Apply the project's `.sandcastle/CODING_STANDARDS.md`. Explore the
+repo and fill your context window with the parts relevant to this issue —
+especially test files that touch the area you'll change.
 
 # EXPLORATION
 
