@@ -21,6 +21,10 @@ function runEasyFrom(cwd: string, ...args: string[]): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [tsxCli, easyCli, ...args], { cwd, encoding: 'utf8' })
 }
 
+function runEasyStatusFrom(cwd: string, env?: NodeJS.ProcessEnv): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [tsxCli, easyCli, 'status'], { cwd, ...(env ? { env } : {}), encoding: 'utf8' })
+}
+
 describe('AgentHost-only easy CLI surface', () => {
   it('keeps --legacy-runtime out of easy help', () => {
     const result = runEasy('--help')
@@ -40,8 +44,15 @@ describe('AgentHost-only easy CLI surface', () => {
   it('ignores legacy autonomous state files when finding the latest AgentHost state', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-easy-status-'))
     temporaryDirectories.push(directory)
-    const legacyDirectory = resolve(directory, 'artifacts', 'runs', 'legacy')
-    const agentDirectory = resolve(directory, 'artifacts', 'runs', 'agent')
+    // The CLI's run root is cwd-relative on POSIX but %LOCALAPPDATA%\auto-test\runs
+    // on Windows; scope it to this temp dir so the fixture layout matches where
+    // `easy status` actually searches on both platforms.
+    const scopedLocalAppData = resolve(directory, '.localdata')
+    const runRoot = process.platform === 'win32'
+      ? resolve(scopedLocalAppData, 'auto-test', 'runs')
+      : resolve(directory, 'artifacts', 'runs')
+    const legacyDirectory = resolve(runRoot, 'legacy')
+    const agentDirectory = resolve(runRoot, 'agent')
     await mkdir(legacyDirectory, { recursive: true })
     await mkdir(agentDirectory, { recursive: true })
     const legacyStatePath = resolve(legacyDirectory, 'autonomous-job.state.json')
@@ -58,7 +69,8 @@ describe('AgentHost-only easy CLI surface', () => {
     const future = new Date(Date.now() + 60_000)
     await utimes(legacyStatePath, future, future)
 
-    const result = runEasyFrom(directory, 'status')
+    const env = process.platform === 'win32' ? { ...process.env, LOCALAPPDATA: scopedLocalAppData } : undefined
+    const result = runEasyStatusFrom(directory, env)
 
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain('测试仍在运行')

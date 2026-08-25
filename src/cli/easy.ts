@@ -354,14 +354,24 @@ async function runInteractive(): Promise<void> {
 
 async function latestStatePath(): Promise<string | undefined> {
   const root = defaultRunRoot()
+  const candidates: { path: string; modified: number }[] = []
   try {
-    const entries = await readdir(root, { recursive: true, withFileTypes: true })
-    const candidates = await Promise.all(entries
-      .filter((entry) => entry.isFile() && entry.name === 'codex-agent.state.json')
-      .map(async (entry) => {
-        const path = resolve(entry.parentPath, entry.name)
-        return { path, modified: (await stat(path)).mtimeMs }
-      }))
+    // Walk one directory at a time: `readdir(recursive + withFileTypes)`
+    // reports unreliable Dirent types on Windows, so `isFile()` there can
+    // miss every candidate. A per-directory walk keeps the same result on
+    // every platform.
+    const pending = [root]
+    while (pending.length > 0) {
+      const directory = pending.pop()!
+      const entries = await readdir(directory, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isDirectory()) pending.push(resolve(directory, entry.name))
+        else if (entry.isFile() && entry.name === 'codex-agent.state.json') {
+          const path = resolve(directory, entry.name)
+          candidates.push({ path, modified: (await stat(path)).mtimeMs })
+        }
+      }
+    }
     return candidates.sort((left, right) => right.modified - left.modified)[0]?.path
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
