@@ -29,6 +29,7 @@ import {
   type ModelProfile,
 } from '../workflow/model-profile.js'
 import { isBuiltInAgentHostId } from '../agent/host-registry.js'
+import { readAutoTestPackageVersion } from '../agent/build-info.js'
 import type { AgentHostId } from '../agent/host.js'
 import { defaultRunDirectory, defaultRunRoot } from '../usability/run-directory.js'
 
@@ -533,6 +534,12 @@ async function main(): Promise<void> {
   }
   const args = process.argv.slice(2)
   const command = args[0]
+  if (command === '--version' || command === '-v') {
+    const version = await readAutoTestPackageVersion()
+    if (!version) throw new Error('无法确定 Auto-Test 版本')
+    console.log(version)
+    return
+  }
   if (!command) {
     if (!input.isTTY) throw new Error('非交互模式请使用 easy run、easy register 或 easy doctor')
     banner()

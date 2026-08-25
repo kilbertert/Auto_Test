@@ -93,7 +93,7 @@ $Run = "D:\Auto-Test-results\acceptance-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 Excel、同名 .auto-test sidecar 和必要 URL 必须一起交付；它们共同决定本轮 manifest。测试结束后，以 codex-agent.result.json、实际证据和 Mutation Ledger 为准。若验收 Codex/OMP 竞争，必须为两个宿主使用不同输出目录，再用 `npm run agent:compare` 只读比较，不能在同一业务实体上盲目重复破坏性操作。
 
-构建脚本还会把不含密钥的 `Auto-Test.build.json` 写入私有 ZIP，运行结果会据此记录包版本和构建 commit；在没有该元数据的源码运行中，框架会尽力从 `package.json` 和 Git 读取版本，读取不到时不会伪造 commit。
+构建脚本还会把不含密钥的 `Auto-Test.build.json` 写入私有 ZIP，运行结果会据此记录包版本和构建 commit；在没有该元数据的源码运行中，框架会尽力从 `package.json` 和 Git 读取版本，读取不到时不会伪造 commit。`npm run easy -- --version`（或 `-v`）按同一优先级解析并打印包版本后直接退出，不会启动 Run。
 
 ## 常见失败
 

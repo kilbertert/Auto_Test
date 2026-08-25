@@ -55,6 +55,8 @@ npm run easy -- run \
 
 `--one` 是 `--case-limit 1` 的快捷方式，真正把 Manifest 限制为一条 case，并只保留该 case 引用的材料链接；未执行 case 中的链接不会提前阻断 canary。完整执行省略 `--case-limit` 即可。
 
+`npm run easy -- --version`（或 `-v`）只打印当前 Auto-Test 包版本并退出；它不是 `run` 的子参数，不会创建 Run 或工作区。
+
 底层入口：
 
 ```bash
