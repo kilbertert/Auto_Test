@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { read, utils, type WorkBook, type WorkSheet } from '@e965/xlsx'
 import { DiagnosticBag } from '../core/diagnostics.js'
-import { importXlsxToIr } from '../importer.js'
 import { readWorkbookCases, type RawCaseRow, type WorkbookReadResult } from '../input/xlsx.js'
 import { normalizeText, redactSensitiveContent, slugify, splitNumberedItems } from '../input/text.js'
+import { parseStandardTableCases } from './standard-table.js'
 import type {
   WorkflowCapability,
   WorkflowFailureMode,
@@ -378,18 +378,19 @@ async function intakeStandardTestCases(
   workbook: WorkbookReadResult,
   detectionDiagnostics: DiagnosticBag,
   embeddedAssets: ReturnType<typeof extractWpsCellImages>,
+  sourceSha256: string,
 ): Promise<WorkflowIntakeResult> {
   const targetUrls = [...new Set([
     ...(options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)),
     ...workbook.rows.flatMap((row) => Object.values(row.values).flatMap((value) => extractUrls(value ?? ''))),
   ])]
   if (targetUrls.length === 0) throw new Error('标准测试用例工作流至少需要一个目标 URL')
-  const imported = await importXlsxToIr({
+  const parseDiagnostics = new DiagnosticBag()
+  const standard = parseStandardTableCases({
     filePath: options.filePath,
-    baseUrl: targetUrls[0]!,
-    limit: 10_000,
-    ...(options.sheetName ? { sheetName: options.sheetName } : {}),
-    destructiveActions: 'requireApproval',
+    sha256: sourceSha256,
+    workbook,
+    diagnostics: parseDiagnostics,
   })
   const diagnostics = new DiagnosticBag()
   const seenDiagnostics = new Set<string>()
@@ -403,12 +404,11 @@ async function intakeStandardTestCases(
     'duplicate_case_id',
     'cleanup_required',
   ])
-  for (const item of [...detectionDiagnostics.items, ...imported.report.diagnostics]) {
+  for (const item of [...detectionDiagnostics.items, ...parseDiagnostics.items]) {
     const key = JSON.stringify(item)
     if (seenDiagnostics.has(key)) continue
     seenDiagnostics.add(key)
     if (item.code === 'plaintext_secret') continue
-    if (item.code === 'schema_validation' && item.path === '/cases') continue
     diagnostics.items.push(caseLocalDiagnostics.has(item.code) && item.severity === 'error'
       ? { ...item, severity: 'warning' }
       : item)
@@ -420,14 +420,14 @@ async function intakeStandardTestCases(
       column: asset.metadata.sourceCell.replace(/\d+$/, ''),
     })
   }
-  const importedByRow = new Map(imported.suite.cases.map((testCase) => [testCase.sourceRow ?? 0, testCase]))
+  const casesBySourceRow = standard.casesBySourceRow
   const secretMaterial: Record<string, string | string[]> = {}
   const phaseIds = new Set<string>()
   const sourceCaseIds = new Set<string>()
   const phases = workbook.rows.map((source): WorkflowPhaseDraft => {
     const sourceRow = source.sourceRow
-    const testCase = importedByRow.get(sourceRow)
-    const phaseId = uniquePhaseId(source.values.caseId ?? testCase?.id ?? '', sourceRow, phaseIds)
+    const testCase = casesBySourceRow.get(sourceRow)
+    const phaseId = uniquePhaseId(source.values.caseId ?? '', sourceRow, phaseIds)
     const sourceCaseId = source.values.caseId?.trim() || undefined
     if (sourceCaseId && sourceCaseIds.has(sourceCaseId)) {
       diagnostics.warning('duplicate_case_id', `用例ID「${sourceCaseId}」重复，已按来源行建立独立 case`, {
@@ -448,9 +448,9 @@ async function intakeStandardTestCases(
     const titleCell = cellAddress(workbook, 'title', sourceRow)
     const stepsCell = cellAddress(workbook, 'steps', sourceRow)
     const cleanupCell = cellAddress(workbook, 'cleanup', sourceRow)
-    const title = sanitizeText(source.values.title ?? testCase.title, phaseId, titleCell)
-    const steps = sanitizeText(source.values.steps ?? testCase.steps.map((step) => step.sourceText).join('\n'), phaseId, stepsCell)
-    const cleanup = sanitizeText(source.values.cleanup ?? testCase.cleanupSteps?.map((step) => step.sourceText).join('\n') ?? '', phaseId, cleanupCell)
+    const title = sanitizeText(source.values.title ?? '', phaseId, titleCell)
+    const steps = sanitizeText(source.values.steps ?? '', phaseId, stepsCell)
+    const cleanup = sanitizeText(source.values.cleanup ?? '', phaseId, cleanupCell)
     const data = sanitizeText(source.values.testData ?? '', phaseId, dataCell)
     const expected = sanitizeText(source.values.expected ?? '', phaseId, expectedCell)
     const preconditions = sanitizeText(source.values.precondition ?? '', phaseId, preconditionCell)
@@ -464,14 +464,12 @@ async function intakeStandardTestCases(
     ] as Array<[string, Record<string, string | string[]>]>) {
       assignSecretMaterial(secretMaterial, material, `单元格 ${label}`)
     }
-    const explicitBindings: WorkflowSecretBinding[] = (testCase.dataBindings ?? [])
-      .filter((binding) => binding.source === 'secret' && Boolean(binding.secretRef) && !binding.secretRef?.startsWith('unresolved.'))
-      .map((binding) => ({
-        name: binding.name,
-        secretRef: binding.secretRef!,
-        purpose: `测试数据：${binding.name}`,
-        sourceCell: dataCell,
-      }))
+    const explicitBindings: WorkflowSecretBinding[] = testCase.secretDataBindings.map((binding) => ({
+      name: binding.name,
+      secretRef: binding.secretRef,
+      purpose: `测试数据：${binding.name}`,
+      sourceCell: dataCell,
+    }))
     const secretBindings = [...new Map(
       [
         ...title.bindings,
@@ -492,7 +490,7 @@ async function intakeStandardTestCases(
       })
     }
     const resources: WorkflowResource[] = [
-      ...(testCase.modulePath?.length ? [{
+      ...(testCase.modulePath.length ? [{
         sourceCell: cellAddress(workbook, 'module', sourceRow),
         text: `模块路径：${testCase.modulePath.join(' > ')}`,
         urls: [],
@@ -501,18 +499,16 @@ async function intakeStandardTestCases(
       ...(data.text ? [{ sourceCell: dataCell, text: `测试数据：${data.text}`, urls: extractUrls(data.text) }] : []),
       { sourceCell: expectedCell, text: `预期结果：${expected.text}`, urls: extractUrls(expected.text) },
       ...(cleanup.text ? [{ sourceCell: cleanupCell, text: `清理步骤：${cleanup.text}`, urls: extractUrls(cleanup.text) }] : []),
-      ...(testCase.dependencies?.length ? [{
+      ...(testCase.dependencies.length ? [{
         sourceCell: cellAddress(workbook, 'dependencies', sourceRow),
         text: `依赖用例：${testCase.dependencies.join(', ')}`,
         urls: [],
       }] : []),
     ]
-    const ambiguities = testCase.review.ambiguities
-      .filter((item) => !/必须映射到正式 secretRef|无法解析测试数据片段/.test(item))
-      .map((item) => redactSensitiveContent(item))
+    const ambiguities = testCase.ambiguities.map((item) => redactSensitiveContent(item))
     const imageIds = embeddedAssets.filter((asset) => asset.metadata.sourceRow === sourceRow).map((asset) => asset.metadata.id)
     if (imageIds.length > 0) ambiguities.push('内嵌图片需要 AI 或测试工程师确认其操作语义')
-    if (testCase.risk !== 'read' && (testCase.cleanupSteps?.length ?? 0) === 0) {
+    if (testCase.risk !== 'read' && !testCase.hasCleanupSteps) {
       ambiguities.push('写入用例没有源测试用例提供的清理步骤；自动执行前必须建立可验证恢复契约')
     }
     return {
@@ -521,10 +517,10 @@ async function intakeStandardTestCases(
       title: title.text || `来源第 ${sourceRow} 行（${sourceRowLabel(source)}）`,
       sourceRow,
       risk: explicitRisk(source.values.risk) ?? testCase.risk,
-      ...(testCase.preconditions?.length ? { summary: testCase.preconditions.join('；') } : {}),
+      ...(testCase.preconditions.length ? { summary: testCase.preconditions.join('；') } : {}),
       outcome: {
         action: splitNumberedItems(steps.text),
-        observable: expected.text ? splitNumberedItems(expected.text) : testCase.assertions.map((assertion) => assertion.sourceText),
+        observable: expected.text ? splitNumberedItems(expected.text) : [],
         evidence: ['interaction', 'observation'],
         cleanup: cleanup.text ? splitNumberedItems(cleanup.text) : [],
         failureModes: failureModesFor(explicitRisk(source.values.risk) ?? testCase.risk),
@@ -554,12 +550,12 @@ async function intakeStandardTestCases(
   const manifest: WorkflowIntakeManifest = {
     version: '1.0',
     kind: 'workflow-intake',
-    workflowId: imported.suite.suiteId,
+    workflowId: standard.workflowId,
     source: {
       format: 'xlsx',
-      fileName: imported.suite.source.fileName,
-      sheetName: imported.suite.source.sheetName ?? workbook.sheetName ?? '',
-      sha256: imported.suite.source.sha256,
+      fileName: standard.source.fileName,
+      sheetName: standard.source.sheetName,
+      sha256: standard.source.sha256,
     },
     targetUrls,
     declaredTargetUrls: [...new Set((options.additionalUrls ?? []).map(normalizeUrl).filter((item): item is string => Boolean(item)))],
@@ -604,7 +600,7 @@ export async function intakeWorkflowXlsx(options: WorkflowIntakeOptions): Promis
     const embeddedAssets = extractWpsCellImages(file, formulaImageCells(workbook))
       .filter((asset) => asset.metadata.sheetName === standardWorkbook.sheetName)
       .sort((a, b) => a.metadata.sourceRow - b.metadata.sourceRow || a.metadata.sourceCell.localeCompare(b.metadata.sourceCell))
-    return intakeStandardTestCases(options, standardWorkbook, standardDiagnostics, embeddedAssets)
+    return intakeStandardTestCases(options, standardWorkbook, standardDiagnostics, embeddedAssets, sha256)
   }
 
   const sheetNames = options.sheetName ? [options.sheetName] : workbook.SheetNames
