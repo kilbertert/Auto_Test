@@ -69,7 +69,11 @@ export function claudeProfile(profile = process.env.AFK_PROFILE, env?: Record<st
       env: profile ? { AFK_PROFILE: profile } : undefined,
     }),
     sandbox: docker({
-      imageName: process.env.AFK_IMAGE ?? "auto-test-sandcastle:local",
+      // Use the same image name that `npx sandcastle docker build-image`
+      // produces (defaultImageName = sandcastle:<repo>). A hardcoded custom
+      // name here means rebuilds target a different tag and the sandbox keeps
+      // running a stale image — the cause of repeated false BLOCKEDs.
+      imageName: process.env.AFK_IMAGE ?? "sandcastle:auto-test",
       env: {
         ...env,
         ...(usePsydo ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
