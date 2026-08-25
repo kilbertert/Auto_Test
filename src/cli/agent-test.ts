@@ -11,7 +11,7 @@ import { readEnvironmentRequirements } from '../agent/environment-requirements.j
 import { writeResultWorkbook } from '../agent/result-workbook.js'
 import { isBuiltInAgentHostId } from '../agent/host-registry.js'
 import type { AgentHostId } from '../agent/host.js'
-import { initialCodexTestState, updateCodexTestState, writePrivateJson } from '../agent/state.js'
+import { initialAgentTestState, updateAgentTestState, writePrivateJson } from '../agent/state.js'
 import type { CodexTestAgentResult, CodexTestFailureKind } from '../agent/types.js'
 import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
 import {
@@ -445,8 +445,8 @@ async function writeResultWorkbookDelivery(options: {
 }): Promise<string> {
   const artifact = await writeResultWorkbook(options)
   const statePath = resolve(options.outputDirectory, 'codex-agent.state.json')
-  const state = JSON.parse(await readFile(statePath, 'utf8')) as ReturnType<typeof initialCodexTestState>
-  await writePrivateJson(statePath, updateCodexTestState(state, { resultWorkbookPath: artifact.path }))
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as ReturnType<typeof initialAgentTestState>
+  await writePrivateJson(statePath, updateAgentTestState(state, { resultWorkbookPath: artifact.path }))
   return artifact.path
 }
 
@@ -463,7 +463,7 @@ async function writePreExecutionBlock(
   const statePath = resolve(outputDirectory, 'codex-agent.state.json')
   const result = createPreExecutionBlockedResult(manifest, message, classification)
   await writePrivateJson(resultPath, result)
-  const state = updateCodexTestState(initialCodexTestState(manifest.workflowId, manifest.source.sha256), {
+  const state = updateAgentTestState(initialAgentTestState(manifest.workflowId, manifest.source.sha256), {
     status: 'completed',
     stage: 'completed',
     outcome: 'blocked',

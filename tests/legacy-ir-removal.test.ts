@@ -30,6 +30,8 @@ describe('legacy IR to Playwright chain removal', () => {
       'src/report/html.ts',
       'src/report/types.ts',
       'src/report/redact.ts',
+      'src/runtime/data.ts',
+      'src/runtime/locator.ts',
       'schemas/test-case-ir.schema.json',
       'examples/login-suite.ir.json',
       'examples/local-login-suite.ir.json',
@@ -51,8 +53,45 @@ describe('legacy IR to Playwright chain removal', () => {
 
   it('stops re-exporting the removed modules from the public index', async () => {
     const source = await readFile(resolve(root, 'src/index.ts'), 'utf8')
-    for (const specifier of ['./compiler/playwright.js', './exploration/', './repair/', './validation/schema.js', './validation/locator-validator.js', './importer.js']) {
+    for (const specifier of ['./compiler/playwright.js', './exploration/', './repair/', './report/', './runtime/', './validation/schema.js', './validation/locator-validator.js', './importer.js', './agent/competition.js']) {
       expect(source, specifier).not.toContain(specifier)
+    }
+  })
+
+  it('exports only the current AgentHost-native public surface', async () => {
+    const source = await readFile(resolve(root, 'src/index.ts'), 'utf8')
+    for (const specifier of [
+      './core/types.js',
+      './input/headers.js',
+      './input/text.js',
+      './workflow/intake.js',
+      './workflow/input-bundle.js',
+      './workflow/intake-secrets.js',
+      './workflow/target-urls.js',
+      './workflow/acceptance-report.js',
+      './workflow/auth-broker.js',
+      './workflow/environment-profile.js',
+      './workflow/model-profile.js',
+      './workflow/types.js',
+      './workflow/xlsx-media.js',
+      './agent/host.js',
+      './agent/host-registry.js',
+      './agent/codex-host.js',
+      './agent/codex-provider.js',
+      './agent/omp-host.js',
+      './agent/omp-provider.js',
+      './agent/provider-runtime.js',
+      './agent/runner.js',
+      './agent/result.js',
+      './agent/state.js',
+      './agent/workspace.js',
+      './agent/execution-receipts.js',
+      './agent/evidence-artifact.js',
+      './agent/result-workbook.js',
+      './agent/replay-assets.js',
+      './compiler/mcp-replay.js',
+    ]) {
+      expect(source, specifier).toContain(specifier)
     }
   })
 })

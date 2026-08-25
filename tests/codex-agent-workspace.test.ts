@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
-import { prepareCodexAgentWorkspace, promoteReplayBrowserState, type AgentWorkspace } from '../src/agent/workspace.js'
+import { prepareAgentWorkspace, promoteReplayBrowserState, type AgentWorkspace } from '../src/agent/workspace.js'
 import { CodexAgentHost } from '../src/agent/codex-host.js'
 import { OmpAgentHost } from '../src/agent/omp-host.js'
 import { agentTestPrompt, agentTestResumePrompt } from '../src/agent/prompt.js'
@@ -137,7 +137,7 @@ describe('Codex agent workspace', () => {
       FIXTURE_FORWARD: 'agent-only-secret',
       UNRELATED_SERVER_SECRET: 'must-not-forward',
     }
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
@@ -220,7 +220,7 @@ describe('Codex agent workspace', () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-replay-auth-'))
     directories.push(directory)
     const origin = 'https://tasks.example.test'
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest([origin]),
       profile: { id: 'fixture', origins: [origin], auth: [], policy: { allowWrite: false, allowDestructive: false } },
@@ -267,7 +267,7 @@ describe('Codex agent workspace', () => {
       headed: false,
       browserExecutablePath: '/verified/chromium',
     }
-    const initial = await prepareCodexAgentWorkspace(options)
+    const initial = await prepareAgentWorkspace(options)
     const ledger = [{
       id: 'pending-action', caseId: 'inspect-board', description: 'Pending recovery', risk: 'write', status: 'pending',
       createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', evidence: [],
@@ -284,7 +284,7 @@ describe('Codex agent workspace', () => {
     const legacyRunValuesPath = resolve(initial.inputDirectory, 'run-values.json')
     await writeFile(legacyRunValuesPath, 'legacy-plaintext-value')
 
-    const resumed = await prepareCodexAgentWorkspace({ ...options, secrets: { 'fixture.accessCode': 'rotated-value' }, resume: true })
+    const resumed = await prepareAgentWorkspace({ ...options, secrets: { 'fixture.accessCode': 'rotated-value' }, resume: true })
 
     expect(JSON.parse(await readFile(resumed.mutationLedgerPath, 'utf8'))).toEqual(ledger)
     expect(JSON.parse(await readFile(resumed.evidenceIndexPath, 'utf8'))).toEqual(evidence)
@@ -316,8 +316,8 @@ describe('Codex agent workspace', () => {
       headed: false,
       browserExecutablePath: '/verified/chromium',
     }
-    await prepareCodexAgentWorkspace(options)
-    const resumed = await prepareCodexAgentWorkspace({
+    await prepareAgentWorkspace(options)
+    const resumed = await prepareAgentWorkspace({
       ...options,
       profile: { ...firstProfile, origins: [...firstProfile.origins, 'https://two.example.test'] },
       resume: true,
@@ -340,7 +340,7 @@ describe('Codex agent workspace', () => {
       policy: { allowWrite: false, allowDestructive: false },
     }
 
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
@@ -388,7 +388,7 @@ describe('Codex agent workspace', () => {
       inputModalities: ['text'], supportsWebsockets: false, contextWindowTokens: 1_024_000, maxOutputTokens: 65_536,
     }
 
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
@@ -450,7 +450,7 @@ describe('Codex agent workspace', () => {
       OMP_API_KEY: 'agent-provider-secret',
     }
 
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
@@ -486,7 +486,7 @@ describe('Codex agent workspace', () => {
       HOME: resolve(directory, 'user-home'),
       PATH: '/usr/bin',
     }
-    const resumed = await prepareCodexAgentWorkspace({
+    const resumed = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,
@@ -509,7 +509,7 @@ describe('Codex agent workspace', () => {
       HOME: ambientHome,
       PATH: '/usr/bin',
     }
-    const preserved = await prepareCodexAgentWorkspace({
+    const preserved = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest(profile.origins),
       profile,

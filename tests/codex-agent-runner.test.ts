@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { buildCodexExecutionEpochs } from '../src/agent/execution-epochs.js'
 import type { AgentTestProgress } from '../src/agent/progress.js'
-import { runCodexTestAgent } from '../src/agent/runner.js'
+import { runAgentTest } from '../src/agent/runner.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 import type { ModelProfile } from '../src/workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
@@ -113,7 +113,7 @@ async function createInterruptedExecution(
   files: Awaited<ReturnType<typeof fixtureFiles>>,
 ): Promise<{ outputDirectory: string; threadGeneration: number }> {
   const outputDirectory = resolve(directory, 'run')
-  const run = await runCodexTestAgent({
+  const run = await runAgentTest({
     outputDirectory, manifest: workflow,
     profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
     secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -158,7 +158,7 @@ describe('adaptive Codex epochs', () => {
     const prompts: string[] = []
     const launches: Array<Record<string, unknown>> = []
     const progress: AgentTestProgress[] = []
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_ALIAS_KEY: 'fixture-key' },
@@ -211,7 +211,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
     let started = 0
-    const interrupted = await runCodexTestAgent({
+    const interrupted = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
@@ -242,7 +242,7 @@ describe('adaptive Codex epochs', () => {
     const firstRecordBefore = await readFile(firstRecordPath, 'utf8')
 
     let resumedThreadId = ''
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
@@ -273,7 +273,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
     const condition = '需要可控制测试设备状态'
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -347,7 +347,7 @@ describe('adaptive Codex epochs', () => {
     let stateObservedByNewThread: Record<string, unknown> | undefined
     let pendingLedgerObserved = false
     let newThreadTurn = 0
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -423,7 +423,7 @@ describe('adaptive Codex epochs', () => {
       baseUrl: 'https://replacement-provider.example.test',
     }
 
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -470,7 +470,7 @@ describe('adaptive Codex epochs', () => {
     await removeSessionBindingFingerprint(interrupted.outputDirectory)
     let startedNew = 0
 
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -505,7 +505,7 @@ describe('adaptive Codex epochs', () => {
     let closed = 0
     let startedNew = 0
 
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -548,7 +548,7 @@ describe('adaptive Codex epochs', () => {
     const prompts: string[] = []
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -597,7 +597,7 @@ describe('adaptive Codex epochs', () => {
     const prompts: string[] = []
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -655,7 +655,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     let startedNew = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -691,7 +691,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test/'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -722,7 +722,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -758,7 +758,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -790,7 +790,7 @@ describe('adaptive Codex epochs', () => {
     const prompts: string[] = []
     let started = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -837,7 +837,7 @@ describe('adaptive Codex epochs', () => {
     let started = 0
     let executionTurns = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -877,7 +877,7 @@ describe('adaptive Codex epochs', () => {
     let started = 0
     const turnsByThread: number[] = []
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -920,7 +920,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -954,7 +954,7 @@ describe('adaptive Codex epochs', () => {
     const outputDirectory = resolve(directory, 'run')
     let finalizationTurns = 0
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -1001,7 +1001,7 @@ describe('adaptive Codex epochs', () => {
     const mismatch = 'This session was recorded with model old-model but is resuming with new-model.'
     let startedNew = 0
 
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -1031,7 +1031,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
     let started = 0
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
@@ -1072,7 +1072,7 @@ describe('adaptive Codex epochs', () => {
     workflow.phases = workflow.phases.slice(0, 1)
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory,
       manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
@@ -1106,7 +1106,7 @@ describe('adaptive Codex epochs', () => {
     workflow.phases = workflow.phases.slice(0, 1)
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -1141,7 +1141,7 @@ describe('adaptive Codex epochs', () => {
     const files = await fixtureFiles(directory)
     const outputDirectory = resolve(directory, 'run')
     let turn = 0
-    const interrupted = await runCodexTestAgent({
+    const interrupted = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
@@ -1161,7 +1161,7 @@ describe('adaptive Codex epochs', () => {
     expect(interrupted.state.activeEpoch).toMatchObject({ id: 'epoch-0001', stage: 'finalizing' })
 
     let finalizationTurns = 0
-    const resumed = await runCodexTestAgent({
+    const resumed = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, resume: true,
@@ -1192,7 +1192,7 @@ describe('adaptive Codex epochs', () => {
     const evidencePath = resolve(outputDirectory, 'agent-workspace', 'evidence', 'session', 'session.md')
     const helperPath = resolve(outputDirectory, 'agent-workspace', 'generated-helper.log')
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
@@ -1232,7 +1232,7 @@ describe('adaptive Codex epochs', () => {
     result.summary = 'fixture-user'
     result.cases[0]!.summary = 'fixture-password'
 
-    const run = await runCodexTestAgent({
+    const run = await runAgentTest({
       outputDirectory: resolve(directory, 'run'), manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: { 'login.username': 'fixture-user', 'login.password': 'fixture-password' },
@@ -1266,7 +1266,7 @@ describe('adaptive Codex epochs', () => {
       environmentContext: '', imagePaths: [], headed: false,
       codexHome: files.sourceHome, codexExecutable: files.codexExecutable,
     }
-    const initial = await runCodexTestAgent(commonOptions, {
+    const initial = await runAgentTest(commonOptions, {
       browserExecutablePath: files.browserPath,
       startThread: () => ({
         id: 'thread-epoch-recovery',
@@ -1306,7 +1306,7 @@ describe('adaptive Codex epochs', () => {
       },
     }))
 
-    const resumed = await runCodexTestAgent({ ...commonOptions, resume: true }, {
+    const resumed = await runAgentTest({ ...commonOptions, resume: true }, {
       browserExecutablePath: files.browserPath,
       startThread: () => { throw new Error('resume recovery must not start an AgentHost') },
       resumeThread: () => { throw new Error('resume recovery must not resume an AgentHost') },
@@ -1350,7 +1350,7 @@ describe('adaptive Codex epochs', () => {
       executionMode: 'single_thread',
     }))
 
-    await expect(runCodexTestAgent({
+    await expect(runAgentTest({
       outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, resume: true,

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { chmod, rename, writeFile } from 'node:fs/promises'
-import { chromium } from '@playwright/test'
-import { createLocator } from '../runtime/locator.js'
-import { secretEnvironmentName } from '../runtime/data.js'
+import { chromium, type Locator, type Page } from '@playwright/test'
+import type { LocatorIR } from '../core/types.js'
+import { secretEnvironmentName } from './intake-secrets.js'
 import type { EnvironmentProfile } from './environment-profile.js'
 
 export interface EnvironmentAuthenticationResult {
@@ -29,6 +29,28 @@ function secret(environment: NodeJS.ProcessEnv, ref: string): string {
   const value = environment[name]
   if (!value) throw new Error(`Missing required auth secret environment variable: ${name}`)
   return value
+}
+
+function createLocator(page: Page, locator: LocatorIR): Locator {
+  switch (locator.strategy) {
+    case 'role':
+      return page.getByRole(locator.value as Parameters<Page['getByRole']>[0], {
+        ...(locator.name ? { name: locator.name } : {}),
+        ...(locator.exact !== undefined ? { exact: locator.exact } : {}),
+      })
+    case 'testId':
+      return page.getByTestId(locator.value)
+    case 'label':
+      return page.getByLabel(locator.value, locator.exact !== undefined ? { exact: locator.exact } : undefined)
+    case 'placeholder':
+      return page.getByPlaceholder(locator.value, locator.exact !== undefined ? { exact: locator.exact } : undefined)
+    case 'text':
+      return page.getByText(locator.value, locator.exact !== undefined ? { exact: locator.exact } : undefined)
+    case 'css':
+      return page.locator(locator.value)
+    case 'xpath':
+      return page.locator(`xpath=${locator.value}`)
+  }
 }
 
 function authenticatedUrl(value: string, login: NonNullable<EnvironmentProfile['auth'][number]['login']>): boolean {
