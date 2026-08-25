@@ -22,7 +22,7 @@ import { AgentTestProgressReporter, type AgentTestProgressSink } from './progres
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
 import { failureModeFor } from './failure-mode.js'
-import { initialAgentTestState as initialCodexTestState, updateAgentTestState as updateCodexTestState, writePrivateJson } from './state.js'
+import { initialAgentTestState, updateAgentTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
   CodexTestAgentState,
@@ -78,17 +78,12 @@ interface CodexTurnUsage {
 }
 
 export interface AgentTestDependencies {
-  /** Legacy injection seam wrapped by an AgentHost for compatibility. */
+  /** Deterministic thread-factory seam for isolated runner tests. */
   startThread?: Parameters<typeof createLegacyCodexAgentHost>[0]['startThread']
   resumeThread?: Parameters<typeof createLegacyCodexAgentHost>[0]['resumeThread']
   agentHost?: AgentHost
   browserExecutablePath?: string
 }
-
-/** Historical Codex-prefixed names remain source-compatible aliases. */
-export type CodexTestAgentOptions = AgentTestOptions
-export type CodexTestAgentRun = AgentTestRun
-export type CodexTestAgentDependencies = AgentTestDependencies
 
 async function appendEvent(
   path: string,
@@ -915,7 +910,7 @@ export async function runAgentTest(
     }
     resumeThreadId = state.threadId
     const { resultPath: _resultPath, outcome: _outcome, error: _error, runInterruption: _runInterruption, ...unfinishedState } = state
-    state = updateCodexTestState(unfinishedState, {
+    state = updateAgentTestState(unfinishedState, {
       status: 'running',
       stage: 'preparing',
       ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
@@ -927,7 +922,7 @@ export async function runAgentTest(
         (error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error },
       )
     }
-    state = initialCodexTestState(options.manifest.workflowId, options.manifest.source.sha256)
+    state = initialAgentTestState(options.manifest.workflowId, options.manifest.source.sha256)
   }
   let mutationLedgerPath: string | undefined
   let environmentRequirementsPath: string | undefined
@@ -961,7 +956,7 @@ export async function runAgentTest(
   }
   const progress = new AgentTestProgressReporter(options.onProgress, options.progressHeartbeatMs)
   progress.setContext({ hostId: host.id })
-  state = updateCodexTestState(state, { agentHost: host.id })
+  state = updateAgentTestState(state, { agentHost: host.id })
   await writePrivateJson(statePath, state)
   const redactionSecrets = secretValues(options.secrets)
   progress.setCaseCatalog(options.manifest.phases, redactionSecrets)
@@ -1087,7 +1082,7 @@ export async function runAgentTest(
             await writePrivateJson(resultPath, result)
             progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 AgentHost：${result.outcome}`)
             const { activeEpoch: _recoveredEpoch, ...completedState } = state
-            state = updateCodexTestState(completedState, {
+            state = updateAgentTestState(completedState, {
               status: 'completed',
               stage: 'completed',
               outcome: result.outcome,
@@ -1137,7 +1132,7 @@ export async function runAgentTest(
       ...buildInfo,
       selectedAt: new Date().toISOString(),
     })
-    state = updateCodexTestState(state, { agentHost: host.id })
+    state = updateAgentTestState(state, { agentHost: host.id })
     await writePrivateJson(statePath, state)
     progress.report('stage', `隔离测试工作区已准备，正在启动 ${host.displayName} 测试线程`)
     const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
@@ -1168,7 +1163,7 @@ export async function runAgentTest(
         ...remaining,
       ].map((epoch, index, items) => ({ ...epoch, index, total: items.length }))
     }
-    state = updateCodexTestState(state, {
+    state = updateAgentTestState(state, {
       stage: 'executing',
       completedCaseIds: [...completedCaseIds],
       epochCount: epochs.length,
@@ -1222,14 +1217,14 @@ export async function runAgentTest(
       const epochUsage: CodexTurnUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }
       const persistThreadId = async (id: string): Promise<void> => {
         threadId = id
-        state = updateCodexTestState(state, {
+        state = updateAgentTestState(state, {
           threadId: id,
           ...(state.activeEpoch ? { activeEpoch: { ...state.activeEpoch, threadId: id } } : {}),
         })
         await writePrivateJson(statePath, state)
       }
       const stateForEpoch = epochThreadId ? state : stateWithoutPreviousThread
-      state = updateCodexTestState(stateForEpoch, {
+      state = updateAgentTestState(stateForEpoch, {
         stage: 'executing',
         ...(!epochThreadId ? {
           threadGeneration: state.threadGeneration + 1,
@@ -1252,7 +1247,7 @@ export async function runAgentTest(
         epochUsage.inputTokens = usage.inputTokens
         epochUsage.cachedInputTokens = usage.cachedInputTokens
         epochUsage.outputTokens = usage.outputTokens
-        state = updateCodexTestState(state, { lastUsage: { ...epochUsage } })
+        state = updateAgentTestState(state, { lastUsage: { ...epochUsage } })
         await writePrivateJson(statePath, state)
       }
       const invalidatePhysicalSession = async (): Promise<void> => {
@@ -1272,7 +1267,7 @@ export async function runAgentTest(
               return epochWithoutThread
             })()
           : undefined
-        state = updateCodexTestState(stateWithoutThread, nextEpoch ? { activeEpoch: nextEpoch } : {})
+        state = updateAgentTestState(stateWithoutThread, nextEpoch ? { activeEpoch: nextEpoch } : {})
         threadId = undefined
         await writePrivateJson(statePath, state)
       }
@@ -1340,7 +1335,7 @@ export async function runAgentTest(
       }
       const confirmSessionBinding = async (): Promise<void> => {
         if (state.sessionBindingFingerprint === currentSessionBindingFingerprint) return
-        state = updateCodexTestState(state, { sessionBindingFingerprint: currentSessionBindingFingerprint })
+        state = updateAgentTestState(state, { sessionBindingFingerprint: currentSessionBindingFingerprint })
         await writePrivateJson(statePath, state)
       }
       const startReplacementSession = async (message: string): Promise<void> => {
@@ -1352,7 +1347,7 @@ export async function runAgentTest(
         if (!state.activeEpoch) throw new Error('Cannot rotate an AgentHost session without an active execution epoch')
         const { threadId: _oldThreadId, ...stateWithoutThread } = state
         const { threadId: _oldEpochThreadId, ...activeEpochWithoutThread } = state.activeEpoch
-        state = updateCodexTestState(stateWithoutThread, {
+        state = updateAgentTestState(stateWithoutThread, {
           threadGeneration: state.threadGeneration + 1,
           sessionBindingFingerprint: currentSessionBindingFingerprint,
           activeEpoch: {
@@ -1442,7 +1437,7 @@ export async function runAgentTest(
           if (!isContextOrOutputCapacityError(error) && !isTransientProviderRateLimitError(error)) throw error
           const deliveryExists = await access(deliveryPath).then(() => true, () => false)
           if (deliveryExists) {
-            state = updateCodexTestState(state, {
+            state = updateAgentTestState(state, {
               stage: 'finalizing',
               activeEpoch: { ...state.activeEpoch!, stage: 'finalizing' },
             })
@@ -1459,7 +1454,7 @@ export async function runAgentTest(
               epochs = epochs.map((item, index, items) => ({ ...item, index, total: items.length }))
               replacements.forEach((item) => freshlySplitEpochIds.add(item.id))
               const nextEpoch = epochs[epochIndex]!
-              state = updateCodexTestState(state, {
+              state = updateAgentTestState(state, {
                 stage: 'executing',
                 epochCount: epochs.length,
                 activeEpoch: {
@@ -1492,7 +1487,7 @@ export async function runAgentTest(
             )
           }
         }
-        state = updateCodexTestState(state, {
+        state = updateAgentTestState(state, {
           stage: 'finalizing',
           activeEpoch: { ...state.activeEpoch!, stage: 'finalizing', ...(thread?.id ? { threadId: thread.id } : {}) },
           ...(thread?.id ? { threadId: thread.id } : {}),
@@ -1630,7 +1625,7 @@ export async function runAgentTest(
         const result = redactAgentJsonArtifact(enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger), redactionSecrets)
         await writePrivateJson(resultPath, result)
         await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
-        state = updateCodexTestState(state, {
+        state = updateAgentTestState(state, {
           status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
           ...(runInterruption ? { runInterruption } : {}),
         })
@@ -1643,7 +1638,7 @@ export async function runAgentTest(
       await writeCaseResultRecords(resultDirectory, options.manifest, epoch.id, epochResult.cases)
       for (const item of epochResult.cases) completedCaseIds.add(item.caseId)
       const { activeEpoch: _activeEpoch, ...stateWithoutActiveEpoch } = state
-      state = updateCodexTestState(stateWithoutActiveEpoch, {
+      state = updateAgentTestState(stateWithoutActiveEpoch, {
         stage: 'executing',
         completedCaseIds: [...completedCaseIds],
         lastUsage: { ...epochUsage },
@@ -1657,7 +1652,7 @@ export async function runAgentTest(
         const checkpointPath = resolve(checkpointDirectory, `${epoch.id}.json`)
         const previousCheckpointPath = state.checkpointPath
         await mkdir(checkpointDirectory, { recursive: true, mode: 0o700 })
-        state = updateCodexTestState(state, {
+        state = updateAgentTestState(state, {
           stage: 'executing',
           checkpointPath,
           activeEpoch: {
@@ -1680,7 +1675,7 @@ export async function runAgentTest(
           progress.report('warning', 'checkpoint 线程仍达到模型容量；case 结果已经落盘，将跳过本次工作记忆并继续下一 epoch')
         }
         const { activeEpoch: _checkpointedEpoch, checkpointPath: _attemptedCheckpointPath, ...checkpointedState } = state
-        state = updateCodexTestState(checkpointedState, {
+        state = updateAgentTestState(checkpointedState, {
           stage: 'executing',
           ...(checkpointSaved ? { checkpointPath } : previousCheckpointPath ? { checkpointPath: previousCheckpointPath } : {}),
         })
@@ -1718,7 +1713,7 @@ export async function runAgentTest(
     result = redactAgentJsonArtifact(result, redactionSecrets)
     await writePrivateJson(resultPath, result)
     await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
-    state = updateCodexTestState(state, {
+    state = updateAgentTestState(state, {
       status: 'completed',
       stage: 'completed',
       outcome: result.outcome,
@@ -1764,7 +1759,7 @@ export async function runAgentTest(
       )
       await writePrivateJson(resultPath, result)
       const interruption = infrastructureBlockDetails(message)
-      state = updateCodexTestState(state, {
+      state = updateAgentTestState(state, {
         status: 'completed', stage: 'completed', outcome: 'blocked', resultPath, finishedAt: new Date().toISOString(),
         runInterruption: {
           code: interruption.code,
@@ -1779,7 +1774,7 @@ export async function runAgentTest(
       return { state, result }
     }
     progress.report('warning', '框架执行发生未恢复错误，正在保存失败状态和诊断信息')
-    state = updateCodexTestState(state, {
+    state = updateAgentTestState(state, {
       status: 'failed', stage: 'failed', error: message,
       ...(activeThread?.id ? { threadId: activeThread.id } : {}),
     })
@@ -1789,15 +1784,4 @@ export async function runAgentTest(
     await activeThread?.close?.()
     progress.close()
   }
-}
-
-/**
- * Compatibility name for integrations that predate the AgentHost boundary.
- * New callers should use runAgentTest and select a host explicitly.
- */
-export async function runCodexTestAgent(
-  options: AgentTestOptions,
-  dependencies: AgentTestDependencies = {},
-): Promise<AgentTestRun> {
-  return runAgentTest(options, dependencies)
 }

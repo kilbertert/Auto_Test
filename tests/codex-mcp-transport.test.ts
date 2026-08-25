@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CodexAgentHost } from '../src/agent/codex-host.js'
-import { prepareCodexAgentWorkspace } from '../src/agent/workspace.js'
+import { prepareAgentWorkspace } from '../src/agent/workspace.js'
 import type { AgentEvent } from '../src/agent/host.js'
 import { toAgentModelProviderDescriptor, type ModelProfile } from '../src/workflow/model-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
@@ -96,7 +96,7 @@ describe('Codex managed-provider MCP transport', () => {
       FIXTURE_PROVIDER_KEY: 'fixture-key',
     }
     const workflow = manifest()
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: workflow,
       profile: {

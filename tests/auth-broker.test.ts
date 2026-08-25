@@ -3,7 +3,7 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { secretEnvironmentName } from '../src/runtime/data.js'
+import { secretEnvironmentName } from '../src/workflow/intake-secrets.js'
 import { ensureEnvironmentAuthentication } from '../src/workflow/auth-broker.js'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 

@@ -492,7 +492,3 @@ export async function prepareAgentWorkspace(options: {
     mcpEnvironment,
   }
 }
-
-/** Historical Codex names remain source-compatible aliases. */
-export type CodexAgentWorkspace = AgentWorkspace
-export const prepareCodexAgentWorkspace = prepareAgentWorkspace

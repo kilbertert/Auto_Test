@@ -33,7 +33,3 @@ export function updateAgentTestState(
 ): AgentTestState {
   return { ...state, ...patch, updatedAt: new Date().toISOString() }
 }
-
-/** Historical Codex names remain source-compatible aliases. */
-export const initialCodexTestState = initialAgentTestState
-export const updateCodexTestState = updateAgentTestState
