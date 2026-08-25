@@ -9,6 +9,9 @@ credentials never belong in the repository:
 # GPT via Psydo Responses API
 AFK_PROFILE=psydo pnpm afk -- <issue-number>
 
+# DeepSeek V4 Pro via Alibaba Cloud Model Studio Responses API
+AFK_PROFILE=aliyun-deepseek pnpm afk -- <issue-number>
+
 # GLM via the configured Ark Claude-compatible endpoint
 AFK_PROFILE=claude-ark pnpm afk -- <issue-number>
 
@@ -22,11 +25,14 @@ default. Override the model only when the selected provider supports it:
 ```bash
 AFK_PROFILE=psydo AFK_MODEL=gpt-5.6-sol pnpm afk -- <issue-number>
 AFK_PROFILE=claude-ark AFK_MODEL=glm-latest pnpm afk -- <issue-number>
+AFK_PROFILE=aliyun-deepseek AFK_MODEL=deepseek-v4-pro-0813 pnpm afk -- <issue-number>
 ```
 
 GitHub Actions reads the repository variable `AFK_PROFILE` and defaults to
-`psydo`. Set it to `claude-ark` to move PRD runs to GLM, or back to `psydo` for
-GPT; workflow files do not need editing.
+`psydo`. Set it to `claude-ark`, `psydo`, or `aliyun-deepseek` to select the
+provider; workflow files do not need editing. The Alibaba credential and
+endpoint are read from the server-local `AFK_ALIYUN_CSV` path and are never
+committed.
 
 The runner creates an isolated Docker worktree on `agent/issue-<number>` (or
 the `AFK_BRANCH` override), runs at most three iterations, and leaves delivery
