@@ -1,4 +1,6 @@
-FROM node:22-bookworm
+# node 24 to match package.json engines (>=24); bookworm keeps the same libc
+# base as the previous image so the existing toolchain stays compatible.
+FROM node:24-bookworm
 
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
@@ -15,8 +17,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
+# Playwright chromium + its OS deps, baked in so the full test suite runs in
+# the sandbox (host has these cached; the container must too, or AFK reports
+# a false BLOCKED when Chromium cannot launch). Keep the version in sync with
+# @playwright/test in package.json (^1.62.0). Browsers live outside the agent
+# home so the UID/GID rename below cannot orphan them.
+RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
+  && rm -rf /var/lib/apt/lists/*
+
 RUN groupmod -o -g ${AGENT_GID} node \
-  && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node
+  && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node \
+  && mkdir -p /opt/ms-playwright && chown -R ${AGENT_UID}:${AGENT_GID} /opt/ms-playwright
 
 RUN mkdir -p /home/agent/.codex && chown ${AGENT_UID}:${AGENT_GID} /home/agent/.codex
 
@@ -35,5 +46,6 @@ RUN npm install --global @anthropic-ai/claude-code \
   && npm cache clean --force
 
 USER ${AGENT_UID}:${AGENT_GID}
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 WORKDIR /home/agent
 ENTRYPOINT ["sleep", "infinity"]
