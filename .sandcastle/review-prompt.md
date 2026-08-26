@@ -8,6 +8,8 @@ and maintainability while preserving exact functionality.
 
 # CONTEXT
 
+Read `CONTEXT.md` (domain language) and apply `.sandcastle/CODING_STANDARDS.md`.
+
 <issue>
 
 !`gh issue view {{ISSUE_NUMBER}}`

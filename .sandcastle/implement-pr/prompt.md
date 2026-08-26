@@ -6,7 +6,7 @@ Unlike a review, your job is **not** to compare the code against a spec or codin
 
 # CONTEXT
 
-Read `docs/` and any relevant ADRs under `docs/adr/` if you need domain context for a comment. Don't go deeper than the comments demand.
+Read `CONTEXT.md` and `docs/` and any relevant ADRs under `docs/adr/` if you need domain context for a comment. Don't go deeper than the comments demand.
 
 <linked-issue>
 

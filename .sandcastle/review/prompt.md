@@ -6,7 +6,7 @@ You are an expert code reviewer. Your job is **not just to comment** — activel
 
 # CONTEXT
 
-Read `docs/`, `.sandcastle/CODING_STANDARDS.md`, and any relevant ADRs under `docs/adr/` before starting.
+Read `CONTEXT.md` and `docs/`, `.sandcastle/CODING_STANDARDS.md`, and any relevant ADRs under `docs/adr/` before starting.
 
 <linked-issue>
 
