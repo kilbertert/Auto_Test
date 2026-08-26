@@ -142,6 +142,7 @@ jobs:
             git remote add origin "https://github.com/${GH_REPO}.git"
             git fetch --prune origin
             git checkout -B main origin/main
+            git branch --list 'agent/*' 'sandcastle/*' | xargs -r git branch -D 2>/dev/null || true
           else
             git clone "https://github.com/${GH_REPO}.git" .
             git checkout main
