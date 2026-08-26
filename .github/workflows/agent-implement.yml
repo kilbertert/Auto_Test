@@ -102,11 +102,11 @@ jobs:
           gh auth setup-git
           if [ -d .git ]; then
             git remote remove origin 2>/dev/null || true
-            git remote add origin "https://github.com/\${GH_REPO}.git"
+            git remote add origin "https://github.com/${GH_REPO}.git"
             git fetch --depth 1 origin main
             git checkout -B main FETCH_HEAD
           else
-            git clone --branch main --depth 1 "https://github.com/\${GH_REPO}.git" .
+            git clone --branch main --depth 1 "https://github.com/${GH_REPO}.git" .
           fi
 
       - name: Compute branch name
