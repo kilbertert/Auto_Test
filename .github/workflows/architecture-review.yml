@@ -62,6 +62,7 @@ jobs:
             git remote add origin "https://github.com/${GH_REPO}.git"
             git fetch --depth 1 origin main
             git checkout -B main FETCH_HEAD
+            git branch --list 'agent/*' 'sandcastle/*' | xargs -r git branch -D 2>/dev/null || true
           else
             git clone --branch main --depth 1 "https://github.com/${GH_REPO}.git" .
           fi
