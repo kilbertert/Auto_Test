@@ -99,7 +99,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: pnpm
+          cache: npm
 
       - name: Install dependencies
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
