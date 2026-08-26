@@ -8,7 +8,7 @@ parent PRD, pull that in too.
 
 # CONTEXT
 
-Read `docs/`, `.sandcastle/CODING_STANDARDS.md`, and any relevant ADRs under
+Read `CONTEXT.md` and `docs/`, `.sandcastle/CODING_STANDARDS.md`, and any relevant ADRs under
 `docs/adr/` before starting. Explore the repo and fill your context with the parts
 relevant to this issue — especially test files that touch the area
 you'll change.

@@ -20,7 +20,7 @@ schema — is documented in the project skill
 
 # CONTEXT
 
-Read `docs/` and any relevant ADRs under `docs/adr/` before proposing
+Read `CONTEXT.md` and `docs/` and any relevant ADRs under `docs/adr/` before proposing
 anything. Treat ADRs as binding — do not propose changes that contradict a
 recorded decision.
 
