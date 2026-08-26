@@ -42,9 +42,9 @@ jobs:
           gh auth setup-git
           if [ -d .git ]; then
             git remote remove origin 2>/dev/null || true
-            git remote add origin "https://github.com/\${GH_REPO}.git"
+            git remote add origin "https://github.com/${GH_REPO}.git"
           else
-            git clone "https://github.com/\${GH_REPO}.git" .
+            git clone "https://github.com/${GH_REPO}.git" .
           fi
           git fetch --depth 1 origin "${{ github.event.pull_request.head.sha }}"
           git checkout -B "$BRANCH" FETCH_HEAD
