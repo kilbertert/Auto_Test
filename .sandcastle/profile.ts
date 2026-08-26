@@ -82,6 +82,7 @@ export function claudeProfile(
         // does not re-inject agent env into an already-started container, and
         // the Dockerfile claude wrapper dispatches on it.
         ...(profile ? { AFK_PROFILE: profile } : {}),
+        ...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {}),
         ...(usePsydo ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
         ...(aliyun ? { DASHSCOPE_API_KEY: aliyun.apiKey } : {}),
       },
