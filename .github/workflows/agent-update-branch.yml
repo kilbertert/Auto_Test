@@ -36,7 +36,6 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
-      - name: Checkout PR branch
       - name: Checkout PR branch with runner HOME and managed Git hooks
         run: |
           set -euo pipefail
@@ -52,8 +51,6 @@ jobs:
 
       - name: Ensure branch is checked out by name
         run: git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
-
-      - name: Setup pnpm
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4

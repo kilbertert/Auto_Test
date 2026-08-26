@@ -52,7 +52,6 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Checkout main
       - name: Checkout main with runner HOME and managed Git hooks
         run: |
           set -euo pipefail
