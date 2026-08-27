@@ -20,6 +20,23 @@ import { pathToFileURL } from "node:url";
 import { run, createSandbox, type RunResult } from "@ai-hero/sandcastle";
 import { claudeProfile } from "./profile.js";
 
+// Wall-clock guardrail: some model providers stall mid-stream and never yield.
+// Cap each agent run so a hung session aborts and is treated as an error the
+// loop surfaces (BLOCKED) instead of hanging the whole planner forever.
+// Tune per step via AFK_PLAN_TIMEOUT / AFK_RUN_TIMEOUT (seconds; 0 = no cap).
+async function withTimeout<T>(ms: number, label: string, fn: () => Promise<T>): Promise<T> {
+  if (!ms) return fn();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms / 1000}s wall-clock timeout (model stalled)`)), ms);
+  });
+  try {
+    return await Promise.race([fn(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const MAX_ITERATIONS = Number(process.env.AFK_RALPH_ITERATIONS ?? 10);
 const MAX_PARALLEL = Number(process.env.AFK_RALPH_PARALLEL ?? 4);
 const INSTALL_CMD = process.env.AFK_INSTALL_CMD ?? "npm ci";
@@ -121,31 +138,39 @@ async function main(): Promise<void> {
             },
           });
           try {
-            const result = await sandbox.run({
-              ...profileConfig(),
-              name: `Implementer #${issue.number}`,
-              promptFile: ".sandcastle/implement-prompt.md",
-              promptArgs: {
-                ISSUE_NUMBER: String(issue.number),
-                ISSUE_TITLE: issue.title,
-                BRANCH: issue.branch,
-              },
-              maxIterations: 3,
-              completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
-            });
-
-            if (result.commits.length > 0) {
-              await sandbox.run({
+            const result = await withTimeout(
+              Number(process.env.AFK_RUN_TIMEOUT ?? 3600) * 1000,
+              `Implement #${issue.number}`,
+              () => sandbox.run({
                 ...profileConfig(),
-                name: `Reviewer #${issue.number}`,
-                promptFile: ".sandcastle/review-prompt.md",
+                name: `Implementer #${issue.number}`,
+                promptFile: ".sandcastle/implement-prompt.md",
                 promptArgs: {
                   ISSUE_NUMBER: String(issue.number),
                   ISSUE_TITLE: issue.title,
                   BRANCH: issue.branch,
                 },
+                maxIterations: 3,
                 completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
-              });
+              }),
+            );
+
+            if (result.commits.length > 0) {
+              const reviewResult = await withTimeout(
+                Number(process.env.AFK_RUN_TIMEOUT ?? 3600) * 1000,
+                `Review #${issue.number}`,
+                () => sandbox.run({
+                  ...profileConfig(),
+                  name: `Reviewer #${issue.number}`,
+                  promptFile: ".sandcastle/review-prompt.md",
+                  promptArgs: {
+                    ISSUE_NUMBER: String(issue.number),
+                    ISSUE_TITLE: issue.title,
+                    BRANCH: issue.branch,
+                  },
+                  completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
+                }),
+              );
             }
             return result;
           } finally {
@@ -185,17 +210,21 @@ async function main(): Promise<void> {
 
     // Phase 3: Merge — on main, in-container (user-authorized: push main + close issues)
     ensureOnMain();
-    await run({
-      ...profileConfig(),
-      name: "Merger",
-      maxIterations: 10,
-      promptFile: ".sandcastle/merge-prompt.md",
-      promptArgs: {
-        BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-        ISSUES: completed.map((entry) => `- #${entry.issue.number}: ${entry.issue.title}`).join("\n"),
-      },
-      completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
-    });
+    await withTimeout(
+      Number(process.env.AFK_MERGE_TIMEOUT ?? 3600) * 1000,
+      "Merge",
+      () => run({
+        ...profileConfig(),
+        name: "Merger",
+        maxIterations: 10,
+        promptFile: ".sandcastle/merge-prompt.md",
+        promptArgs: {
+          BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
+          ISSUES: completed.map((entry) => `- #${entry.issue.number}: ${entry.issue.title}`).join("\n"),
+        },
+        completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
+      }),
+    );
 
     console.log("\nBranches merged.");
   }
