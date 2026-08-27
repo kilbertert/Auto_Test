@@ -42,7 +42,11 @@ Here are all the issues:
 
 {{ISSUES}}
 
-Use `gh issue close <number> --comment "..."` for each.
+For each issue you close, also strip its queue label so a CLOSED issue never
+lingers in the planner's `ready-for-agent` queue (GitHub keeps labels on close):
+`gh issue close <number> --comment "..."` then
+`gh issue edit <number> --remove-label ready-for-agent`. If the label removal
+fails (network / already removed), ignore and continue.
 
 Once you've merged, verified, pushed, and closed everything you can, output
 `<promise>COMPLETE</promise>`. If a blocker needs a human decision, output
