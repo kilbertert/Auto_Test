@@ -251,7 +251,7 @@ describe('Codex agent workspace', () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-replay-legacy-session-'))
     directories.push(directory)
     const origin = 'https://tasks.example.test'
-    const workspace = await prepareCodexAgentWorkspace({
+    const workspace = await prepareAgentWorkspace({
       outputDirectory: resolve(directory, 'run'),
       manifest: manifest([origin]),
       profile: { id: 'fixture', origins: [origin], auth: [], policy: { allowWrite: false, allowDestructive: false } },

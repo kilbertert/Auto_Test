@@ -496,9 +496,6 @@ describe('adaptive Codex epochs', () => {
 
   it('replaces a capacity-exhausted physical session once and continues the same logical run', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-quota-'))
-
-  it('rotates a resumed physical session once after a provider rate-limit termination', async () => {
-    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rate-limit-'))
     directories.push(directory)
     const workflow = manifest()
     workflow.phases = workflow.phases.slice(0, 1)
@@ -509,10 +506,6 @@ describe('adaptive Codex epochs', () => {
     let startedNew = 0
 
     const resumed = await runAgentTest({
-
-    let startedNew = 0
-
-    const resumed = await runCodexTestAgent({
       outputDirectory: interrupted.outputDirectory, manifest: workflow,
       profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
       secrets: {}, environmentContext: '', imagePaths: [], headed: false,
@@ -527,8 +520,6 @@ describe('adaptive Codex epochs', () => {
           'context_length_exceeded: maximum context length exceeded',
           threadId,
         ),
-
-        runStreamed: async () => failedEventStream('429 ModelAccountTpmRateLimitExceeded', threadId),
       }),
       startThread: () => {
         startedNew += 1
@@ -537,11 +528,6 @@ describe('adaptive Codex epochs', () => {
           runStreamed: async (_input, options) => options?.outputSchema
             ? eventStream(resultFor(workflow, ['case-one']), 'thread-after-capacity')
             : eventStream('recovered after provider capacity', 'thread-after-capacity'),
-
-          id: 'thread-rate-limit-replacement',
-          runStreamed: async (_input, options) => options?.outputSchema
-            ? eventStream(resultFor(workflow, ['case-one']), 'thread-rate-limit-replacement')
-            : eventStream('Recovery complete.', 'thread-rate-limit-replacement'),
         }
       },
     })
@@ -550,6 +536,45 @@ describe('adaptive Codex epochs', () => {
     expect(startedNew).toBe(1)
     expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
     expect(resumed.state.threadId).toBe('thread-after-capacity')
+    expect(resumed.result?.outcome).toBe('passed')
+  })
+
+  it('rotates a resumed physical session once after a provider rate-limit termination', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rate-limit-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const interrupted = await createInterruptedExecution(directory, workflow, files)
+    await removeSessionBindingFingerprint(interrupted.outputDirectory)
+    let startedNew = 0
+
+    const resumed = await runAgentTest({
+      outputDirectory: interrupted.outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: true, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, resume: true,
+    }, {
+      browserExecutablePath: files.browserPath,
+      resumeThread: ({ threadId }) => ({
+        id: threadId,
+        runStreamed: async () => failedEventStream('429 ModelAccountTpmRateLimitExceeded', threadId),
+      }),
+      startThread: () => {
+        startedNew += 1
+        return {
+          id: 'thread-rate-limit-replacement',
+          runStreamed: async (_input, options) => options?.outputSchema
+            ? eventStream(resultFor(workflow, ['case-one']), 'thread-rate-limit-replacement')
+            : eventStream('Recovery complete.', 'thread-rate-limit-replacement'),
+        }
+      },
+    })
+
+    expect(startedNew).toBe(1)
+    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
+    expect(resumed.state.threadId).toBe('thread-rate-limit-replacement')
     expect(resumed.result?.outcome).toBe('passed')
   })
 
@@ -1002,13 +1027,6 @@ describe('adaptive Codex epochs', () => {
     expect(finalizationTurns).toBe(0)
     expect(run.result?.outcome).toBe('blocked')
     expect(run.result?.cases[0]).toMatchObject({ caseId: 'case-one', failureSource: 'agent_execution' })
-  })
-
-
-    expect(startedNew).toBe(1)
-    expect(resumed.state.threadGeneration).toBe(interrupted.threadGeneration + 1)
-    expect(resumed.state.threadId).toBe('thread-rate-limit-replacement')
-    expect(resumed.result?.outcome).toBe('passed')
   })
 
   it('attempts at most one replacement when the new physical session is also incompatible', async () => {
