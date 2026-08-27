@@ -45,6 +45,12 @@ function ensureAliyunSettings(baseUrl: string): void {
     'wire_api = "responses"',
     'env_key = "DASHSCOPE_API_KEY"',
     "requires_openai_auth = false",
+    // Model-stability guardrail: bound slow/hung upstream responses so a
+    // stalled codex request fails fast instead of hanging the whole session.
+    // request_timeout (s) caps a single upstream request; request_max_retries
+    // limits re-attempts. Tune via AFK_REQUEST_TIMEOUT / AFK_REQUEST_RETRIES.
+    `request_timeout = ${process.env.AFK_REQUEST_TIMEOUT ?? 120}`,
+    `request_max_retries = ${process.env.AFK_REQUEST_RETRIES ?? 2}`,
     "",
   ].join("\n");
   mkdirSync(dirname(aliyunSettings), { recursive: true, mode: 0o700 });
