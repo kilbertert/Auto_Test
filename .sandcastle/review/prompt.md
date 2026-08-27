@@ -40,43 +40,54 @@ The following PR comments have been fetched by the workflow. They are tagged by 
 
 # REVIEW PROCESS
 
-## 1. Analyse with the `code-review` skill
+## 1. Read the diff and look for anything dodgy
 
-Use the **`code-review` skill** (installed globally at `~/.claude/skills/code-review`) to produce the review. It analyses the diff along two axes — **Standards** and **Spec** — using parallel sub-agents. Its findings are the **single source of truth** for what's wrong with this branch: act only on what it reports, not on a separate ad-hoc pass of your own.
+Read the diff carefully. For anything that looks suspicious — fragile logic,
+unchecked assumptions, tricky conditions, implicit type coercions, missing
+guards — write a test that exercises it. Try to actually break it. If you can
+break it, fix it.
 
-Invoke it with everything it needs, so it does **not** run its own discovery and does **not** prompt or pause:
+## 2. Stress-test edge cases
 
-- **Fixed point:** `main`. The diff to review is `git diff main...HEAD`. Do not ask for a fixed point — it is `main`.
-- **Spec:** issue #{{ISSUE_NUMBER}} — already fetched above in `<linked-issue>`. Pass this as the spec. Do **not** look for `docs/agents/issue-tracker.md` and do **not** run `/setup-matt-pocock-skills`; the spec is provided. If the linked issue is a **PRD** (it has sub-issues), pull them with `gh api repos/$GH_REPO/issues/{{ISSUE_NUMBER}}/sub_issues` and treat each closed sub-issue as a sub-requirement; code for an _open_ sub-issue is a scope violation.
-- **Standards:** `.sandcastle/CODING_STANDARDS.md` is this repo's documented standard — feed it as the standards source. The skill's built-in smell baseline applies on top, but a documented repo standard always wins.
+Go beyond the happy path. For every changed code path, think about what inputs
+or states could cause problems: empty arrays, empty strings, zero, negative
+numbers, missing optional fields, null/undefined, rapid repeated calls, races,
+off-by-one, regressions in adjacent functionality. Write tests for anything not
+already covered.
 
-The skill is read-only and produces a report; it does not edit code. That report — its Standards findings and its Spec findings — is your worklist for the steps below.
+## 3. Analyze for code quality improvements
 
-## 2. Act on the skill's findings
+Look for opportunities to reduce unnecessary complexity and nesting, eliminate
+redundant code and abstractions, improve readability through clear names,
+consolidate related logic, avoid nested ternaries (prefer if/else or switch),
+and choose clarity over brevity.
 
-Work through the skill's findings and resolve each one on this branch:
+## 4. Maintain balance
 
-- For any **correctness/robustness** finding, write a test that exercises it and try to actually break it. If you can break it, fix it. Cover the edge cases the skill flagged (empty/zero/negative inputs, missing optional fields, null/undefined, off-by-one, races, regressions in adjacent code).
-- For any **quality/standards** finding, improve the code: reduce nesting, eliminate redundancy, improve names, consolidate related logic, drop comments that restate obvious code, avoid nested ternaries (prefer if/else or switch), choose clarity over brevity. Apply `.sandcastle/CODING_STANDARDS.md`.
-- For any **spec** finding (missing coverage, scope creep, misinterpretation), do **not** silently "fix" missing spec coverage by adding code yourself — call it out in the `summary` and (where line-anchored) the inline comments for the human reviewer to decide.
+Avoid over-simplification that reduces clarity, creates overly clever
+solutions, combines too many concerns, or removes helpful abstractions.
 
-**Preserve functionality.** When improving code, never change what it does — only how it does it. All original features, outputs, and behaviours must remain intact.
+## 5. Apply project standards
 
-# RESPONDING TO HUMAN COMMENTS
+Follow the project's `.sandcastle/CODING_STANDARDS.md`.
 
-For each unresolved `review_thread` and each `issue_comment` directed at the code, choose one:
+## 6. Preserve functionality
 
-- **Address** — make a code change in your commit, then reply in-thread (or with an issue comment) explaining what you did. Use the comment's `commentId` for in-thread replies.
-- **Decline** — don't change the code, but reply explaining your reasoning. Use Decline when you have a substantive disagreement (the suggestion would break something, conflicts with project standards, is out of scope).
-- **Defer** — do nothing, no reply. Only valid when the comment isn't a code-review request (jokes, off-topic banter, stale comments about already-fixed code, side conversations between humans).
-
-Default to Address. Decline when you have a real reason. Defer only when a reply would be noise.
+Never change what the code does — only how it does it. All original features,
+outputs, and behaviours must remain intact.
 
 # EXECUTION
 
 1. Run `npm run check` — confirm the current state passes.
-2. Make improvements + write any new edge-case tests. Stage and commit them as a **single squashed commit** on this branch with a message starting with `refactor: review improvements`.
-3. Run `npm run check` again. If either fails, fix it before continuing — do not leave the branch broken.
-4. Decide which inline review comments to leave (line-anchored notes about your changes or remaining findings) and which thread replies to make.
+2. Attempt to reproduce the original bug with new test cases — if you can, fix it.
+3. Write edge-case tests that stress the implementation.
+4. Make any code quality improvements directly on this branch.
+5. Run `npm run check` again to ensure nothing is broken.
+6. **If you changed anything**, commit with a Conventional Commit message
+   (`refactor:`, `test:`, `fix:`). **If the code is already clean,
+   well-tested, and handles edge cases properly, do nothing — make no commit.**
+
+Once complete, output `<promise>COMPLETE</promise>`. If a blocker needs a human
+decision, output `<promise>BLOCKED</promise>`.
 
 If the code is already clean and there are no human comments to address, make no commits.
