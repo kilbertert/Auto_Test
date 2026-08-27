@@ -54,3 +54,7 @@ evals/
 .DS_Store
 .idea/
 .vscode/
+
+# pnpm lockfiles (repo uses npm)
+pnpm-lock.yaml
+pnpm-workspace.yaml
