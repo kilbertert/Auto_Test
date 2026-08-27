@@ -1,0 +1,25 @@
+name: Issue label cleanup
+
+# GitHub keeps labels on CLOSED issues (close doesn't auto-strip). Without
+# cleanup, `ready-for-agent`/`agent:*` linger on closed issues and pollute the
+# planner queue + dashboards. Strip them on close so a CLOSED issue never
+# carries a work-queue label.
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  strip-queue-labels:
+    runs-on: self-hosted
+    timeout-minutes: 3
+    permissions:
+      issues: write
+    steps:
+      - name: Remove queue/agent labels on closed issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          for label in "ready-for-agent" "agent:implement" "agent:in-progress" "agent:blocked" "agent:to-issues"; do
+            gh issue edit "$ISSUE_NUMBER" --remove-label "$label" || true
+          done
