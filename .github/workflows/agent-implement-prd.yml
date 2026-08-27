@@ -1,12 +1,19 @@
 name: Agent Implement PRD
 
 on:
-  issues:
-    types: [labeled]
+  # Plan A: full decoupling — no auto-claim on label. The PRD implement is
+  # dispatch-only (manual or driven by a runner), removing the label-trigger.
+  workflow_dispatch:
+    inputs:
+      prd_number:
+        description: Parent PRD issue number to implement
+        required: true
+      prd_title:
+        description: PRD title (optional)
+        required: false
 
 jobs:
   implement-prd:
-    if: github.event.label.name == 'agent:implement'
     runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
@@ -18,8 +25,8 @@ jobs:
       issues: write
 
     env:
-      PRD_NUMBER: ${{ github.event.issue.number }}
-      PRD_TITLE: ${{ github.event.issue.title }}
+      PRD_NUMBER: ${{ inputs.prd_number || github.event.issue.number }}
+      PRD_TITLE: ${{ inputs.prd_title || github.event.issue.title }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
