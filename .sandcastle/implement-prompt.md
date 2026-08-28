@@ -29,7 +29,8 @@ Use red-green-refactor where applicable:
 # FEEDBACK LOOPS
 
 Before committing, run `npm run check` (typecheck + tests + build) and
-`git diff --check` to ensure everything passes. Do not weaken or skip checks.
+`git diff --check` to ensure everything passes. Then run
+`node .sandcastle/policy-check.mjs commit`. Do not weaken or skip checks.
 
 # COMMIT
 

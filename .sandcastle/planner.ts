@@ -81,15 +81,8 @@ function openPrIssueNumbers(): Set<number> {
 }
 
 function profileConfig(includeGitHub = true) {
-  let token: string | undefined;
-  if (includeGitHub) {
-    try {
-      token = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
-    } catch {
-      /* planner commands will fail with a clear gh authentication error */
-    }
-  }
-  return claudeProfile(PROFILE, token ? { GH_TOKEN: token } : undefined);
+  const token = includeGitHub ? process.env.AFK_AGENT_GH_TOKEN : undefined;
+  return claudeProfile(PROFILE, token ? { AFK_AGENT_GH_TOKEN: token } : undefined);
 }
 
 function openDeliveryPr(
@@ -99,6 +92,8 @@ function openDeliveryPr(
   if (currentBranch() !== branch) throw new Error(`Expected delivery branch ${branch}`);
   const status = execSync("git status --porcelain", { encoding: "utf8" }).trim();
   if (status) throw new Error(`Delivery branch is not clean:\n${status}`);
+
+  execFileSync("node", [".sandcastle/policy-check.mjs", "delivery"], { stdio: "inherit" });
 
   execFileSync("git", ["push", "-u", "origin", branch], { stdio: "inherit" });
   const body = [

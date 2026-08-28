@@ -30,6 +30,7 @@ jobs:
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -75,6 +76,10 @@ jobs:
           AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/update-branch/update-branch.ts
+
+      - name: Verify AFK policy before push
+        if: success()
+        run: node .sandcastle/policy-check.mjs delivery
 
       - name: Push branch (abort cleanly if non-fast-forward)
         if: success()
