@@ -84,9 +84,10 @@ Rules:
 
 ## Rules
 
-- **Profiles are server-global** (`claude`, `claude-ark`, `psydo`,
-  `aliyun-deepseek`). Pick one per repo: `AFK_PROFILE` variable. No repo-side
-  credentials.
+- **Profiles are server-global** (`claude`, `claude-ark`, `agentrouter`,
+  `psydo`, `aliyun-deepseek`). Pick one per repo: `AFK_PROFILE` variable.
+  `agentrouter` uses server-managed Claude settings and supports
+  `AFK_AGENTROUTER_SETTINGS` as an operator override. No repo-side credentials.
 - **The agent owns delivery on the planner loop** (push main + close issues);
   on GitHub branch-protected repos it degrades to a PR. Single-issue `pnpm afk`
   never touches GitHub.

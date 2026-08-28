@@ -6,6 +6,7 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 const profiles = {
   claude: undefined,
   "claude-ark": process.env.AFK_CLAUDE_ARK_SETTINGS ?? "/home/claude/cliproxyapi/settings.ark.json",
+  agentrouter: process.env.AFK_AGENTROUTER_SETTINGS ?? "/home/claude/cliproxyapi/settings.airouter2.json",
   psydo: undefined,
   "aliyun-deepseek": undefined,
 } as const;
@@ -61,7 +62,7 @@ export function claudeProfile(
   profile = process.env.AFK_PROFILE,
   env?: Record<string, string>,
 ): { agent: AgentProvider; sandbox: SandboxProvider } {
-  if (profile && !(profile in profiles)) throw new Error("Unsupported profile; use claude, claude-ark, psydo, or aliyun-deepseek.");
+  if (profile && !(profile in profiles)) throw new Error("Unsupported profile; use claude, claude-ark, agentrouter, psydo, or aliyun-deepseek.");
   const settingsPath = profile ? profiles[profile as keyof typeof profiles] : undefined;
   if (settingsPath && !existsSync(settingsPath)) throw new Error(`Profile settings not found: ${settingsPath}`);
   const usePsydo = profile === "psydo";
