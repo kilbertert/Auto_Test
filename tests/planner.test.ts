@@ -1,22 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { extractGhToken, parsePlanOutput } from '../.sandcastle/planner.js'
+import { extractClaimedIssues, parsePlanOutput } from '../.sandcastle/planner.js'
 
-describe('extractGhToken', () => {
-  it('extracts the oauth_token from a gh hosts.yml', () => {
-    const yaml = [
-      'github.com:',
-      '    oauth_token: gho_abc123',
-      '    git_protocol: ssh',
-      '    users:',
-      '        kilbertert:',
-      '            oauth_token: gho_def456',
-    ].join('\n')
-
-    expect(extractGhToken(yaml)).toBe('gho_abc123')
+describe('extractClaimedIssues', () => {
+  it('extracts issue numbers claimed by open PR bodies', () => {
+    expect(extractClaimedIssues(['Closes #42', 'fixes #7 and Resolves #19'])).toEqual(new Set([42, 7, 19]))
   })
 
-  it('returns undefined when there is no token', () => {
-    expect(extractGhToken('github.com:\n    git_protocol: https\n')).toBeUndefined()
+  it('ignores unrelated text', () => {
+    expect(extractClaimedIssues(['Related to #42', 'No issue reference'])).toEqual(new Set())
   })
 })
 

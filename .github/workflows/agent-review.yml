@@ -11,7 +11,9 @@ on:
 
 jobs:
   review:
-    if: github.event.label.name == 'agent:review'
+    if: >-
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
@@ -90,10 +92,10 @@ jobs:
         id: push
         if: success()
         run: |
-          # Lease against the SHA we checked out — fails cleanly if anything
-          # pushed to the branch during our run.
+          # A normal push is enough because this run starts from the recorded
+          # PR head. It fails cleanly if anything advanced the branch.
           set +e
-          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH" 2> push_err.txt
+          git push origin "$BRANCH" 2> push_err.txt
           status=$?
           set -e
           if [ $status -ne 0 ]; then

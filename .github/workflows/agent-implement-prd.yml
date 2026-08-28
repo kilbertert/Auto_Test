@@ -34,13 +34,14 @@ jobs:
       - name: Detect — sub-issues + parent shape
         id: shape
         run: |
+          # shellcheck disable=SC2016,SC2129
           set -euo pipefail
           sub_issues_json=$(gh api "repos/${GH_REPO}/issues/${PRD_NUMBER}/sub_issues" 2>/dev/null || echo "[]")
           sub_count=$(echo "$sub_issues_json" | jq 'length')
           owner="${GH_REPO%/*}"
           repo="${GH_REPO#*/}"
           parent_number=$(gh api graphql \
-            -f query='query($owner: String!, $repo: String!, $num: Int!) { repository(owner: $owner, name: $repo) { issue(number: $num) { parent { number } } } }' \
+            -f query="query(\$owner: String!, \$repo: String!, \$num: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$num) { parent { number } } } }" \
             -f owner="$owner" -f repo="$repo" -F num="$PRD_NUMBER" \
             --jq '.data.repository.issue.parent.number // empty' 2>/dev/null || echo "")
 
@@ -85,10 +86,12 @@ jobs:
             mode="run"
           fi
 
-          echo "sub_count=$sub_count" >> "$GITHUB_OUTPUT"
-          echo "parent_number=$parent_number" >> "$GITHUB_OUTPUT"
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "next_open_number=$next_open_number" >> "$GITHUB_OUTPUT"
+          {
+            echo "sub_count=$sub_count"
+            echo "parent_number=$parent_number"
+            echo "mode=$mode"
+            echo "next_open_number=$next_open_number"
+          } >> "$GITHUB_OUTPUT"
           # Title may contain special chars; write via heredoc.
           {
             echo "next_open_title<<EOF"

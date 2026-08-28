@@ -178,12 +178,13 @@ const result = await runWithExtraction({
     "utf8"
   ),
 });
+const output = ReviewOutput.parse(result.output);
 
 const verdict = result.commits.length > 0 ? "improved" : "clean";
 
 const headSha = sh("git rev-parse HEAD").trim();
 const diffLines = parseDiffLines(safeSh("git diff main...HEAD"));
-const validInlineComments = result.output.inlineComments.filter((c) => {
+const validInlineComments = output.inlineComments.filter((c) => {
   const fileLines = diffLines.get(c.path);
   if (!fileLines) {
     console.warn(
@@ -203,7 +204,7 @@ const validInlineComments = result.output.inlineComments.filter((c) => {
 const validReplyIds = new Set(
   prComments.review_threads.map((c) => c.commentId)
 );
-const validReplies = result.output.replies.filter((r) => {
+const validReplies = output.replies.filter((r) => {
   if (!validReplyIds.has(r.commentId)) {
     console.warn(
       `Dropping reply for commentId=${r.commentId} — not in fetched threads.`
@@ -216,7 +217,7 @@ const validReplies = result.output.replies.filter((r) => {
 const reviewPayload = {
   commit_id: headSha,
   event: "COMMENT" as const,
-  body: result.output.summary,
+  body: output.summary,
   comments: validInlineComments.map((c) => ({
     path: c.path,
     line: c.line,
@@ -233,7 +234,7 @@ fs.writeFileSync(
   path.join(OUTPUT_DIR, "replies.json"),
   JSON.stringify(validReplies, null, 2)
 );
-fs.writeFileSync(path.join(OUTPUT_DIR, "summary.md"), result.output.summary);
+fs.writeFileSync(path.join(OUTPUT_DIR, "summary.md"), output.summary);
 fs.writeFileSync(path.join(OUTPUT_DIR, "verdict.txt"), verdict);
 
 console.log(`\nReview complete.`);

@@ -11,7 +11,9 @@ on:
 
 jobs:
   update-branch:
-    if: github.event.label.name == 'agent:update-branch'
+    if: >-
+      github.event.label.name == 'agent:update-branch' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
@@ -62,6 +64,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Configure git identity
         run: |
           git config user.name "claude-code[bot]"
           git config user.email "claude-code[bot]@users.noreply.github.com"
@@ -82,11 +85,10 @@ jobs:
             echo "Nothing to push."
             exit 0
           fi
-          # Lease against the SHA we checked out — fails if anything pushed
-          # to the branch during our run (race detection), and tolerates
-          # history-rewriting updates (rebase) when the remote is unchanged.
+          # The updater creates a merge commit from the recorded PR head, so a
+          # normal push is sufficient and fails if the branch advanced.
           set +e
-          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH" 2> push_err.txt
+          git push origin "$BRANCH" 2> push_err.txt
           status=$?
           set -e
           if [ $status -ne 0 ]; then

@@ -1,19 +1,35 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { claudeCode, codex, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 const profiles = {
   claude: undefined,
-  "claude-ark": process.env.AFK_CLAUDE_ARK_SETTINGS ?? "/home/claude/cliproxyapi/settings.ark.json",
-  agentrouter: process.env.AFK_AGENTROUTER_SETTINGS ?? "/home/claude/cliproxyapi/settings.airouter2.json",
+  "claude-ark": process.env.AFK_CLAUDE_ARK_SETTINGS ?? join(homedir(), "cliproxyapi/settings.ark.json"),
+  agentrouter: process.env.AFK_AGENTROUTER_SETTINGS ?? join(homedir(), "cliproxyapi/settings.airouter2.json"),
   psydo: undefined,
   "aliyun-deepseek": undefined,
 } as const;
-const codexSettings = process.env.AFK_CODEX_SETTINGS ?? "/home/claude/.config/auto-test/codex.psydo.toml";
-const psydoKey = process.env.AFK_PSYDO_KEY_FILE ?? "/home/claude/.config/aiops-diagnostics/keys/psydo-primary.key";
-const aliyunSettings = process.env.AFK_ALIYUN_SETTINGS ?? "/home/claude/.config/auto-test/codex.aliyun-deepseek.toml";
-const aliyunCsv = process.env.AFK_ALIYUN_CSV ?? "/home/claude/.config/auto-test/aliyun-deepseek.csv";
+const configDir = process.env.AFK_CONFIG_DIR ?? join(homedir(), ".config/afk");
+const legacyConfigDir = join(homedir(), ".config/auto-test");
+const firstExisting = (...paths: string[]): string => paths.find(existsSync) ?? paths[0]!;
+const codexSettings = process.env.AFK_CODEX_SETTINGS ?? firstExisting(
+  join(configDir, "codex.psydo.toml"),
+  join(legacyConfigDir, "codex.psydo.toml"),
+);
+const psydoKey = process.env.AFK_PSYDO_KEY_FILE ?? firstExisting(
+  join(configDir, "psydo-primary.key"),
+  join(homedir(), ".config/aiops-diagnostics/keys/psydo-primary.key"),
+);
+const aliyunSettings = process.env.AFK_ALIYUN_SETTINGS ?? firstExisting(
+  join(configDir, "codex.aliyun-deepseek.toml"),
+  join(legacyConfigDir, "codex.aliyun-deepseek.toml"),
+);
+const aliyunCsv = process.env.AFK_ALIYUN_CSV ?? firstExisting(
+  join(configDir, "aliyun-deepseek.csv"),
+  join(legacyConfigDir, "aliyun-deepseek.csv"),
+);
 
 function readAliyunCsv(path: string): { apiKey: string; baseUrl: string } {
   const values = new Map<string, string>();

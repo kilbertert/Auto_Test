@@ -1,5 +1,5 @@
-# node 24 to match package.json engines (>=24); bookworm keeps the same libc
-# base as the previous image so the existing toolchain stays compatible.
+# AFK sandbox image for a Node.js project.
+# node 24 matches most Node projects' engines; bookworm keeps a stable libc.
 FROM node:24-bookworm
 
 ARG AGENT_UID=1000
@@ -7,6 +7,18 @@ ARG AGENT_GID=1000
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git curl jq ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# If your test suite launches a real browser (e.g. Playwright), bake the
+# browser + OS deps in so the agent can self-verify inside the container
+# instead of reporting a false BLOCKED. Keep the version in sync with your
+# @playwright/test and add `ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`
+# before USER below.
+# RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
+#   && rm -rf /var/lib/apt/lists/*
+
+# Playwright chromium + its OS deps for the project's browser test suite.
+RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
   && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -17,19 +29,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Playwright chromium + its OS deps, baked in so the full test suite runs in
-# the sandbox (host has these cached; the container must too, or AFK reports
-# a false BLOCKED when Chromium cannot launch). Keep the version in sync with
-# @playwright/test in package.json (^1.62.0). Browsers live outside the agent
-# home so the UID/GID rename below cannot orphan them.
-RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
-  && rm -rf /var/lib/apt/lists/*
-
 RUN groupmod -o -g ${AGENT_GID} node \
   && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node \
-  && mkdir -p /opt/ms-playwright && chown -R ${AGENT_UID}:${AGENT_GID} /opt/ms-playwright
-
-RUN mkdir -p /home/agent/.codex && chown ${AGENT_UID}:${AGENT_GID} /home/agent/.codex
+  && mkdir -p /home/agent/.codex && chown -R ${AGENT_UID}:${AGENT_GID} /home/agent/.codex
 
 RUN npm install --global @anthropic-ai/claude-code \
   && npm install --global @openai/codex@0.146.1 \
