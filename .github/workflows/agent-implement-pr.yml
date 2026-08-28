@@ -8,7 +8,9 @@ on:
 
 jobs:
   implement-pr:
-    if: github.event.label.name == 'agent:implement'
+    if: >-
+      github.event.label.name == 'agent:implement' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     timeout-minutes: 60
     # Shared with agent-review.yml — both push to the PR branch.
@@ -45,6 +47,7 @@ jobs:
         if: steps.state.outputs.proceed == 'true'
         id: inputs
         run: |
+          # shellcheck disable=SC2016
           set -euo pipefail
           top_level=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments | length')
           review_summaries=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/reviews" --jq '[.[] | select(.body != null and .body != "")] | length')
@@ -52,7 +55,7 @@ jobs:
           repo="${GH_REPO#*/}"
           unresolved=$(gh api graphql \
             -F owner="$owner" -F repo="$repo" -F number="$PR_NUMBER" \
-            -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}' \
+            -f query="query(\$owner:String!,\$repo:String!,\$number:Int!){repository(owner:\$owner,name:\$repo){pullRequest(number:\$number){reviewThreads(first:100){nodes{isResolved}}}}}" \
             --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
           total=$((top_level + review_summaries + unresolved))
           if [ "$total" -eq 0 ]; then
@@ -70,8 +73,6 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
-      - name: Checkout PR branch
-        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
       - name: Checkout PR branch with runner HOME and managed Git hooks
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
         run: |
@@ -91,9 +92,6 @@ jobs:
         run: |
           git fetch origin main:main || git fetch origin main
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
-
-      - name: Setup pnpm
-        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
 
       - name: Setup Node.js 22
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
@@ -130,7 +128,7 @@ jobs:
             exit 0
           fi
           set +e
-          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH" 2> push_err.txt
+          git push origin "$BRANCH" 2> push_err.txt
           status=$?
           set -e
           if [ $status -ne 0 ]; then

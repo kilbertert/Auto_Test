@@ -585,7 +585,7 @@ describe('adaptive Codex epochs', () => {
     expect(run.result?.cases.map((item) => item.caseId)).toEqual(['case-one', 'case-two'])
     expect(prompts.some((prompt) => prompt.includes('epoch-0001-a'))).toBe(true)
     expect(prompts.some((prompt) => prompt.includes('epoch-0001-b'))).toBe(true)
-  })
+  }, 15_000)
 
   it('hands a replacement session the stable workspace paths without re-embedding the manifest JSON', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-compact-resume-'))

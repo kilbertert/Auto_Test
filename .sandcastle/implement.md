@@ -1,14 +1,14 @@
-# Auto-Test AFK implementation
+# AFK implementation
 
 Implement exactly GitHub issue {{ISSUE_NUMBER}}: {{ISSUE_TITLE}}.
 
-Read `AGENTS.md`, the issue, `docs/autonomous-workflow.md`, and the smallest
-set of relevant source and tests before editing. Work on one issue only.
+Read `CONTEXT.md`, `AGENTS.md`, the issue, `docs/`, `.sandcastle/CODING_STANDARDS.md`, and the smallest set of relevant source
+and tests before editing. Work on one issue only.
 
 Requirements:
 
-1. Preserve Auto-Test's existing AgentHost, evidence, Mutation Ledger, and
-   fail-closed contracts. Do not invent a parallel runtime contract.
+1. Preserve the project's existing contracts and fail-closed guarantees. Do
+   not invent a parallel runtime contract.
 2. Make the smallest coherent change and add or update focused tests for
    behavior you change.
 3. Run `npm run check` before committing. Do not weaken or skip checks.

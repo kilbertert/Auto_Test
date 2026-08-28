@@ -1,65 +1,34 @@
 # TASK
 
-Merge the following branches into the current branch (main) and deliver them:
+Merge the following branches into the current delivery branch
+`{{DELIVERY_BRANCH}}`:
 
 {{BRANCHES}}
 
+First configure the merge commit identity:
+
+```bash
+git config user.name "claude-code[bot]"
+git config user.email "claude-code[bot]@users.noreply.github.com"
+```
+
 For each branch:
 
-1. Run `git merge <branch> --no-edit`
+1. Run `git merge <branch> --no-ff -m "chore(afk): merge <branch>"`
 2. If there are merge conflicts, resolve them intelligently by reading both
    sides and choosing the correct resolution
 3. After resolving conflicts, run `npm run check` to verify everything works
 4. If tests fail, fix the issues before proceeding to the next branch
 
-After all branches are merged, make a single Conventional Commit summarizing
-the merge (e.g. `feat: ...` covering the merged work, or `merge: planner
-iteration`), using `git commit --amend` on the merge commit if the default
-message is not Conventional.
+After all branches are merged, confirm the worktree is clean and the current
+branch is still `{{DELIVERY_BRANCH}}`.
 
-# DELIVERY (push main)
+# DELIVERY BOUNDARY
 
-You are authorized to push to `main` from inside this environment:
+Do not push, open or merge a PR, close issues, or modify labels. The host
+wrapper will push `{{DELIVERY_BRANCH}}` and open one PR after you finish. The
+hosting service closes the referenced issues only when that PR is merged.
 
-1. Set the git identity and use the provided GitHub token:
-   ```bash
-   git config user.name "claude-code[bot]"
-   git config user.email "claude-code[bot]@users.noreply.github.com"
-   gh auth setup-git
-   ```
-2. Push the merged `main` to origin:
-   ```bash
-   git push origin main
-   ```
-
-3. **After pushing main, clean up merged local branch refs.** The planner
-   creates `agent/*` worktree branches that persist as *local* refs even after
-   their worktrees are destroyed; since we deliver via direct push to `main`
-   (not a PR flow), those refs are never auto-deleted. Delete them so they do
-   not accumulate between runs:
-   ```bash
-   git branch --list 'agent/*' 'sandcastle/*' | xargs -r git branch -D
-   ```
-   Only delete branches that were merged (they are — every branch in
-   `{{BRANCHES}}` was just merged). If deletion fails (a branch is still
-   checked out), ignore and continue — it will be cleaned up on a later run.
-
-# CLOSE ISSUES
-
-For each branch that was merged, close its issue with a comment. If there are
-parent issues (such as PRDs) whose closing the issue would complete, close
-those too.
-
-Here are all the issues:
-
-{{ISSUES}}
-
-For each issue you close, also strip its queue label so a CLOSED issue never
-lingers in the planner's `ready-for-agent` queue (GitHub keeps labels on close):
-`gh issue close <number> --comment "..."` then
-`gh issue edit <number> --remove-label ready-for-agent`. If the label removal
-fails (network / already removed), ignore and continue.
-
-Once you've merged, verified, pushed, and closed everything you can, output
+Once you have merged and verified everything, output
 `<promise>COMPLETE</promise>`. If a blocker needs a human decision, output
 `<promise>BLOCKED</promise>`.

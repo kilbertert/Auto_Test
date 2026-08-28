@@ -6,15 +6,9 @@
 //                 dependency graph, and emits <plan>{issues[]}</plan>
 //     Execute   — each issue implemented + reviewed in its own docker worktree,
 //                 up to AFK_RALPH_PARALLEL at once
-//     Merge     — a merger agent merges the completed branches into main, runs
-//                 the full check, pushes main, and closes the issues
-//
-// Unlike the single-issue runner (.sandcastle/main.ts), the merge phase is
-// intentionally done inside the container (push main + close issues) — this is
-// an explicit user-authorized override of the "host owns delivery" rule.
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+//     Integrate — a merger agent merges the completed branches into one
+//                 delivery branch, runs the full check, and the host opens a PR
+import { execFileSync, execSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { run, createSandbox, type RunResult } from "@ai-hero/sandcastle";
@@ -44,11 +38,6 @@ const PROFILE = process.env.AFK_PROFILE;
 
 // --- testable pure helpers -------------------------------------------------
 
-export function extractGhToken(hostsYaml: string): string | undefined {
-  const m = hostsYaml.match(/oauth_token:\s*([^\s]+)/);
-  return m?.[1];
-}
-
 export function parsePlanOutput(stdout: string): { number: number; title: string; branch: string }[] {
   const m = stdout.match(/<plan>([\s\S]*?)<\/plan>/);
   if (!m) throw new Error("Planner did not produce a <plan> tag.\n\n" + stdout);
@@ -58,30 +47,81 @@ export function parsePlanOutput(stdout: string): { number: number; title: string
   return Array.isArray(issues) ? issues : [];
 }
 
+export function extractClaimedIssues(bodies: string[]): Set<number> {
+  const numbers = new Set<number>();
+  for (const body of bodies) {
+    for (const match of body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)) {
+      numbers.add(Number(match[1]));
+    }
+  }
+  return numbers;
+}
+
 // --- git helpers -----------------------------------------------------------
 
 function currentBranch(): string {
   return execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
 }
 
-function ensureOnMain(): void {
-  if (currentBranch() !== "main") {
-    execSync("git checkout main", { stdio: "inherit" });
-  }
+function createDeliveryBranch(iteration: number): string {
+  const branch = `agent/planner-${Date.now()}-${iteration}`;
   execSync("git fetch --prune origin", { stdio: "inherit" });
-  execSync("git merge --ff-only origin/main", { stdio: "inherit" });
+  execFileSync("git", ["checkout", "-b", branch, "origin/main"], { stdio: "inherit" });
+  return branch;
 }
 
-function profileConfig() {
+function openPrIssueNumbers(): Set<number> {
+  // ponytail: scans 100 open PRs; paginate if a repository can exceed that.
+  const pullRequests = JSON.parse(
+    execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "body"], {
+      encoding: "utf8",
+    }),
+  ) as { body: string | null }[];
+  return extractClaimedIssues(pullRequests.map((pullRequest) => pullRequest.body ?? ""));
+}
+
+function profileConfig(includeGitHub = true) {
   let token: string | undefined;
-  try {
-    token = extractGhToken(
-      readFileSync(resolve(homedir(), ".config/gh/hosts.yml"), "utf8"),
-    );
-  } catch {
-    /* no gh auth on host — planner/merge will fail with a clear gh error */
+  if (includeGitHub) {
+    try {
+      token = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
+    } catch {
+      /* planner commands will fail with a clear gh authentication error */
+    }
   }
   return claudeProfile(PROFILE, token ? { GH_TOKEN: token } : undefined);
+}
+
+function openDeliveryPr(
+  branch: string,
+  issues: { number: number; title: string }[],
+): string {
+  if (currentBranch() !== branch) throw new Error(`Expected delivery branch ${branch}`);
+  const status = execSync("git status --porcelain", { encoding: "utf8" }).trim();
+  if (status) throw new Error(`Delivery branch is not clean:\n${status}`);
+
+  execFileSync("git", ["push", "-u", "origin", branch], { stdio: "inherit" });
+  const body = [
+    "## Changes",
+    "",
+    ...issues.map((issue) => `- #${issue.number}: ${issue.title}`),
+    "",
+    "## Tests",
+    "",
+    "- Merge-phase project checks completed; repository CI remains required.",
+    "",
+    "## Checklist",
+    "",
+    "- [ ] Required CI passes",
+    "- [ ] Review findings are triaged",
+    "",
+    ...issues.map((issue) => `Closes #${issue.number}`),
+  ].join("\n");
+  return execFileSync(
+    "gh",
+    ["pr", "create", "--base", "main", "--head", branch, "--title", "chore(afk): integrate planner batch", "--body", body],
+    { encoding: "utf8" },
+  ).trim();
 }
 
 // --- planner loop ----------------------------------------------------------
@@ -98,7 +138,8 @@ async function main(): Promise<void> {
       name: "Planner",
       promptFile: ".sandcastle/plan-prompt.md",
     });
-    const issues = parsePlanOutput(plan.stdout);
+    const claimedIssues = openPrIssueNumbers();
+    const issues = parsePlanOutput(plan.stdout).filter((issue) => !claimedIssues.has(issue.number));
 
     if (issues.length === 0) {
       console.log("No issues to work on. Exiting.");
@@ -156,7 +197,7 @@ async function main(): Promise<void> {
             );
 
             if (result.commits.length > 0) {
-              const reviewResult = await withTimeout(
+              await withTimeout(
                 Number(process.env.AFK_RUN_TIMEOUT ?? 3600) * 1000,
                 `Review #${issue.number}`,
                 () => sandbox.run({
@@ -208,25 +249,30 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Phase 3: Merge — on main, in-container (user-authorized: push main + close issues)
-    ensureOnMain();
-    await withTimeout(
+    // Phase 3: integrate locally, then let the host open the delivery PR.
+    const deliveryBranch = createDeliveryBranch(iteration);
+    const mergeResult = await withTimeout(
       Number(process.env.AFK_MERGE_TIMEOUT ?? 3600) * 1000,
       "Merge",
       () => run({
-        ...profileConfig(),
+        ...profileConfig(false),
         name: "Merger",
         maxIterations: 10,
         promptFile: ".sandcastle/merge-prompt.md",
         promptArgs: {
+          DELIVERY_BRANCH: deliveryBranch,
           BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-          ISSUES: completed.map((entry) => `- #${entry.issue.number}: ${entry.issue.title}`).join("\n"),
         },
         completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
       }),
     );
+    if (mergeResult.completionSignal !== "<promise>COMPLETE</promise>") {
+      throw new Error("Merger did not complete; delivery branch was not pushed.");
+    }
 
-    console.log("\nBranches merged.");
+    const prUrl = openDeliveryPr(deliveryBranch, completed.map((entry) => entry.issue));
+    console.log(`\nDelivery PR opened: ${prUrl}`);
+    return;
   }
 
   console.log("\nAll done.");

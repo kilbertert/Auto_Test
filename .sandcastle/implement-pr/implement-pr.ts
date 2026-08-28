@@ -178,12 +178,13 @@ const result = await runWithExtraction({
     "utf8"
   ),
 });
+const output = ImplementPrOutput.parse(result.output);
 
 const commitsThisRun = result.commits.length;
 const replyCount =
-  result.output.threadReplies.length +
-  result.output.newInlineComments.length +
-  result.output.topLevelComments.length;
+  output.threadReplies.length +
+  output.newInlineComments.length +
+  output.topLevelComments.length;
 
 if (commitsThisRun === 0 && replyCount === 0) {
   fail(
@@ -193,7 +194,7 @@ if (commitsThisRun === 0 && replyCount === 0) {
 
 const headSha = sh("git rev-parse HEAD").trim();
 const diffLines = parseDiffLines(safeSh("git diff main...HEAD"));
-const validInlineComments = result.output.newInlineComments.filter((c) => {
+const validInlineComments = output.newInlineComments.filter((c) => {
   const fileLines = diffLines.get(c.path);
   if (!fileLines) {
     console.warn(
@@ -213,7 +214,7 @@ const validInlineComments = result.output.newInlineComments.filter((c) => {
 const validReplyIds = new Set(
   prComments.review_threads.map((c) => c.commentId)
 );
-const validThreadReplies = result.output.threadReplies.filter((r) => {
+const validThreadReplies = output.threadReplies.filter((r) => {
   if (!validReplyIds.has(r.commentId)) {
     console.warn(
       `Dropping reply for commentId=${r.commentId} — not in fetched threads.`
@@ -245,7 +246,7 @@ fs.writeFileSync(
 );
 fs.writeFileSync(
   path.join(OUTPUT_DIR, "implement_top_level_comments.json"),
-  JSON.stringify(result.output.topLevelComments, null, 2)
+  JSON.stringify(output.topLevelComments, null, 2)
 );
 fs.writeFileSync(
   path.join(OUTPUT_DIR, "has_commits.txt"),
@@ -256,7 +257,7 @@ console.log(`\nImplement-PR complete.`);
 console.log(`  commits this run: ${commitsThisRun}`);
 console.log(`  thread replies: ${validThreadReplies.length}`);
 console.log(`  new inline comments: ${validInlineComments.length}`);
-console.log(`  top-level comments: ${result.output.topLevelComments.length}`);
+console.log(`  top-level comments: ${output.topLevelComments.length}`);
 
 function sh(cmd: string): string {
   return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

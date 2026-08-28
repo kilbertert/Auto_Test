@@ -61,3 +61,6 @@ pnpm-workspace.yaml
 
 # AFK runner runtime dirs (not source)
 .sandcastle/worktrees/
+
+# AFK runner (package.json) dependencies
+node_modules/

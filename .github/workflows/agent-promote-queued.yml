@@ -35,13 +35,14 @@ jobs:
       - name: Find dependents of the closed issue
         id: dependents
         run: |
+          # shellcheck disable=SC2016
           set -euo pipefail
           owner="${GH_REPO%/*}"
           repo="${GH_REPO#*/}"
           # `blocking` is the connection from the closed issue to issues that
           # declared it as a blocker (i.e. our promotion candidates).
           dependents=$(gh api graphql \
-            -f query='query($owner: String!, $repo: String!, $num: Int!) { repository(owner: $owner, name: $repo) { issue(number: $num) { blocking(first: 100) { nodes { number state } } } } }' \
+            -f query="query(\$owner: String!, \$repo: String!, \$num: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$num) { blocking(first: 100) { nodes { number state } } } } }" \
             -f owner="$owner" -f repo="$repo" -F num="$CLOSED_NUMBER" \
             --jq '[.data.repository.issue.blocking.nodes[] | select(.state == "OPEN") | .number]')
           echo "list=$dependents" >> "$GITHUB_OUTPUT"
@@ -52,6 +53,7 @@ jobs:
         env:
           DEPENDENTS_JSON: ${{ steps.dependents.outputs.list }}
         run: |
+          # shellcheck disable=SC2016
           set -euo pipefail
           owner="${GH_REPO%/*}"
           repo="${GH_REPO#*/}"
@@ -61,7 +63,7 @@ jobs:
 
             # Fetch labels + parent for Y in one shot.
             y_data=$(gh api graphql \
-              -f query='query($owner: String!, $repo: String!, $num: Int!) { repository(owner: $owner, name: $repo) { issue(number: $num) { labels(first: 50) { nodes { name } } parent { number } blockedBy(first: 100) { nodes { number state } } } } }' \
+              -f query="query(\$owner: String!, \$repo: String!, \$num: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$num) { labels(first: 50) { nodes { name } } parent { number } blockedBy(first: 100) { nodes { number state } } } } }" \
               -f owner="$owner" -f repo="$repo" -F num="$y")
 
             has_queued=$(echo "$y_data" | jq '[.data.repository.issue.labels.nodes[].name] | index("agent:queued") != null')
