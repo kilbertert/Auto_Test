@@ -32,6 +32,18 @@ You are authorized to push to `main` from inside this environment:
    git push origin main
    ```
 
+3. **After pushing main, clean up merged local branch refs.** The planner
+   creates `agent/*` worktree branches that persist as *local* refs even after
+   their worktrees are destroyed; since we deliver via direct push to `main`
+   (not a PR flow), those refs are never auto-deleted. Delete them so they do
+   not accumulate between runs:
+   ```bash
+   git branch --list 'agent/*' 'sandcastle/*' | xargs -r git branch -D
+   ```
+   Only delete branches that were merged (they are — every branch in
+   `{{BRANCHES}}` was just merged). If deletion fails (a branch is still
+   checked out), ignore and continue — it will be cleaned up on a later run.
+
 # CLOSE ISSUES
 
 For each branch that was merged, close its issue with a comment. If there are

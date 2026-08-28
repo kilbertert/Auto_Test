@@ -58,3 +58,6 @@ evals/
 # pnpm lockfiles (repo uses npm)
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# AFK runner runtime dirs (not source)
+.sandcastle/worktrees/
