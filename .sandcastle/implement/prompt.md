@@ -22,7 +22,8 @@ Use red-green-refactor where applicable.
 3. REPEAT until the issue is done
 4. REFACTOR
 
-Before committing, run `npm run check`.
+Before committing, run `npm run check`, then
+`node .sandcastle/policy-check.mjs commit`.
 
 # COMMIT
 

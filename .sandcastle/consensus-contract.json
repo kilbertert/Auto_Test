@@ -1,0 +1,19 @@
+{
+  "consensus_version": "1.0.0",
+  "afk_template_compatibility": ">=1.0.0 <2.0.0",
+  "invariants": [
+    "account-boundary",
+    "default-branch-protection",
+    "pull-request-delivery",
+    "deterministic-ci",
+    "secret-isolation",
+    "runner-isolation"
+  ],
+  "non_exceptionable_invariants": [
+    "account-boundary",
+    "default-branch-protection",
+    "pull-request-delivery",
+    "deterministic-ci",
+    "secret-isolation"
+  ]
+}

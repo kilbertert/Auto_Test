@@ -38,4 +38,4 @@ After resolving, run whatever checks you think are warranted — `npm run check`
 
 # COMMIT
 
-Stage everything and finish the merge with a single commit. Conventional-commit style, e.g. `chore: merge origin/{{BASE_REF}} into {{BRANCH}}`. The wrapper will push whatever you commit.
+Run `node .sandcastle/policy-check.mjs commit`, then stage everything and finish the merge with a single commit. Conventional-commit style, e.g. `chore: merge origin/{{BASE_REF}} into {{BRANCH}}`. The wrapper will push whatever you commit.

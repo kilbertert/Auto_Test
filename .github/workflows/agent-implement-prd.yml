@@ -28,6 +28,7 @@ jobs:
       PRD_NUMBER: ${{ inputs.prd_number || github.event.issue.number }}
       PRD_TITLE: ${{ inputs.prd_title || github.event.issue.title }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -202,6 +203,10 @@ jobs:
           SUB_ISSUE_TITLE: ${{ steps.shape.outputs.next_open_title }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/implement-prd/implement-prd.ts
+
+      - name: Verify AFK policy before push
+        if: steps.shape.outputs.mode == 'run' && success()
+        run: node .sandcastle/policy-check.mjs delivery
 
       - name: Push branch
         if: steps.shape.outputs.mode == 'run' && success()

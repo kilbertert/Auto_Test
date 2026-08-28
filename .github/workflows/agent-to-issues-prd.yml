@@ -20,6 +20,7 @@ jobs:
       PRD_NUMBER: ${{ github.event.issue.number }}
       PRD_TITLE: ${{ github.event.issue.title }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:

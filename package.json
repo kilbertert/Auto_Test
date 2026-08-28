@@ -19,7 +19,8 @@
     "compile:replay": "tsx src/cli/compile-mcp-replay.ts",
     "report:workflow": "tsx src/cli/workflow-acceptance-report.ts",
     "check": "npm run typecheck && npm test && npm run build",
-    "ralph": "tsx .sandcastle/planner.ts"
+    "ralph": "tsx .sandcastle/planner.ts",
+    "afk:policy": "node .sandcastle/policy-check.mjs all"
   },
   "engines": {
     "node": ">=24"

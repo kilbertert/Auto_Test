@@ -87,6 +87,11 @@ export function claudeProfile(
   const aliyun = useAliyun ? readAliyunCsv(aliyunCsv) : undefined;
   if (usePsydo && !existsSync(codexSettings)) throw new Error(`Codex settings not found: ${codexSettings}`);
   if (aliyun) ensureAliyunSettings(aliyun.baseUrl);
+  const safeEnv = { ...(env ?? {}) };
+  const explicitAgentToken = safeEnv.AFK_AGENT_GH_TOKEN;
+  delete safeEnv.GH_TOKEN;
+  delete safeEnv.AFK_AGENT_GH_TOKEN;
+  const agentToken = process.env.AFK_AGENT_GH_TOKEN ?? explicitAgentToken;
 
   return {
     agent: useCodex
@@ -99,13 +104,13 @@ export function claudeProfile(
       // running a stale image — the cause of repeated false BLOCKEDs.
       imageName: process.env.AFK_IMAGE ?? "sandcastle:auto-test",
       env: {
-        ...env,
+        ...safeEnv,
         // AFK_PROFILE lives in the sandbox env (not the agent env) so that
         // both run() and createSandbox() containers see it — createSandbox
         // does not re-inject agent env into an already-started container, and
         // the Dockerfile claude wrapper dispatches on it.
         ...(profile ? { AFK_PROFILE: profile } : {}),
-        ...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {}),
+        ...(agentToken ? { GH_TOKEN: agentToken } : {}),
         ...(usePsydo ? { OPENAI_API_KEY: readFileSync(psydoKey, "utf8").trim() } : {}),
         ...(aliyun ? { DASHSCOPE_API_KEY: aliyun.apiKey } : {}),
       },

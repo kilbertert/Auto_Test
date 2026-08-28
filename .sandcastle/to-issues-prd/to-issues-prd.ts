@@ -22,7 +22,7 @@ const PromptOutput = z.object({
 
 const result = await runWithRetry({
   name: `to-issues-prd-#${PRD_NUMBER}`,
-  ...claudeProfile(process.env.AFK_PROFILE, { GH_TOKEN, GH_REPO }),
+  ...claudeProfile(process.env.AFK_PROFILE, { GH_TOKEN, GH_REPO, AFK_AGENT_GH_TOKEN: process.env.AFK_AGENT_GH_TOKEN ?? "" }),
   logging: { type: "stdout" },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {

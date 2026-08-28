@@ -29,6 +29,7 @@ jobs:
       ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       ISSUE_TITLE: ${{ inputs.issue_title || github.event.issue.title }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -161,6 +162,10 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.name }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/implement/implement.ts
+
+      - name: Verify AFK policy before push
+        if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
+        run: node .sandcastle/policy-check.mjs delivery
 
       - name: Push branch
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()

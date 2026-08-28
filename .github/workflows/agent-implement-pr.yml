@@ -29,6 +29,7 @@ jobs:
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -117,6 +118,10 @@ jobs:
           AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/implement-pr/implement-pr.ts
+
+      - name: Verify AFK policy before push
+        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
+        run: node .sandcastle/policy-check.mjs delivery
 
       - name: Push branch (abort cleanly if non-fast-forward)
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
