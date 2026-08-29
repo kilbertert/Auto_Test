@@ -21,8 +21,13 @@ AFK-B11: passed at the same build identity; retained evidence is template
 commit `84e9537c661f676f68951eb3e7480472b91ff728` and its `bash
 test/trusted-pr-delivery.sh` report.
 
-AFK-B12 remains pending until the hardened workflow is merged and an
-owner-authored `agent:review` canary retains its workflow URL, review result,
-labels and cleanup evidence.
+AFK-B12: blocked on provider availability. The owner-authored disposable PR
+`#151` exercised the merged workflow three times. Runs 33272059907 and
+33272577334 verified trusted checkout, candidate preparation, and isolation;
+33273244207 reached both parallel review axes but the configured provider
+returned a subscription error. The workflow marked the PR `agent:blocked` and
+did not push or publish a review. PR #151 and issue #152 were closed, the
+canary branch and worktree were removed, and `AFK_PROFILE` was restored to
+`aliyun-deepseek`. Re-run AFK-B12 after a healthy provider is configured.
 
 Complexity and mutation tools are not applicable to workflow YAML. The template-owned shell state machine has focused stale-base, merge-preservation, and race-rejection coverage; this repository verifies the deployed policy and byte identity.
