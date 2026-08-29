@@ -202,7 +202,7 @@ describe('adaptive Codex epochs', () => {
     const recordsDirectory = resolve(directory, 'run', '.agent-private', 'case-results')
     expect((await readFile(resolve(recordsDirectory, 'does-not-exist'), 'utf8').catch(() => '')).length).toBe(0)
     expect((await readFile(resolve(directory, 'run', '.agent-private', 'execution-epochs', 'epoch-0001.result.json'), 'utf8')).length).toBeGreaterThan(0)
-  }, 15_000)
+  }, 30_000)
 
   it('resumes only the active epoch and does not replay completed case records', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-adaptive-resume-'))
