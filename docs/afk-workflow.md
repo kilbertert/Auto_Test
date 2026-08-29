@@ -1,69 +1,59 @@
-# AFK development workflow — entry convention
+# AFK development workflow
 
-How a rough idea becomes merged code in this repo, driven by the AFK agents.
-Adapted from `mattpocock/course-video-manager/.sandcastle`. The tools are the
-user's installed Matt Pocock skills plus this repo's `.sandcastle` machinery.
-
-## The path
+The project uses the official Matt Pocock planning skills and this repository's
+Sandcastle execution adapters:
 
 ```
-idea
-  → /grill-with-docs      sharpen the idea into confirmed terms + decisions
-  → /to-spec              write the PRD (as a GitHub parent issue)
-  → /to-tickets           break the PRD into native sub-issues
-  → implement             a sub-issue or single issue gets implemented
-      • label agent:implement (self-hosted Actions) — or
-      • pnpm ralph (planner loop) / pnpm afk (single issue)
-  → review                agent:review on the PR → review.ts (two-axis)
-  → merge
+idea -> /grill-with-docs -> /to-spec -> /to-tickets -> implement -> review -> merge
 ```
 
-## Step by step
+## Phase boundaries
 
-1. **Grill** — `/grill-with-docs` (or `/grill-me` without repo context):
-   pressure-test boundary/risk/acceptance; write confirmed terms into
-   `CONTEXT.md` and `docs/adr/`.
-2. **Spec** — `/to-spec`: turn the idea into a PRD (a GitHub **parent issue**),
-   concrete enough for a sub-issue agent to implement without re-deriving.
-3. **Tickets** — `/to-tickets`: break the PRD into flat, execution-ordered
-   **native sub-issues**. Label the parent `agent:to-issues` (or run
-   `pnpm prd:to-issues -- <PRD>`).
-4. **Implement** — label a `ready-for-agent` issue `agent:implement` (self-hosted
-   runner → branch → draft PR → `agent:review`); or `pnpm ralph` (planner loop);
-   or `pnpm afk -- <issue>` (controlled single issue, host delivers).
-5. **Review** — label the PR `agent:review`: two-axis `code-review` skill,
-   fix/improve, reply to threads; `agent:update-branch` resolves conflicts.
+1. `/grill-with-docs` resolves terminology and decisions. When its frontier is
+   empty, it reports `GRILLING_COMPLETE`, asks for confirmation, and ends the
+   turn. Confirmation does not authorize a later phase.
+2. `/to-spec` publishes the confirmed requirements as a GitHub spec/PRD issue.
+3. `/to-tickets` creates native sub-issues and native blocking edges in the
+   order approved by the user.
+4. Implementation starts only after an explicit invocation or authorization:
+   `agent:implement` for the matching GitHub workflow, `pnpm ralph` for the
+   host planner, or `pnpm afk -- <issue>` for one controlled issue.
+5. Review runs the harness-neutral Sandcastle two-axis orchestration, then a
+   fixer handles confirmed findings and PR conversation.
 
-## Labels & engines (one queue, two explicit runners)
+## Labels
 
-**No auto-claim.** An issue label is a queue marker, never a self-running
-trigger — nothing implements your issues until you run an engine.
+| Label | Meaning | Engine |
+| --- | --- | --- |
+| `ready-for-agent` | Complete spec, eligible leaf issue | `pnpm ralph` |
+| `agent:implement` | Explicit execution authorization | issue or PR workflow |
+| `agent:queued` | Ready but blocked by an open native dependency | promotion workflow |
+| `agent:in-progress` | AFK run is active | workflow state |
+| `agent:blocked` | Failed run or invalid shape | human triage |
+| `agent:review` | Explicit PR review authorization | PR review workflow |
 
-| Label | Means | Who acts |
-|---|---|---|
-| `ready-for-agent` | queued for the planner | `pnpm ralph` (dependency graph -> parallel -> delivery PR) |
-| `agent:implement` | legacy single-issue trigger — no longer auto-runs (dispatch-only) | `gh workflow run agent-implement.yml -f issue_number=N` |
-| `agent:review` / `agent:update-branch` | PR review / conflict-resolve | review / update-branch workflows |
+`agent:implement` is not a planning label. The planner never selects PRDs,
+parents with sub-issues, nested sub-issues, open native blockers, or issues
+already targeted by an open PR. It has no forced fallback when every candidate
+is blocked.
 
-Rules:
-- One issue, one engine: label `ready-for-agent` for the planner; or run
-  `pnpm afk -- <issue>` for a single controlled issue (no label).
-- Split a PRD by labeling the parent `agent:to-issues`, then `ready-for-agent`
-  the sub-issues you want the planner to implement.
-- `agent:implement` never auto-runs; dispatch it explicitly if you want the PR
-  flow.
+## Truth sources
 
+- `CONTEXT.md` is the glossary only.
+- `docs/adr/` records durable implementation decisions and trade-offs.
+- The spec/PRD issue records requirements.
+- Native sub-issues and dependency edges record execution slices.
+- `docs/agents/` tells the official skills how to read the tracker, labels,
+  and domain docs.
 
-## Rules
+## Delivery
 
-- Profiles are server-global (`claude`, `claude-ark`, `agentrouter`, `psydo`,
-  `aliyun-deepseek`); pick via the `AFK_PROFILE` repo variable. `agentrouter`
-  uses server-managed Claude settings and supports `AFK_AGENTROUTER_SETTINGS`
-  as an operator override. No repo-side credentials.
-- The planner merge phase integrates into a delivery branch; the host pushes
-  that branch and opens a PR. Neither planner nor single-issue `pnpm afk`
-  pushes the default branch.
-- Deterministic checks are the gate: the repo's full check before any commit;
-  PRs go through CI.
-- Never hardcode secrets. Keep `CONTEXT.md` and `.sandcastle/CODING_STANDARDS.md`
-  current — they are the agents' contract.
+Agents commit on task branches and run deterministic checks. The host runner
+pushes branches, opens draft PRs, and merges only after CI and human review.
+No agent pushes the default branch directly.
+
+## Providers
+
+The configured Sandcastle profile is server-global: `claude`, `claude-ark`,
+`agentrouter`, `psydo`, or `aliyun-deepseek`. Set `AFK_PROFILE` for local runs
+or the repository variable for Actions; no project-side credential is needed.

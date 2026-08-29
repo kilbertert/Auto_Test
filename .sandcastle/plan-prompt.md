@@ -49,6 +49,7 @@ Output your plan as a JSON object wrapped in `<plan>` tags:
 {"issues": [{"number": 42, "title": "Fix auth bug", "branch": "agent/issue-42-fix-auth-bug"}]}
 </plan>
 
-Include only **unblocked** `ready-for-agent` issues. If every candidate is
-blocked, include the single highest-priority candidate (the fewest or weakest
-dependencies). If there are no ready-for-agent issues, output `{"issues": []}`.
+Include only **unblocked** `ready-for-agent` leaf issues. If every candidate is
+blocked or has an invalid shape, output `{"issues": []}`. Never force a blocked
+candidate into the plan. If there are no ready-for-agent issues, output
+`{"issues": []}`.

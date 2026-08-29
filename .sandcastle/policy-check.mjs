@@ -20,6 +20,9 @@ if (command === "commit" || command === "delivery" || command === "all") checkDi
 console.log(`policy check passed: ${command}`);
 
 function checkVersions() {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) || !contract || typeof contract !== "object" || Array.isArray(contract)) {
+    fail("metadata and consensus contract must be JSON objects");
+  }
   const consensus = metadata.consensus_version;
   const template = metadata.afk_template_version;
   const compatibility = metadata.consensus_compatibility;
@@ -39,7 +42,7 @@ function checkExceptions() {
   const file = join(root, ".afk-exceptions.json");
   if (!existsSync(file)) return;
   const value = readJson(file, "exceptions");
-  const exceptions = Array.isArray(value) ? value : value.exceptions;
+  const exceptions = Array.isArray(value) ? value : value && typeof value === "object" ? value.exceptions : undefined;
   if (!Array.isArray(exceptions)) fail("exceptions must be an array or { exceptions: [] }");
   const known = new Set(contract.invariants ?? []);
   const blocked = new Set(contract.non_exceptionable_invariants ?? []);
@@ -59,7 +62,12 @@ function checkExceptions() {
 }
 
 function checkBranch() {
-  const branch = git(["symbolic-ref", "--short", "HEAD"]);
+  let branch;
+  try {
+    branch = git(["symbolic-ref", "--short", "HEAD"]);
+  } catch {
+    fail("cannot determine the current branch");
+  }
   const defaultBranch = process.env.AFK_DEFAULT_BRANCH || defaultBranchFromGit();
   if (!branch || branch === defaultBranch) fail(`protected default branch cannot be used by AFK: ${branch || "unknown"}`);
 }

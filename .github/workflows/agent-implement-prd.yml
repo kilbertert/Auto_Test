@@ -1,8 +1,10 @@
 name: Agent Implement PRD
 
 on:
-  # Plan A: full decoupling — no auto-claim on label. The PRD implement is
-  # dispatch-only (manual or driven by a runner), removing the label-trigger.
+  # `agent:implement` is the explicit authorization to execute an already
+  # approved PRD's native sub-issues.
+  issues:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       prd_number:
@@ -14,10 +16,11 @@ on:
 
 jobs:
   implement-prd:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'
     runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
-      group: agent-implement-prd-issue-${{ github.event.issue.number }}
+      group: agent-implement-prd-issue-${{ inputs.prd_number || github.event.issue.number }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -37,6 +40,17 @@ jobs:
         run: |
           # shellcheck disable=SC2016,SC2129
           set -euo pipefail
+          issue_json=$(gh issue view "$PRD_NUMBER" --json title,body)
+          title=$(echo "$issue_json" | jq -r '.title')
+          body=$(echo "$issue_json" | jq -r '.body // ""')
+          is_prd="false"
+          if echo "$title" | grep -qiE '\bprd\b|\[spec\]' || {
+            echo "$body" | grep -q '^## Problem Statement' &&
+            echo "$body" | grep -q '^## Solution' &&
+            echo "$body" | grep -q '^## User Stories'
+          }; then
+            is_prd="true"
+          fi
           sub_issues_json=$(gh api "repos/${GH_REPO}/issues/${PRD_NUMBER}/sub_issues" 2>/dev/null || echo "[]")
           sub_count=$(echo "$sub_issues_json" | jq 'length')
           owner="${GH_REPO%/*}"
@@ -75,7 +89,9 @@ jobs:
           fi
 
           # Decide proceed and refuse reasons.
-          if [ "$sub_count" = "0" ]; then
+          if [ "$sub_count" = "0" ] && [ "$is_prd" = "true" ]; then
+            mode="refuse-no-subissues"
+          elif [ "$sub_count" = "0" ]; then
             mode="silent"   # Not a PRD; single-issue workflow handles it.
           elif [ "$nested" = "true" ]; then
             mode="refuse-nested-prd"
@@ -90,6 +106,7 @@ jobs:
           {
             echo "sub_count=$sub_count"
             echo "parent_number=$parent_number"
+            echo "is_prd=$is_prd"
             echo "mode=$mode"
             echo "next_open_number=$next_open_number"
           } >> "$GITHUB_OUTPUT"
@@ -108,6 +125,13 @@ jobs:
           gh issue edit "$PRD_NUMBER" --remove-label "agent:implement" || true
           gh issue edit "$PRD_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$PRD_NUMBER" --body "Refused to run: this issue has sub-issues but is itself a sub-issue of #${PARENT_NUMBER}. Nested PRDs are not supported in v1. Flatten the structure before retrying."
+
+      - name: Refuse — PRD has no native sub-issues
+        if: steps.shape.outputs.mode == 'refuse-no-subissues'
+        run: |
+          gh issue edit "$PRD_NUMBER" --remove-label "agent:implement" || true
+          gh issue edit "$PRD_NUMBER" --add-label "agent:blocked" || true
+          gh issue comment "$PRD_NUMBER" --body "Refused to run: this PRD has no native sub-issues. Run the official \`/to-tickets\` skill first, review the generated tickets, then re-add \`agent:implement\`."
 
       - name: Refuse — sub-issue has its own sub-issues
         if: steps.shape.outputs.mode == 'refuse-nested-child'

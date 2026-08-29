@@ -17,10 +17,6 @@ RUN apt-get update \
 # RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
 #   && rm -rf /var/lib/apt/lists/*
 
-# Playwright chromium + its OS deps for the project's browser test suite.
-RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.62.0 install --with-deps chromium \
-  && rm -rf /var/lib/apt/lists/*
-
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -47,13 +43,6 @@ RUN npm install --global @anthropic-ai/claude-code \
   && chmod 755 /usr/local/bin/claude \
   && npm cache clean --force
 
-# code-review skill (two-axis Standards/Spec review via parallel sub-agents),
-# used by the review prompts. Source lives in .sandcastle/skills/code-review.
-COPY skills/code-review /opt/code-review
-RUN mkdir -p /home/agent/.claude/skills && cp -r /opt/code-review /home/agent/.claude/skills/code-review \
-  && chown -R ${AGENT_UID}:${AGENT_GID} /home/agent/.claude
-
 USER ${AGENT_UID}:${AGENT_GID}
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 WORKDIR /home/agent
 ENTRYPOINT ["sleep", "infinity"]

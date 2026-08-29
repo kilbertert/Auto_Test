@@ -57,6 +57,94 @@ export function extractClaimedIssues(bodies: string[]): Set<number> {
   return numbers;
 }
 
+export function selectReadyIssues(
+  planned: { number: number; title: string; branch: string }[],
+  readyNumbers: Set<number>,
+  claimedNumbers: Set<number>,
+  eligibleNumbers: Set<number> = readyNumbers,
+): { number: number; title: string; branch: string }[] {
+  return planned.filter(
+    (issue) =>
+      readyNumbers.has(issue.number) &&
+      eligibleNumbers.has(issue.number) &&
+      !claimedNumbers.has(issue.number),
+  );
+}
+
+export function isPrdIssue(title: string, body: string): boolean {
+  return (
+    /\bprd\b|\[spec\]/i.test(title) ||
+    (/^## Problem Statement/m.test(body) &&
+      /^## Solution/m.test(body) &&
+      /^## User Stories/m.test(body))
+  );
+}
+
+type ReadyIssue = { number: number; title: string; body: string };
+
+function readyIssueCandidates(): ReadyIssue[] {
+  const issues = JSON.parse(
+    execFileSync("gh", ["issue", "list", "--state", "open", "--label", "ready-for-agent", "--limit", "1000", "--json", "number,title,body"], {
+      encoding: "utf8",
+    }),
+  ) as ReadyIssue[];
+  return issues;
+}
+
+function nativeSubIssueCount(number: number): number {
+  return Number(
+    execFileSync("gh", ["api", `repos/${requiredRepository()}/issues/${number}/sub_issues`, "--jq", "length"], {
+      encoding: "utf8",
+    }).trim(),
+  );
+}
+
+function parentIssueNumber(number: number): string {
+  const [owner, repo] = requiredRepository().split("/");
+  return execFileSync(
+    "gh",
+    [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){issue(number:$number){parent{number}}}}",
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `repo=${repo}`,
+      "-F",
+      `number=${number}`,
+      "--jq",
+      ".data.repository.issue.parent.number // empty",
+    ],
+    { encoding: "utf8" },
+  ).trim();
+}
+
+function openNativeBlockerCount(number: number): number {
+  return Number(
+    execFileSync("gh", ["api", `repos/${requiredRepository()}/issues/${number}/dependencies/blocked_by`, "--jq", "[.[] | select(.state == \"open\")] | length"], {
+      encoding: "utf8",
+    }).trim(),
+  );
+}
+
+function requiredRepository(): string {
+  return process.env.GH_REPO ?? execFileSync("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8" }).trim();
+}
+
+function eligibleReadyIssueNumbers(candidates: ReadyIssue[]): Set<number> {
+  const eligible = new Set<number>();
+  for (const issue of candidates) {
+    if (isPrdIssue(issue.title, issue.body)) continue;
+    if (nativeSubIssueCount(issue.number) !== 0) continue;
+    if (parentIssueNumber(issue.number) !== "") continue;
+    if (openNativeBlockerCount(issue.number) !== 0) continue;
+    eligible.add(issue.number);
+  }
+  return eligible;
+}
+
 // --- git helpers -----------------------------------------------------------
 
 function currentBranch(): string {
@@ -134,7 +222,10 @@ async function main(): Promise<void> {
       promptFile: ".sandcastle/plan-prompt.md",
     });
     const claimedIssues = openPrIssueNumbers();
-    const issues = parsePlanOutput(plan.stdout).filter((issue) => !claimedIssues.has(issue.number));
+    const readyCandidates = readyIssueCandidates();
+    const readyNumbers = new Set(readyCandidates.map((issue) => issue.number));
+    const eligibleNumbers = eligibleReadyIssueNumbers(readyCandidates);
+    const issues = selectReadyIssues(parsePlanOutput(plan.stdout), readyNumbers, claimedIssues, eligibleNumbers);
 
     if (issues.length === 0) {
       console.log("No issues to work on. Exiting.");
