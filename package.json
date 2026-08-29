@@ -15,7 +15,6 @@
     "eval:suite": "tsx src/cli/run-eval-suite.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
     "afk": "tsx .sandcastle/main.ts",
-    "prd:to-issues": "tsx .sandcastle/to-issues-prd/to-issues-prd.ts",
     "compile:replay": "tsx src/cli/compile-mcp-replay.ts",
     "report:workflow": "tsx src/cli/workflow-acceptance-report.ts",
     "check": "npm run typecheck && npm test && npm run build",
@@ -45,5 +44,6 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.6"
-  }
+  },
+  "afk_template_version": "1.1.0"
 }
