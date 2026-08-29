@@ -10,15 +10,15 @@
 
 ## Results
 
-AFK-B10: passed on `2026-08-30T03:09:18+08:00`, build identity
-`7f1d64fd5a198043a012b29b33aea24c61b1b5ed`, Linux x86_64, Node v24.15.0,
+AFK-B10: passed on `2026-08-30T03:31:15+08:00`, build identity
+`2b42d80f10bc34e47125a8d8f302b4d06828b594`, Linux x86_64, Node v24.15.0,
 Python 3.13.13, actionlint 1.7.12 and ShellCheck 0.11.0. Evidence:
 `npm run check` (`423/423` tests plus typecheck/build), policy checker,
 actionlint, ShellCheck and `git diff --check` passed. Managed workflow, policy
 checker and bundle helper match the afk-bootstrap template byte-for-byte.
 
 AFK-B11: passed at the same build identity; retained evidence is template
-commit `7973f255059c4e71de67ae9375bc0fb28b584824` and its `bash
+commit `84e9537c661f676f68951eb3e7480472b91ff728` and its `bash
 test/trusted-pr-delivery.sh` report.
 
 AFK-B12 remains pending until the hardened workflow is merged and an
