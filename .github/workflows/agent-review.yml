@@ -54,6 +54,11 @@ jobs:
 
       - name: Ensure main is available for diffing
         run: |
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --prune --unshallow origin
+          else
+            git fetch --prune origin
+          fi
           git fetch --prune origin main
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
 
