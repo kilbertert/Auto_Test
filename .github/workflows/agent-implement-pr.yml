@@ -156,7 +156,10 @@ jobs:
       - name: Import result into clean delivery workspace
         if: steps.result.outputs.changed == 'true'
         working-directory: delivery
+        env:
+          AFK_READ_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
         run: |
+          test -n "$AFK_READ_TOKEN"
           bash ../controller/.sandcastle/trusted-pr-delivery.sh \
             import . "$BRANCH_HEAD_SHA" "$BRANCH" "${RUNNER_TEMP}/implement-result.bundle"
           AFK_ROOT="$PWD" node ../controller/.sandcastle/policy-check.mjs delivery

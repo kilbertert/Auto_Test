@@ -13,7 +13,8 @@ valid_branch() {
 
 remote_head() {
   if [ -n "${AFK_READ_TOKEN:-}" ]; then
-    git -C "$1" -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${AFK_READ_TOKEN}" \
+    auth="$(printf 'x-access-token:%s' "$AFK_READ_TOKEN" | base64 | tr -d '\n')"
+    git -C "$1" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
       ls-remote origin "refs/heads/$2" | awk 'NR == 1 { print $1 }'
   else
     git -C "$1" ls-remote origin "refs/heads/$2" | awk 'NR == 1 { print $1 }'
