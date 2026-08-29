@@ -10,8 +10,14 @@ const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
 const BASE_REF = required("BASE_REF");
 const OUTPUT_DIR = process.env.OUTPUT_DIR ?? "/tmp";
-
-execFileSync("git", ["fetch", "origin", BASE_REF], { stdio: "inherit" });
+const readToken = process.env.AFK_AGENT_GH_TOKEN ?? process.env.GH_TOKEN;
+if (!readToken) fail("AFK_AGENT_GH_TOKEN is required for the trusted base fetch.");
+const auth = Buffer.from("x-access-token:" + readToken).toString("base64");
+execFileSync(
+  "git",
+  ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + auth, "fetch", "origin", BASE_REF],
+  { stdio: "inherit" },
+);
 
 const preMergeSha = sh("git rev-parse HEAD").trim();
 const baseSha = sh(`git rev-parse origin/${BASE_REF}`).trim();

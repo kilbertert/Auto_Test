@@ -8,12 +8,13 @@ const command = process.argv[2] ?? "all";
 const metadata = readJson(join(root, ".afk-bootstrap.json"), "metadata");
 const contract = readJson(join(root, ".sandcastle/consensus-contract.json"), "consensus contract");
 
-if (!["version", "exceptions", "commit", "delivery", "all"].includes(command)) {
-  fail(`Usage: node .sandcastle/policy-check.mjs [version|exceptions|commit|delivery|all]`);
+if (!["version", "exceptions", "workflows", "commit", "delivery", "all"].includes(command)) {
+  fail(`Usage: node .sandcastle/policy-check.mjs [version|exceptions|workflows|commit|delivery|all]`);
 }
 
 if (command === "version" || command === "delivery" || command === "all") checkVersions();
 if (command === "exceptions" || command === "delivery" || command === "all") checkExceptions();
+if (command === "workflows" || command === "delivery" || command === "all") checkWorkflows();
 if (command === "commit" || command === "delivery" || command === "all") checkBranch();
 if (command === "commit" || command === "delivery" || command === "all") checkDiff();
 
@@ -61,6 +62,68 @@ function checkExceptions() {
   }
 }
 
+function checkWorkflows() {
+  const directory = join(root, ".github/workflows");
+  const pullRequestWorkflows = ["agent-implement-pr.yml", "agent-review.yml", "agent-update-branch.yml"];
+  const deliveryWorkflows = ["agent-implement.yml", "agent-implement-prd.yml", "agent-promote-queued.yml"];
+
+  for (const name of pullRequestWorkflows) {
+    const source = readText(join(directory, name), name);
+    for (const required of [
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.event.pull_request.user.login == github.repository_owner",
+      "path: controller",
+      "path: candidate",
+      "path: delivery",
+      "contents: read",
+      "../controller/node_modules/.bin/tsx",
+      "trusted-pr-delivery.sh",
+      "AFK_AGENT_READ_TOKEN",
+      "AFK_READ_TOKEN",
+      "GH_TOKEN: ${{ secrets.AGENT_PAT }}",
+      "agent:blocked",
+    ]) {
+      if (!source.includes(required)) fail(`${name} is missing trusted PR control: ${required}`);
+    }
+    if (source.match(/^    env:\n(?: {6}.*\n)* {6}GH_TOKEN:/m)) fail(`${name} exposes GH_TOKEN to the whole job`);
+    for (const step of source.split(/\n(?= {6}- name:)/)) {
+      if (step.includes("run: npm ci") && !step.includes("working-directory: controller")) {
+        fail(`${name} installs untrusted host dependencies`);
+      }
+      if (step.includes("working-directory: candidate") && step.includes("GH_TOKEN:") && !step.includes("AFK_AGENT_READ_TOKEN")) {
+        fail(`${name} exposes a write token to the candidate checkout`);
+      }
+      if (step.includes("Push result from clean delivery workspace") && !step.includes("secrets.AGENT_PAT")) {
+        fail(`${name} does not use AGENT_PAT for the final push`);
+      }
+    }
+    rejectUnsafeWorkflowText(name, source);
+  }
+
+  for (const name of deliveryWorkflows) {
+    const source = readText(join(directory, name), name);
+    for (const required of ["AGENT_PAT", "agent:blocked"]) {
+      if (!source.includes(required)) fail(`${name} is missing fail-closed delivery control: ${required}`);
+    }
+    if (name === "agent-implement-prd.yml" || name === "agent-implement.yml") {
+      const pushStep = source.split(/\n(?= {6}- name:)/).find((step) => step.includes("- name: Push branch"));
+      if (!pushStep || !pushStep.match(/^ {10}GH_TOKEN:\s*\$\{\{\s*secrets\.AGENT_PAT\s*\}\}\s*$/m)) {
+        fail(`${name} does not use AGENT_PAT for branch pushes`);
+      }
+      if (name === "agent-implement-prd.yml" && source.indexOf("- name: Close completed sub-issue") < source.indexOf("- name: Open draft PR if one doesn't exist for this branch")) {
+        fail(`${name} closes the ticket before PR delivery succeeds`);
+      }
+    }
+    rejectUnsafeWorkflowText(name, source);
+  }
+}
+
+function rejectUnsafeWorkflowText(name, source) {
+  if (source.includes("skills@latest")) fail(`${name} installs a provider-specific skill at runtime`);
+  if (source.includes("GITHUB_TOKEN_FALLBACK")) fail(`${name} falls back to a token that cannot trigger workflows`);
+  if (/git\s+push[^\n]*--force(?:-with-lease)?/.test(source)) fail(`${name} force-pushes`);
+}
+
 function checkBranch() {
   let branch;
   try {
@@ -92,6 +155,14 @@ function git(args) {
 function readJson(path, label) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    fail(`cannot read ${label}: ${error.message}`);
+  }
+}
+
+function readText(path, label) {
+  try {
+    return readFileSync(path, "utf8");
   } catch (error) {
     fail(`cannot read ${label}: ${error.message}`);
   }

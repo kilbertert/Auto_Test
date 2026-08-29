@@ -1,11 +1,9 @@
 name: Agent Review
 
 on:
-  # pull_request_target rather than pull_request: the standard pull_request
-  # trigger depends on a generated merge commit, which GitHub fails to
-  # produce when the PR is out-of-date or conflicting. pull_request_target
-  # runs in the base context and does not need the merge commit, so the
-  # labeled event fires reliably.
+  # pull_request_target keeps the controller on trusted default-branch code.
+  # Candidate code is checked out separately and runs only inside Sandcastle's
+  # Docker sandbox with the read token.
   pull_request_target:
     types: [labeled]
 
@@ -13,14 +11,15 @@ jobs:
   review:
     if: >-
       github.event.label.name == 'agent:review' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner
     runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
       group: agent-mutate-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
@@ -28,100 +27,118 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Transition labels — remove trigger + blocked, add in-progress
+      - name: Transition labels - remove trigger and blocked, add in-progress
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
-      - name: Checkout PR branch with runner HOME and managed Git hooks
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          if [ -d .git ]; then
-            git remote remove origin 2>/dev/null || true
-            git remote add origin "https://github.com/${GH_REPO}.git"
-          else
-            git clone "https://github.com/${GH_REPO}.git" .
-          fi
-          git fetch origin "${{ github.event.pull_request.head.sha }}"
-          git checkout -B "$BRANCH" FETCH_HEAD
+      - name: Checkout trusted controller
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: controller
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
 
-      - name: Ensure main is available for diffing
-        run: |
-          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-            git fetch --prune --unshallow origin
-          else
-            git fetch --prune origin
-          fi
-          git fetch --prune origin main
-          git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
+      - name: Checkout candidate PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
 
-      - name: Capture pre-run HEAD
-        id: pre
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Prepare candidate against current main
+        working-directory: candidate
+        run: |
+          base_sha=$(git -C ../controller rev-parse HEAD)
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            prepare . "$BRANCH_HEAD_SHA" "$base_sha" "$BRANCH"
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: controller/package-lock.json
 
-      - name: Install dependencies
+      - name: Install trusted controller dependencies
+        working-directory: controller
         run: npm ci
 
-      # latest — every run exercises the current version of the skill. Global
-      # (not project) install keeps it outside the git work tree so the review
-      # agent's commit step can never sweep it into the PR branch. Scoped to the
-      # claude-code agent so the step exits 0 (other agents reject -g installs).
-      - name: Install code-review skill
-        run: pnpm dlx skills@latest add mattpocock/skills -g -s code-review -a claude-code -y --copy
-
-      - name: Configure git identity
-        run: |
-          git config user.name "claude-code[bot]"
-          git config user.email "claude-code[bot]@users.noreply.github.com"
-
-      - name: Run review.ts
+      - name: Run trusted review controller against candidate
         id: review
+        working-directory: candidate
         env:
+          GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+          AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
           AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
           OUTPUT_DIR: ${{ runner.temp }}
-        run: npm exec tsx .sandcastle/review/review.ts
+        run: ../controller/node_modules/.bin/tsx ../controller/.sandcastle/review/review.ts
 
-      - name: Verify AFK policy before push
-        if: success()
-        run: node .sandcastle/policy-check.mjs delivery
+      - name: Verify candidate policy
+        working-directory: candidate
+        run: AFK_ROOT="$PWD" node ../controller/.sandcastle/policy-check.mjs delivery
 
-      - name: Push branch (abort cleanly if non-fast-forward)
-        id: push
-        if: success()
+      - name: Capture trusted result bundle
+        id: result
+        working-directory: candidate
         run: |
-          # A normal push is enough because this run starts from the recorded
-          # PR head. It fails cleanly if anything advanced the branch.
-          set +e
-          git push origin "$BRANCH" 2> push_err.txt
-          status=$?
-          set -e
-          if [ $status -ne 0 ]; then
-            if grep -qiE "non-fast-forward|rejected|fetch first|stale info" push_err.txt; then
-              echo "Branch advanced during review run." > "${RUNNER_TEMP}/failure_reason.txt"
-              echo "race=true" >> "$GITHUB_OUTPUT"
-              cat push_err.txt
-              exit 1
-            fi
-            cat push_err.txt
-            exit $status
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            capture . "$BRANCH_HEAD_SHA" "$BRANCH" \
+            "${RUNNER_TEMP}/review-result.bundle" "${RUNNER_TEMP}/has_changes.txt"
+          echo "changed=$(cat "${RUNNER_TEMP}/has_changes.txt")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: delivery
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+
+      - name: Import result into clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        working-directory: delivery
+        env:
+          AFK_READ_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+        run: |
+          test -n "$AFK_READ_TOKEN"
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            import . "$BRANCH_HEAD_SHA" "$BRANCH" "${RUNNER_TEMP}/review-result.bundle"
+          AFK_ROOT="$PWD" node ../controller/.sandcastle/policy-check.mjs delivery
+
+      - name: Push result from clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        working-directory: delivery
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "AGENT_PAT is required to push the review result." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
+          gh auth setup-git
+          if ! bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            push . "$BRANCH_HEAD_SHA" "$BRANCH"; then
+            echo "AGENT_PAT could not push the review result." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
           fi
 
-      - name: Post PR review (inline comments + summary)
+      - name: Post PR review
         if: success()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PAYLOAD: ${{ runner.temp }}/review_payload.json
         run: |
           gh api \
@@ -131,21 +148,23 @@ jobs:
 
       - name: Mark PR ready for review
         if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr ready "$PR_NUMBER" || true
 
       - name: Post thread replies
         if: success()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPLIES: ${{ runner.temp }}/replies.json
         run: |
           count=$(jq 'length' "$REPLIES")
           for i in $(seq 0 $((count - 1))); do
             commentId=$(jq -r ".[$i].commentId" "$REPLIES")
             body=$(jq -r ".[$i].body" "$REPLIES")
-            # GraphQL node ID → numeric REST id via the node lookup.
             rest_id=$(gh api graphql -f query="query(\$id:ID!){ node(id:\$id){ ... on PullRequestReviewComment { databaseId } } }" -F id="$commentId" --jq '.data.node.databaseId')
             if [ -z "$rest_id" ] || [ "$rest_id" = "null" ]; then
-              echo "Could not resolve REST id for $commentId — skipping" >&2
+              echo "Could not resolve REST id for $commentId - skipping" >&2
               continue
             fi
             gh api \
@@ -157,9 +176,10 @@ jobs:
       - name: Mark blocked on failure
         if: failure()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          reason="(no reason file written — check workflow logs)"
+          reason="(no reason file written - check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
@@ -177,4 +197,6 @@ jobs:
 
       - name: Always remove in-progress label
         if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true

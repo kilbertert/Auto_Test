@@ -1,8 +1,6 @@
 name: Agent Implement (PR)
 
 on:
-  # See agent-review.yml — pull_request_target fires reliably on labels
-  # even when the PR is out-of-date or conflicting.
   pull_request_target:
     types: [labeled]
 
@@ -10,15 +8,15 @@ jobs:
   implement-pr:
     if: >-
       github.event.label.name == 'agent:implement' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner
     runs-on: self-hosted
     timeout-minutes: 60
-    # Shared with agent-review.yml — both push to the PR branch.
     concurrency:
       group: agent-mutate-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
@@ -28,13 +26,13 @@ jobs:
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Pre-flight — refuse if PR is closed or merged
+      - name: Pre-flight - refuse if PR is closed or merged
         id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
             gh pr edit "$PR_NUMBER" --remove-label "agent:implement" || true
@@ -44,9 +42,11 @@ jobs:
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Pre-flight — refuse if there is nothing to act on
+      - name: Pre-flight - refuse if there is nothing to act on
         if: steps.state.outputs.proceed == 'true'
         id: inputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # shellcheck disable=SC2016
           set -euo pipefail
@@ -67,32 +67,42 @@ jobs:
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition labels — remove trigger + blocked, add in-progress
+      - name: Transition labels - remove trigger and blocked, add in-progress
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:implement" || true
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
-      - name: Checkout PR branch with runner HOME and managed Git hooks
+      - name: Checkout trusted controller
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          if [ -d .git ]; then
-            git remote remove origin 2>/dev/null || true
-            git remote add origin "https://github.com/${GH_REPO}.git"
-          else
-            git clone "https://github.com/${GH_REPO}.git" .
-          fi
-          git fetch --depth 1 origin "${{ github.event.pull_request.head.sha }}"
-          git checkout -B "$BRANCH" FETCH_HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: controller
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
 
-      - name: Ensure main is available for diffing
+      - name: Checkout candidate PR head
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+
+      - name: Prepare candidate against current main
+        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        working-directory: candidate
         run: |
-          git fetch origin main:main || git fetch origin main
-          git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
+          base_sha=$(git -C ../controller rev-parse HEAD)
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            prepare . "$BRANCH_HEAD_SHA" "$base_sha" "$BRANCH"
 
       - name: Setup Node.js 22
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
@@ -100,55 +110,81 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: controller/package-lock.json
 
-      - name: Install dependencies
+      - name: Install trusted controller dependencies
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        working-directory: controller
         run: npm ci
 
-      - name: Configure git identity
-        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
-        run: |
-          git config user.name "claude-code[bot]"
-          git config user.email "claude-code[bot]@users.noreply.github.com"
-
-      - name: Run implement-pr.ts
+      - name: Run trusted implement controller against candidate
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
         id: implement
+        working-directory: candidate
         env:
+          GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+          AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
           AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
           OUTPUT_DIR: ${{ runner.temp }}
-        run: npm exec tsx .sandcastle/implement-pr/implement-pr.ts
+        run: ../controller/node_modules/.bin/tsx ../controller/.sandcastle/implement-pr/implement-pr.ts
 
-      - name: Verify AFK policy before push
-        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
-        run: node .sandcastle/policy-check.mjs delivery
+      - name: Verify candidate policy
+        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        working-directory: candidate
+        run: AFK_ROOT="$PWD" node ../controller/.sandcastle/policy-check.mjs delivery
 
-      - name: Push branch (abort cleanly if non-fast-forward)
-        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
-        id: push
+      - name: Capture trusted result bundle
+        if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        id: result
+        working-directory: candidate
         run: |
-          has_commits=$(cat "${RUNNER_TEMP}/has_commits.txt")
-          if [ "$has_commits" != "true" ]; then
-            echo "No commits this run — skipping push."
-            exit 0
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            capture . "$BRANCH_HEAD_SHA" "$BRANCH" \
+            "${RUNNER_TEMP}/implement-result.bundle" "${RUNNER_TEMP}/has_changes.txt"
+          echo "changed=$(cat "${RUNNER_TEMP}/has_changes.txt")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: delivery
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+
+      - name: Import result into clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        working-directory: delivery
+        env:
+          AFK_READ_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
+        run: |
+          test -n "$AFK_READ_TOKEN"
+          bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            import . "$BRANCH_HEAD_SHA" "$BRANCH" "${RUNNER_TEMP}/implement-result.bundle"
+          AFK_ROOT="$PWD" node ../controller/.sandcastle/policy-check.mjs delivery
+
+      - name: Push result from clean delivery workspace
+        if: steps.result.outputs.changed == 'true'
+        working-directory: delivery
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "AGENT_PAT is required to push the implementation result." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
           fi
-          set +e
-          git push origin "$BRANCH" 2> push_err.txt
-          status=$?
-          set -e
-          if [ $status -ne 0 ]; then
-            if grep -qiE "non-fast-forward|rejected|fetch first|stale info" push_err.txt; then
-              echo "Branch advanced during implement run." > "${RUNNER_TEMP}/failure_reason.txt"
-              cat push_err.txt
-              exit 1
-            fi
-            cat push_err.txt
-            exit $status
+          gh auth setup-git
+          if ! bash ../controller/.sandcastle/trusted-pr-delivery.sh \
+            push . "$BRANCH_HEAD_SHA" "$BRANCH"; then
+            echo "AGENT_PAT could not push the implementation result." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
           fi
 
       - name: Post thread replies
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPLIES: ${{ runner.temp }}/implement_thread_replies.json
         run: |
           count=$(jq 'length' "$REPLIES")
@@ -157,7 +193,7 @@ jobs:
             body=$(jq -r ".[$i].body" "$REPLIES")
             rest_id=$(gh api graphql -f query="query(\$id:ID!){ node(id:\$id){ ... on PullRequestReviewComment { databaseId } } }" -F id="$commentId" --jq '.data.node.databaseId')
             if [ -z "$rest_id" ] || [ "$rest_id" = "null" ]; then
-              echo "Could not resolve REST id for $commentId — skipping" >&2
+              echo "Could not resolve REST id for $commentId - skipping" >&2
               continue
             fi
             gh api \
@@ -169,6 +205,7 @@ jobs:
       - name: Post new inline comments
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INLINE: ${{ runner.temp }}/implement_new_inline_comments.json
         run: |
           commit_id=$(jq -r '.commit_id' "$INLINE")
@@ -191,6 +228,7 @@ jobs:
       - name: Post top-level PR comments
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && success()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TOP: ${{ runner.temp }}/implement_top_level_comments.json
         run: |
           count=$(jq 'length' "$TOP")
@@ -202,9 +240,10 @@ jobs:
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true' && failure()
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          reason="(no reason file written — check workflow logs)"
+          reason="(no reason file written - check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
@@ -222,4 +261,6 @@ jobs:
 
       - name: Always remove in-progress label
         if: always() && steps.state.outputs.proceed == 'true' && steps.inputs.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
