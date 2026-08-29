@@ -49,12 +49,12 @@ jobs:
           else
             git clone "https://github.com/${GH_REPO}.git" .
           fi
-          git fetch --depth 1 origin "${{ github.event.pull_request.head.sha }}"
+          git fetch origin "${{ github.event.pull_request.head.sha }}"
           git checkout -B "$BRANCH" FETCH_HEAD
 
       - name: Ensure main is available for diffing
         run: |
-          git fetch origin main:main || git fetch origin main
+          git fetch --prune origin main
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
 
       - name: Capture pre-run HEAD
