@@ -17,9 +17,7 @@ clean delivery checkout. Missing or unusable `AGENT_PAT` now fails closed with
 
 The repository-local static and template regression checks are recorded in
 `qa-plan.md`. The post-merge live canary was attempted on 2026-08-30 with
-workflow runs [33272059907](https://github.com/kilbertert/Auto_Test/actions/runs/33272059907),
-[33272577334](https://github.com/kilbertert/Auto_Test/actions/runs/33272577334),
-and [33273244207](https://github.com/kilbertert/Auto_Test/actions/runs/33273244207).
+workflow run IDs `33272059907`, `33272577334`, and `33273244207`.
 Trusted checkout, candidate preparation, and isolation passed. The review
 provider stage was blocked: Aliyun timed out, Claude Ark rejected the account
 without a CodingPlan subscription, and Psydo timed out. The workflow therefore
