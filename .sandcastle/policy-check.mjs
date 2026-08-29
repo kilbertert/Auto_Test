@@ -75,6 +75,7 @@ function checkWorkflows() {
       "path: controller",
       "path: candidate",
       "path: delivery",
+      "contents: read",
       "../controller/node_modules/.bin/tsx",
       "trusted-pr-delivery.sh",
       "AFK_AGENT_READ_TOKEN",
@@ -102,6 +103,15 @@ function checkWorkflows() {
     const source = readText(join(directory, name), name);
     for (const required of ["AGENT_PAT", "agent:blocked"]) {
       if (!source.includes(required)) fail(`${name} is missing fail-closed delivery control: ${required}`);
+    }
+    if (name === "agent-implement-prd.yml") {
+      const pushStep = source.split(/\n(?= {6}- name:)/).find((step) => step.includes("- name: Push branch"));
+      if (!pushStep || !pushStep.match(/^ {10}GH_TOKEN:\s*\$\{\{\s*secrets\.AGENT_PAT\s*\}\}\s*$/m)) {
+        fail(`${name} does not use AGENT_PAT for ticket branch pushes`);
+      }
+      if (source.indexOf("- name: Close completed sub-issue") < source.indexOf("- name: Open draft PR if one doesn't exist for this branch")) {
+        fail(`${name} closes the ticket before PR delivery succeeds`);
+      }
     }
     rejectUnsafeWorkflowText(name, source);
   }

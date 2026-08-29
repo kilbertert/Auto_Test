@@ -19,7 +19,7 @@ jobs:
       group: agent-mutate-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
