@@ -179,7 +179,7 @@ async function runAxis(axis: Axis, instructions: string) {
     promptArgs: {
       PR_NUMBER,
       BRANCH,
-      ISSUE_NUMBER: ISSUE_NUMBER || "(none)",
+      ISSUE_NUMBER,
       ISSUE_TITLE: ISSUE_TITLE || "(no linked issue)",
       PR_COMMENTS_JSON: JSON.stringify(prComments, null, 2),
       REVIEW_AXIS: axis,
@@ -211,7 +211,7 @@ const result = await runWithExtraction({
   promptArgs: {
     PR_NUMBER,
     BRANCH,
-    ISSUE_NUMBER: ISSUE_NUMBER || "(none)",
+    ISSUE_NUMBER,
     ISSUE_TITLE: ISSUE_TITLE || "(no linked issue)",
     PR_COMMENTS_JSON: JSON.stringify(prComments, null, 2),
     AXIS_REPORTS_JSON: JSON.stringify(axisReports, null, 2),

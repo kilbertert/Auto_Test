@@ -13,7 +13,7 @@ Read `CONTEXT.md`, `docs/agents/domain.md`, relevant `docs/adr/` records, and
 
 <linked-issue>
 
-!`gh issue view {{ISSUE_NUMBER}} --comments`
+!`if [ -n "{{ISSUE_NUMBER}}" ]; then gh issue view "{{ISSUE_NUMBER}}" --comments; else printf '%s\n' 'No linked issue.'; fi`
 
 </linked-issue>
 
