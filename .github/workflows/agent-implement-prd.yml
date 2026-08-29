@@ -51,14 +51,14 @@ jobs:
           }; then
             is_prd="true"
           fi
-          sub_issues_json=$(gh api "repos/${GH_REPO}/issues/${PRD_NUMBER}/sub_issues" 2>/dev/null || echo "[]")
+          sub_issues_json=$(gh api "repos/${GH_REPO}/issues/${PRD_NUMBER}/sub_issues")
           sub_count=$(echo "$sub_issues_json" | jq 'length')
           owner="${GH_REPO%/*}"
           repo="${GH_REPO#*/}"
           parent_number=$(gh api graphql \
             -f query="query(\$owner: String!, \$repo: String!, \$num: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$num) { parent { number } } } }" \
             -f owner="$owner" -f repo="$repo" -F num="$PRD_NUMBER" \
-            --jq '.data.repository.issue.parent.number // empty' 2>/dev/null || echo "")
+            --jq '.data.repository.issue.parent.number // empty')
 
           # Reject nested PRDs: a PRD with sub-issues that itself has a parent.
           nested="false"
@@ -70,7 +70,7 @@ jobs:
           has_nested_child="false"
           if [ "$sub_count" != "0" ]; then
             for child_num in $(echo "$sub_issues_json" | jq -r '.[].number'); do
-              child_sub_count=$(gh api "repos/${GH_REPO}/issues/${child_num}/sub_issues" --jq 'length' 2>/dev/null || echo "0")
+              child_sub_count=$(gh api "repos/${GH_REPO}/issues/${child_num}/sub_issues" --jq 'length')
               if [ "$child_sub_count" != "0" ]; then
                 has_nested_child="true"
                 echo "nested_child_number=$child_num" >> "$GITHUB_OUTPUT"
@@ -319,7 +319,7 @@ jobs:
         run: |
           set -euo pipefail
           remaining=$(gh api "repos/${GH_REPO}/issues/${PRD_NUMBER}/sub_issues" \
-            --jq '[.[] | select(.state == "open")] | length' 2>/dev/null || echo "0")
+            --jq '[.[] | select(.state == "open")] | length')
           echo "count=$remaining" >> "$GITHUB_OUTPUT"
 
       - name: Chain — re-label PRD to pick up next sub-issue

@@ -44,16 +44,16 @@ jobs:
           title=$(echo "$issue_json" | jq -r '.title')
           body=$(echo "$issue_json" | jq -r '.body // ""')
           # Sub-issues: REST endpoint returns [] if none, list otherwise.
-          sub_count=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/sub_issues" --jq 'length' 2>/dev/null || echo "0")
+          sub_count=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/sub_issues" --jq 'length')
           # Parent: queried via GraphQL since REST doesn't expose it on the issue object.
           owner="${GH_REPO%/*}"
           repo="${GH_REPO#*/}"
           parent_number=$(gh api graphql \
             -f query="query(\$owner: String!, \$repo: String!, \$num: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$num) { parent { number } } } }" \
             -f owner="$owner" -f repo="$repo" -F num="$ISSUE_NUMBER" \
-            --jq '.data.repository.issue.parent.number // empty' 2>/dev/null || echo "")
+            --jq '.data.repository.issue.parent.number // empty')
           open_blockers=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/dependencies/blocked_by" \
-            --jq '[.[] | select(.state == "open")] | length' 2>/dev/null || echo "0")
+            --jq '[.[] | select(.state == "open")] | length')
           is_prd="false"
           if echo "$title" | grep -qiE '\bprd\b|\[spec\]' || {
             echo "$body" | grep -q '^## Problem Statement' &&

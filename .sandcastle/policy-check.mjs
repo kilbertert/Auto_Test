@@ -68,10 +68,8 @@ function checkWorkflows() {
   const deliveryWorkflows = ["agent-implement.yml", "agent-implement-prd.yml", "agent-promote-queued.yml"];
 
   for (const name of pullRequestWorkflows) {
-    const source = readText(join(directory, name), name);
+    const source = stripYamlComments(readText(join(directory, name), name));
     for (const required of [
-      "github.event.pull_request.head.repo.full_name == github.repository",
-      "github.event.pull_request.user.login == github.repository_owner",
       "path: controller",
       "path: candidate",
       "path: delivery",
@@ -84,6 +82,12 @@ function checkWorkflows() {
       "agent:blocked",
     ]) {
       if (!source.includes(required)) fail(`${name} is missing trusted PR control: ${required}`);
+    }
+    for (const required of [
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.event.pull_request.user.login == github.repository_owner",
+    ]) {
+      if (!hasJobIfExpression(source, required)) fail(`${name} is missing trusted PR control: ${required}`);
     }
     if (source.match(/^    env:\n(?: {6}.*\n)* {6}GH_TOKEN:/m)) fail(`${name} exposes GH_TOKEN to the whole job`);
     for (const step of source.split(/\n(?= {6}- name:)/)) {
@@ -101,7 +105,7 @@ function checkWorkflows() {
   }
 
   for (const name of deliveryWorkflows) {
-    const source = readText(join(directory, name), name);
+    const source = stripYamlComments(readText(join(directory, name), name));
     for (const required of ["AGENT_PAT", "agent:blocked"]) {
       if (!source.includes(required)) fail(`${name} is missing fail-closed delivery control: ${required}`);
     }
@@ -121,6 +125,9 @@ function checkWorkflows() {
 function rejectUnsafeWorkflowText(name, source) {
   if (source.includes("skills@latest")) fail(`${name} installs a provider-specific skill at runtime`);
   if (source.includes("GITHUB_TOKEN_FALLBACK")) fail(`${name} falls back to a token that cannot trigger workflows`);
+  if ((name === "agent-implement.yml" || name === "agent-implement-prd.yml") && source.includes("|| echo")) {
+    fail(`${name} masks a GitHub API failure with a permissive default`);
+  }
   if (/git\s+push[^\n]*--force(?:-with-lease)?/.test(source)) fail(`${name} force-pushes`);
 }
 
@@ -166,6 +173,50 @@ function readText(path, label) {
   } catch (error) {
     fail(`cannot read ${label}: ${error.message}`);
   }
+}
+
+function stripYamlComments(source) {
+  return source.split(/\r?\n/).map((line) => {
+    let quote = "";
+    let escaped = false;
+    for (let index = 0; index < line.length; index++) {
+      const character = line[index];
+      if (quote === '"') {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quote = "";
+        continue;
+      }
+      if (quote === "'") {
+        if (character === "'" && line[index + 1] === "'") index++;
+        else if (character === "'") quote = "";
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+        return line.slice(0, index).trimEnd();
+      }
+    }
+    return line;
+  }).join("\n");
+}
+
+function hasJobIfExpression(source, expression) {
+  const lines = source.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const match = lines[index].match(/^(\s*)if:\s*(.*)$/);
+    if (!match) continue;
+    const indent = match[1].length;
+    let value = match[2];
+    for (let next = index + 1; next < lines.length; next++) {
+      const line = lines[next];
+      if (line.trim() && line.search(/\S/) <= indent) break;
+      value += `\n${line}`;
+    }
+    if (value.includes(expression)) return true;
+  }
+  return false;
 }
 
 function semver(value) { return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(value); }
