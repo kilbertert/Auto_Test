@@ -23,7 +23,7 @@ jobs:
       group: agent-implement-prd-issue-${{ inputs.prd_number || github.event.issue.number }}
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 

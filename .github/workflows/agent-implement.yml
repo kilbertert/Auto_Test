@@ -23,7 +23,7 @@ jobs:
       group: agent-implement-issue-${{ inputs.issue_number || github.event.issue.number }}
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
@@ -201,7 +201,18 @@ jobs:
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
         env:
           BRANCH: ${{ steps.branch.outputs.name }}
-        run: git push origin "$BRANCH"
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "AGENT_PAT is required to push the implementation branch." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
+          gh auth setup-git
+          if ! git push origin "$BRANCH"; then
+            echo "AGENT_PAT could not push the implementation branch." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
 
       - name: Write PR title and description
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
