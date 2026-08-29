@@ -52,6 +52,13 @@ Agents commit on task branches and run deterministic checks. The host runner
 pushes branches, opens draft PRs, and merges only after CI and human review.
 No agent pushes the default branch directly.
 
+Pull request mutation jobs accept only repository-owner-authored branches from
+the same repository. The current `main` checkout supplies the trusted
+controller, candidate commands run in Docker with the read token, and verified
+Git bundles enter a clean delivery checkout before the host write token is used.
+Missing delivery credentials produce `agent:blocked`; there is no non-triggering
+`GITHUB_TOKEN` fallback.
+
 ## Providers
 
 The configured Sandcastle profile is server-global: `claude`, `claude-ark`,

@@ -276,30 +276,26 @@ jobs:
           # repository Actions policy. AGENT_PAT is the host-side delivery
           # credential and never enters the Docker agent.
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
-          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "$EXISTING_PR" ]; then
             echo "pr_number=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "created=false" >> "$GITHUB_OUTPUT"
           else
+            if [ -z "$AGENT_PAT" ]; then
+              echo "AGENT_PAT is required to create the delivery pull request." > "${RUNNER_TEMP}/failure_reason.txt"
+              exit 1
+            fi
             PR_TITLE=$(cat "${RUNNER_TEMP}/pr_title.txt")
             PR_TITLE="${PR_TITLE:0:256}"
-            create_pr() {
-              GH_TOKEN="$1" gh pr create \
+            if ! pr_url=$(GH_TOKEN="$AGENT_PAT" gh pr create \
               --draft \
               --base main \
               --head "$BRANCH" \
               --title "$PR_TITLE" \
-              --body-file "${RUNNER_TEMP}/pr_description.txt"
-            }
-            if [ -n "$AGENT_PAT" ]; then
-              pr_url=$(create_pr "$AGENT_PAT" | tail -n1) || {
-                echo "AGENT_PAT PR creation failed; falling back to GITHUB_TOKEN." >&2
-                pr_url=$(create_pr "$GITHUB_TOKEN_FALLBACK" | tail -n1)
-              }
-            else
-              pr_url=$(create_pr "$GITHUB_TOKEN_FALLBACK" | tail -n1)
+              --body-file "${RUNNER_TEMP}/pr_description.txt" | tail -n1); then
+              echo "AGENT_PAT could not create the delivery pull request." > "${RUNNER_TEMP}/failure_reason.txt"
+              exit 1
             fi
             pr_number=$(basename "$pr_url")
             echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
@@ -319,39 +315,32 @@ jobs:
         if: steps.shape.outputs.mode == 'run' && success() && steps.remaining.outputs.count != '0'
         env:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
-          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
-        # Need AGENT_PAT to fire the next workflow run — GITHUB_TOKEN-driven
-        # label adds don't trigger downstream workflows. Without AGENT_PAT,
-        # the chain stops here and a human will need to re-add the label.
         run: |
-          set +e
-          if [ -n "$AGENT_PAT" ]; then
-            GH_TOKEN="$AGENT_PAT" gh issue edit "$PRD_NUMBER" --add-label "agent:implement"
-            status=$?
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            echo "AGENT_PAT label add failed (status $status); falling back to GITHUB_TOKEN."
+          set -euo pipefail
+          if [ -z "$AGENT_PAT" ]; then
+            echo "AGENT_PAT is required to trigger the next PRD implementation run." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
           fi
-          GH_TOKEN="$GITHUB_TOKEN_FALLBACK" gh issue edit "$PRD_NUMBER" --add-label "agent:implement"
+          if ! GH_TOKEN="$AGENT_PAT" gh issue edit "$PRD_NUMBER" --add-label "agent:implement"; then
+            echo "AGENT_PAT could not add the agent:implement trigger label." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
 
       - name: Hand off — request review on the PR
         if: steps.shape.outputs.mode == 'run' && success() && steps.remaining.outputs.count == '0'
         env:
           PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
-          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
-          if [ -n "$AGENT_PAT" ]; then
-            GH_TOKEN="$AGENT_PAT" gh pr edit "$PR_NUMBER" --add-label "agent:review"
-            status=$?
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            echo "AGENT_PAT label add failed (status $status); falling back to GITHUB_TOKEN."
+          set -euo pipefail
+          if [ -z "$AGENT_PAT" ]; then
+            echo "AGENT_PAT is required to trigger the review workflow." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
           fi
-          GH_TOKEN="$GITHUB_TOKEN_FALLBACK" gh pr edit "$PR_NUMBER" --add-label "agent:review"
+          if ! GH_TOKEN="$AGENT_PAT" gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
+            echo "AGENT_PAT could not add the agent:review trigger label." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
 
       - name: Mark blocked on failure
         if: steps.shape.outputs.mode == 'run' && failure()

@@ -1,0 +1,3 @@
+# Trusted control plane for pull request mutation
+
+AFK pull request mutation workflows accept only repository-owner-authored branches from the same repository. Host orchestration and dependencies come from the default-branch controller, candidate commands receive only the read token inside Docker, and resulting commits cross into a clean delivery checkout through a verified Git bundle before the host injects `AGENT_PAT` for the final push; missing or failed delivery credentials stop the workflow. This preserves downstream CI triggers without executing candidate-controlled host code with delivery credentials.
