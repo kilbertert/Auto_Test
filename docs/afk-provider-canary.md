@@ -19,3 +19,5 @@ The repository-local static and template regression checks are recorded in
 `qa-plan.md`. A new live `agent:review` canary remains pending until these
 workflows are merged. No provider credentials, API keys, tenant data, device
 identifiers, or internal endpoints are recorded here.
+
+Disposable live-canary marker: hardened review delivery validation.
