@@ -272,6 +272,11 @@ jobs:
         env:
           BRANCH: ${{ steps.branch.outputs.name }}
           EXISTING_PR: ${{ steps.pr_lookup.outputs.existing_pr }}
+          # GITHUB_TOKEN may be restricted from creating pull requests by the
+          # repository Actions policy. AGENT_PAT is the host-side delivery
+          # credential and never enters the Docker agent.
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "$EXISTING_PR" ]; then
@@ -280,12 +285,22 @@ jobs:
           else
             PR_TITLE=$(cat "${RUNNER_TEMP}/pr_title.txt")
             PR_TITLE="${PR_TITLE:0:256}"
-            pr_url=$(gh pr create \
+            create_pr() {
+              GH_TOKEN="$1" gh pr create \
               --draft \
               --base main \
               --head "$BRANCH" \
               --title "$PR_TITLE" \
-              --body-file "${RUNNER_TEMP}/pr_description.txt" | tail -n1)
+              --body-file "${RUNNER_TEMP}/pr_description.txt"
+            }
+            if [ -n "$AGENT_PAT" ]; then
+              pr_url=$(create_pr "$AGENT_PAT" | tail -n1) || {
+                echo "AGENT_PAT PR creation failed; falling back to GITHUB_TOKEN." >&2
+                pr_url=$(create_pr "$GITHUB_TOKEN_FALLBACK" | tail -n1)
+              }
+            else
+              pr_url=$(create_pr "$GITHUB_TOKEN_FALLBACK" | tail -n1)
+            fi
             pr_number=$(basename "$pr_url")
             echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
             echo "created=true" >> "$GITHUB_OUTPUT"
