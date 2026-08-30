@@ -194,7 +194,7 @@ async function runAxis(axis: Axis, instructions: string) {
 const axisResults = await Promise.all([
   runAxis(
     "Standards",
-    "Check the repository coding standards, correctness, safety, clarity, and the built-in smell baseline. Flag concrete defects or maintainability problems with evidence.",
+    "Check the repository coding standards, correctness, safety, clarity, the Economy ladder, and the built-in smell baseline. Flag concrete defects or maintainability problems with evidence.",
   ),
   runAxis(
     "Spec",

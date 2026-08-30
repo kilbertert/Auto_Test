@@ -2,11 +2,16 @@
 
 You are addressing reviewer feedback on PR #{{PR_NUMBER}} (branch `{{BRANCH}}`).
 
-Unlike a review, your job is **not** to compare the code against a spec or coding standards. Your job is to read the unresolved conversation on this PR, decide what (if anything) to change in the code, make those changes, and explain yourself by commenting back where useful.
+Unlike a review, your job is **not** to perform a broad comparison against the
+spec or coding standards. Read the unresolved conversation, decide what (if
+anything) to change, and explain yourself where useful. Any code change still
+follows `.sandcastle/CODING_STANDARDS.md`.
 
 # CONTEXT
 
-Read `CONTEXT.md` and `docs/` and any relevant ADRs under `docs/adr/` if you need domain context for a comment. Don't go deeper than the comments demand.
+Read `CONTEXT.md`, `.sandcastle/CODING_STANDARDS.md`, `docs/`, and relevant ADRs
+under `docs/adr/` if you need domain context for a comment. Do not go deeper
+than the comments demand.
 
 <linked-issue>
 
@@ -39,8 +44,10 @@ Not everything in here is necessarily actionable — reviewers may leave context
 # PROCESS
 
 1. Read the conversation. For each item, classify it in your head as: code change needed, reply needed (question / disagreement / clarification), or neither.
-2. Make the code changes you decided on. Run `npm run check`, then `node .sandcastle/policy-check.mjs commit`, before committing. Use conventional-commit messages (`feat:`, `fix:`, `refactor:`, etc.). Do NOT use a `RALPH:` prefix.
-3. If you made no changes that's fine — only commit when there's a real diff.
+2. For a code change, run the Economy ladder and stop at the first option that
+   fully addresses the confirmed feedback.
+3. Make the code changes you decided on. Run `npm run check`, then `node .sandcastle/policy-check.mjs commit`, before committing. Use conventional-commit messages (`feat:`, `fix:`, `refactor:`, etc.). Do NOT use a `RALPH:` prefix.
+4. If you made no changes that's fine — only commit when there's a real diff.
 
 You do not have to reply to every thread. Reply only where a reply adds value: confirming what you changed, explaining why you chose not to make a requested change, answering a question, or pointing out something the reviewer should look at. Silence is fine for context-only comments.
 
