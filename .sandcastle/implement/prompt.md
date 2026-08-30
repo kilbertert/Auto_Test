@@ -12,6 +12,8 @@ Read `CONTEXT.md` and `docs/`, `.sandcastle/CODING_STANDARDS.md`, and any releva
 `docs/adr/` before starting. Explore the repo and fill your context with the parts
 relevant to this issue — especially test files that touch the area
 you'll change.
+Run the Economy ladder before choosing an implementation; stop at the first
+option that fully satisfies the issue and its acceptance contract.
 
 # EXECUTION
 

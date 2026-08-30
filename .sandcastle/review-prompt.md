@@ -9,6 +9,8 @@ and maintainability while preserving exact functionality.
 # CONTEXT
 
 Read `CONTEXT.md` (domain language) and apply `.sandcastle/CODING_STANDARDS.md`.
+Run an Economy audit: verify the change fixed the root cause and did not skip
+an adequate existing-code, standard-library, platform, or dependency option.
 
 <issue>
 
@@ -53,6 +55,7 @@ Look for opportunities to:
 
 - Reduce unnecessary complexity and nesting
 - Eliminate redundant code and abstractions
+- Remove unjustified compatibility layers, configuration, dependencies, and seams
 - Improve readability through clear variable and function names
 - Consolidate related logic
 - Avoid nested ternary operators — prefer switch statements or if/else chains

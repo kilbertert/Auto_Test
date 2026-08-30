@@ -16,20 +16,45 @@
 
 ## Structure & clarity
 
-- Keep functions small and focused (< ~50 lines); keep files cohesive
-  (< ~800 lines). Split when they grow.
-- Prefer many small, high-cohesion files over a few large ones.
+- Keep modules cohesive and separate concerns at established seams. Prefer a
+  deep module with a small interface over pass-through layers or many shallow
+  files. Introduce a new seam only when the current system has real variation.
 - Favor immutability: return new values instead of mutating inputs.
 - Avoid deep nesting (>4 levels) — use early returns.
 - Name things for what they are: `camelCase` variables/functions,
   `PascalCase` types/components, `UPPER_SNAKE_CASE` constants.
 
-## Simplicity
+## Engineering economy
 
-- Prefer the simplest solution that works (KISS); don't add speculative
-  abstractions (YAGNI); don't repeat yourself (DRY) where it's real.
-- Use the standard library / platform primitives before adding dependencies.
+- Trace the affected flow and every caller before editing shared behavior.
+  Fix the root cause once at the narrowest shared location.
+- Apply the Economy ladder and stop at the first option that fully satisfies
+  the current requirement: skip speculative work; reuse project code; use the
+  standard library or platform; use an already-installed dependency after
+  checking its capabilities; add a mature maintained dependency only when it
+  lowers total complexity; otherwise write the minimum custom code.
+- Prefer deletion and the fewest cohesive files. Add no configuration layer,
+  interface, factory, or extension point for a variation that does not exist.
+- Leave the smallest runnable regression check for non-trivial behavior such
+  as branching logic, parsers, persistence, money, or security paths.
 - No dead code, no commented-out blocks, no `console.log` debug leftovers.
+
+## Compatibility & delivery
+
+- Treat public interfaces, schemas, persisted data, and production behavior as
+  compatibility contracts unless the requirement or an ADR explicitly changes
+  them. For internal or experimental paths with no consumer, remove obsolete
+  behavior cleanly instead of adding a shim, migration, or fallback. A fallback
+  must never hide a real failure.
+- Deliver the smallest end-to-end slice that satisfies acceptance, verify it,
+  then extend it without dismantling working behavior for unfinished layers.
+- Make high-switching-cost architecture choices durable. Use applicable
+  standards, official dependency documentation, repository conventions, and
+  established product patterns when the decision is material; routine local
+  work does not require external research.
+- Do not label a throwaway architecture as permanent. Mark a deliberate bounded
+  simplification with a `ponytail:` comment naming its ceiling and upgrade
+  trigger.
 
 ## Consistency
 
