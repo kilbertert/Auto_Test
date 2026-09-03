@@ -139,6 +139,36 @@ describe('observation server remote access (token gate)', () => {
     }
   })
 
+  it('rejects an explicitly empty token instead of opening a trivially matched gate', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
+    try {
+      await expect(startObservationServer({ runRoot: directory, token: '' })).rejects.toThrow(/--token 不能为空/)
+      // Omitting the token entirely on loopback stays open — the guard only
+      // fires on the explicit empty string.
+      const server = await startObservationServer({ runRoot: directory })
+      servers.push(server)
+      expect((await fetch(`${server.baseUrl}/api/runs`)).status).toBe(200)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('URL-encodes tokens carrying reserved characters in the printed baseUrl', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
+    try {
+      await oneRun(directory)
+      const tricky = 'a&b=c#d/e'
+      const server = await startObservationServer({ runRoot: directory, token: tricky })
+      servers.push(server)
+      // The printed URL must encode the token so & and # cannot truncate it.
+      expect(server.baseUrl).toContain(encodeURIComponent(tricky))
+      // The full printed URL must authenticate without manual surgery.
+      expect((await fetch(server.baseUrl)).status).toBe(200)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('enforces an explicit token even on a loopback bind (tunnel reachability)', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
     try {

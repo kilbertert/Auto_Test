@@ -682,7 +682,7 @@ async function main(): Promise<void> {
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
-    console.log('      npm run easy -- dashboard [--port <端口>] [--host 0.0.0.0] [--token <token>]   # 启动只读观测面板；默认仅本机回环自动选端口；--host 非回环时强制令牌')
+    console.log('      npm run easy -- dashboard [--port <端口>] [--host <地址>] [--token <token>]   # 启动只读观测面板；默认仅本机回环自动选端口；--host 非回环必须带令牌；显式 --token 在任何绑定下都强制校验')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return
   }

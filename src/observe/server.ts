@@ -189,6 +189,9 @@ export async function startObservationServer(options: StartObservationServerOpti
   if (!loopbackOnly && !token) {
     throw new Error('非回环绑定必须提供访问令牌（--token），或让框架自动生成')
   }
+  if (options.token !== undefined && options.token.length === 0) {
+    throw new Error('--token 不能为空；省略该参数即可在回环绑定下免认证')
+  }
   const requiresToken = token !== undefined
   const timingSafeEqual = (a: string, b: string): boolean => {
     const left = Buffer.from(a)
@@ -285,7 +288,7 @@ export async function startObservationServer(options: StartObservationServerOpti
   // single routable address, so surface the interfaces the viewer can try.
   const isWildcard = host === '0.0.0.0' || host === '::' || host === '*'
   const displayHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
-  const baseUrl = `http://${displayHost}:${address.port}${requiresToken ? `/?token=${token}` : ''}`
+  const baseUrl = `http://${displayHost}:${address.port}${requiresToken ? `/?token=${encodeURIComponent(token)}` : ''}`
   const reachHint = isWildcard
     ? `（已绑定全部网卡；请从本机局域网 IP 或主机名访问，例如 http://<本机IP>:${address.port}/?token=…）`
     : undefined
