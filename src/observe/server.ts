@@ -182,20 +182,21 @@ export async function startObservationServer(options: StartObservationServerOpti
   const loopbackOnly = host === '127.0.0.1' || host === '::1' || host === 'localhost'
   // Any non-loopback bind is an explicit exposure decision: it must carry a
   // token so the read-only plane is never anonymously reachable on a network.
+  // An explicitly provided token is enforced even on loopback, because a
+  // loopback bind can still be reached from other machines through a tunnel
+  // or port-forward (the recommended remote-access pattern).
   const token = options.token ?? (loopbackOnly ? undefined : randomBytes(24).toString('base64url'))
   if (!loopbackOnly && !token) {
     throw new Error('非回环绑定必须提供访问令牌（--token），或让框架自动生成')
   }
+  if (options.token !== undefined && options.token.length === 0) {
+    throw new Error('--token 不能为空；省略该参数即可在回环绑定下免认证')
+  }
+  const requiresToken = token !== undefined
   const timingSafeEqual = (a: string, b: string): boolean => {
     const left = Buffer.from(a)
     const right = Buffer.from(b)
     return left.length === right.length && timingSafeEqualBuffer(left, right)
-  }
-  const authorized = (request: IncomingMessage): boolean => {
-    if (loopbackOnly) return true
-    const header = request.headers.authorization
-    if (header?.startsWith('Bearer ') && timingSafeEqual(header.slice('Bearer '.length), token!)) return true
-    return false
   }
   const server = createServer((request, response) => {
     void (async () => {
@@ -206,7 +207,7 @@ export async function startObservationServer(options: StartObservationServerOpti
           return
         }
         // EventSource cannot set headers, so the token also travels as a query.
-        if (!loopbackOnly) {
+        if (requiresToken) {
           const queryToken = url.searchParams.get('token') ?? undefined
           const bearer = request.headers.authorization?.startsWith('Bearer ')
             ? request.headers.authorization.slice('Bearer '.length)
@@ -287,7 +288,7 @@ export async function startObservationServer(options: StartObservationServerOpti
   // single routable address, so surface the interfaces the viewer can try.
   const isWildcard = host === '0.0.0.0' || host === '::' || host === '*'
   const displayHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
-  const baseUrl = `http://${displayHost}:${address.port}${loopbackOnly ? '' : `/?token=${token}`}`
+  const baseUrl = `http://${displayHost}:${address.port}${requiresToken ? `/?token=${encodeURIComponent(token)}` : ''}`
   const reachHint = isWildcard
     ? `（已绑定全部网卡；请从本机局域网 IP 或主机名访问，例如 http://<本机IP>:${address.port}/?token=…）`
     : undefined
