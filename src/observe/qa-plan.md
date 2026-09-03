@@ -19,3 +19,5 @@
 **证据查看切片(#174)追加(2026-09-03 执行)**:tests/observe-evidence.test.ts 5 个测试自动化覆盖——evidence 目录内 png/txt 按 content-type 返回(浏览器可直接渲染);未知扩展(.bin)与原始工作簿副本拒绝;穿越/绝对路径/编码逃逸(`..`、`%2e%2e%2f`、`../../etc/passwd`、`.agent-private` 直读)全部 404;result 契约路径形态(`evidence/<file>` 与剥前缀)可打开;全部 API 响应零 `OBS-SECRET-MARKER` 泄漏。allowlist 为显式扩展名清单(png/jpg/jpeg/gif/webp/txt/log/md/json),路径必须 resolve 在 `agent-workspace/evidence` 内,单文件上限 20MB。
 
 **端到端终验(#175,2026-09-03 执行,Linux x64 / Node 24.15)**:以合成运行目录(进行中 Run + evidence PNG + `.agent-private` 秘密标记)对真实服务器执行全路由手动 QA——① 首页渲染;② 列表(running/executing);③ 详情投影(epoch 1/2、完成 1、摘要标题"测试仍在运行");④ SSE 连接即推 state 快照;⑤ 证据 PNG 200 image/png;⑥ `.agent-private` 直读 404;⑦ 全路由秘密标记零出现;⑧ events 文件推进后 SSE 增量 2s 内到达(实测秒级)。Windows 打包面验证:dashboard 页面为 TS 模块内嵌字符串,经 `npm run easy`/tsx 天然可用,启动器(launch-windows.ps1)纯转发零改动,便携包无需额外资源文件。文档同步:README 观测面板节、POSIX/Windows quick-start、easy 帮助文本、CONTEXT.md 观测面/控制面词条。
+
+**远程访问切片(2026-09-03 执行)**:tests/observe-remote-access.test.ts 4 个测试自动化覆盖——非回环绑定无令牌时拒绝启动;回环绑定保持免认证且 URL 无令牌;`0.0.0.0` 绑定时全路由(首页/列表/详情/SSE)无令牌与错令牌 401、正确 Bearer 200、query `?token=` 200(EventSource 场景);授权客户端的 SSE 增量帧正常流动。README/CLI help 同步 `--host`/`--token` 用法。
