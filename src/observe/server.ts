@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import type { CodexTestAgentState, CodexTestOutcome } from '../agent/types.js'
 import { defaultRunRoot } from '../usability/run-directory.js'
 import { observationDashboardHtml } from './dashboard-html.js'
+import { runDetail } from './run-detail.js'
 
 const STATE_FILE = 'codex-agent.state.json'
 
@@ -173,6 +174,23 @@ export async function startObservationServer(options: StartObservationServerOpti
         if (url.pathname === '/api/runs') {
           const runs = await listRuns(runRoot)
           json(response, 200, { runs })
+          return
+        }
+        const detailMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname)
+        if (detailMatch) {
+          // A run id is one directory name: reject separators, dots, encodings.
+          const requestedId = decodeURIComponent(detailMatch[1]!)
+          if (!/^[A-Za-z0-9._-]+$/.test(requestedId)) {
+            json(response, 404, { error: '未找到' })
+            return
+          }
+          const statePath = resolve(runRoot, requestedId, STATE_FILE)
+          const detail = await runDetail(statePath)
+          if (!detail) {
+            json(response, 404, { error: '未找到' })
+            return
+          }
+          json(response, 200, detail)
           return
         }
         json(response, 404, { error: '未找到' })
