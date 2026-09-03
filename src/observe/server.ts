@@ -7,6 +7,7 @@ import { defaultRunRoot } from '../usability/run-directory.js'
 import { observationDashboardHtml } from './dashboard-html.js'
 import { runDetail } from './run-detail.js'
 import { serveRunEventStream } from './run-events.js'
+import { serveEvidenceFile } from './evidence.js'
 
 const STATE_FILE = 'codex-agent.state.json'
 
@@ -140,7 +141,7 @@ function basename(path: string): string {
 
 
 /** Validate one requested run id: exactly one safe directory segment that resolves inside the run root. */
-function runDirectoryFor(runRoot: string, requestedId: string): string | undefined {
+export function runDirectoryFor(runRoot: string, requestedId: string): string | undefined {
   if (requestedId === '.' || requestedId === '..' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(requestedId)) return undefined
   const resolved = resolve(runRoot, requestedId)
   const under = relative(runRoot, resolved)
@@ -185,6 +186,18 @@ export async function startObservationServer(options: StartObservationServerOpti
         if (url.pathname === '/api/runs') {
           const runs = await listRuns(runRoot)
           json(response, 200, { runs })
+          return
+        }
+        const evidenceMatch = /^\/api\/runs\/([^/]+)\/evidence\/(.+)$/.exec(url.pathname)
+        if (evidenceMatch) {
+          const runDirectory = runDirectoryFor(runRoot, decodeURIComponent(evidenceMatch[1]!))
+          if (!runDirectory) {
+            json(response, 404, { error: '未找到' })
+            return
+          }
+          // One percent-encoded path segment list under the run's evidence directory.
+          const requestedPath = evidenceMatch[2]!.split('/').map(decodeURIComponent).join('/')
+          await serveEvidenceFile(response, runDirectory, requestedPath)
           return
         }
         const eventsMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(url.pathname)

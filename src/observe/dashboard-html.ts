@@ -31,6 +31,11 @@ export function observationDashboardHtml(): string {
   .note { padding: 8px 12px; background: #fef3c7; border-radius: 6px; font-size: 13px; }
   ul.feed { list-style: none; padding-left: 0; max-height: 260px; overflow-y: auto; font-size: 13px; font-family: ui-monospace, monospace; }
   ul.feed li { padding: 2px 0; border-bottom: 1px dashed #e6e8ec; }
+  ul.evidence { list-style: none; padding-left: 0; margin: 0; font-size: 12px; }
+  ul.evidence li { padding: 1px 0; }
+  ul.evidence a { color: #1d4ed8; text-decoration: none; }
+  ul.evidence a:hover { text-decoration: underline; }
+  @media (prefers-color-scheme: dark) { ul.evidence a { color: #93c5fd; } }
   @media (prefers-color-scheme: dark) {
     body { background: #101418; color: #e5e7eb; }
     table { background: #161b22; }
@@ -175,7 +180,7 @@ export function observationDashboardHtml(): string {
     if (detail.cases && detail.cases.length > 0) {
       const table = document.createElement('table')
       const head = document.createElement('thead')
-      head.innerHTML = '<tr><th>用例</th><th>标题</th><th>结果</th><th>失败来源</th><th>失败类型</th><th>摘要</th><th>证据数</th></tr>'
+      head.innerHTML = '<tr><th>用例</th><th>标题</th><th>结果</th><th>失败来源</th><th>失败类型</th><th>摘要</th><th>证据</th></tr>'
       table.appendChild(head)
       const body = document.createElement('tbody')
       for (const item of detail.cases) {
@@ -186,7 +191,31 @@ export function observationDashboardHtml(): string {
         tr.appendChild(cell(item.failureSource))
         tr.appendChild(cell(item.failureKind))
         tr.appendChild(cell(item.summary))
-        tr.appendChild(cell(item.evidenceCount))
+        const evidenceCell = document.createElement('td')
+        if (item.evidence && item.evidence.length > 0) {
+          const list = document.createElement('ul'); list.className = 'evidence'
+          for (const entry of item.evidence) {
+            const li = document.createElement('li')
+            if (entry.path) {
+              // Results record evidence paths relative to agent-workspace
+              // (evidence/<file>); the route serves from inside that directory.
+              let relativePath = entry.path
+              if (relativePath.startsWith('evidence/')) relativePath = relativePath.slice('evidence/'.length)
+              const link = document.createElement('a')
+              link.href = '/api/runs/' + encodeURIComponent(runId) + '/evidence/' + relativePath.split('/').map(encodeURIComponent).join('/')
+              link.target = '_blank'; link.rel = 'noopener'
+              link.textContent = (entry.kind ? entry.kind + '：' : '') + entry.path
+              li.appendChild(link)
+            } else {
+              li.textContent = (entry.kind ? entry.kind + '：' : '') + entry.description
+            }
+            list.appendChild(li)
+          }
+          evidenceCell.appendChild(list)
+        } else {
+          evidenceCell.textContent = '—'
+        }
+        tr.appendChild(evidenceCell)
         body.appendChild(tr)
       }
       table.appendChild(body)

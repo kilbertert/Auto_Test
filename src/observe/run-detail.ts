@@ -8,6 +8,12 @@ import type {
 import { friendlyRunSummaryFromState } from '../usability/result-summary.js'
 import type { FriendlyRunSummary } from '../usability/result-summary.js'
 
+export interface ObservationEvidenceRef {
+  kind: string
+  path: string | undefined
+  description: string
+}
+
 export interface ObservationCaseRow {
   caseId: string
   title: string
@@ -16,6 +22,7 @@ export interface ObservationCaseRow {
   failureKind: string | undefined
   summary: string
   evidenceCount: number
+  evidence: ObservationEvidenceRef[]
 }
 
 export interface ObservationEnvironmentBlocker {
@@ -73,6 +80,11 @@ function caseRows(result: CodexTestAgentResult | undefined): ObservationCaseRow[
     failureKind: item.failureKind,
     summary: item.summary,
     evidenceCount: item.evidence.length,
+    evidence: item.evidence.map((entry) => ({
+      kind: entry.kind,
+      path: entry.path,
+      description: entry.description,
+    })),
   }))
 }
 
