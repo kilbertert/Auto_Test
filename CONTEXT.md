@@ -35,3 +35,18 @@ _Avoid_: Report, Verdict
 The run's artifact location and the state record that identifies its latest
 execution.
 _Avoid_: Output dir (generic)
+
+**Observation plane**:
+The read-only projection of run artifacts for humans: a loopback web view of
+runs, live progress, case results, and evidence. It never writes, never holds
+control authority, and serves only path-isolated, structurally redacted
+artifacts; image evidence is displayed as-is, so what a run captured is what
+an authorized local viewer sees. Console summaries and the web view are two
+surfaces of one projection.
+_Avoid_: Dashboard (implementation name), Monitoring (vaguer)
+
+**Control plane**:
+The write path that acts on runs (pause/resume/re-run/configure). A deliberate
+follow-up, kept distinct from the observation plane: conflating the two would
+give an unauthenticated local view control authority.
+_Avoid_: Admin panel
