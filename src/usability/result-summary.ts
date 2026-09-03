@@ -270,3 +270,8 @@ export async function friendlyRunSummary(statePath: string): Promise<FriendlyRun
   }
   return codexAgentSummary(statePath, state)
 }
+
+/** Same-source projection for non-CLI consumers (observation plane): summary from an already-read state. */
+export async function friendlyRunSummaryFromState(statePath: string, state: CodexTestAgentState): Promise<FriendlyRunSummary> {
+  return codexAgentSummary(statePath, state)
+}
