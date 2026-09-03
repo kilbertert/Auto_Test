@@ -1,11 +1,18 @@
-import { watch, type FSWatcher } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import type { ServerResponse } from 'node:http'
 import { redactAgentArtifactValue } from '../agent/redact.js'
 
 const SNAPSHOT_EVENT_LINES = 50
 const HEARTBEAT_MS = 15_000
+/**
+ * Poll interval for change detection. Deliberately mtime polling rather
+ * than fs.watch: libuv's Windows watcher aborts the process when a watched
+ * directory is removed (src\win\fs-event.c), and run directories are
+ * routinely created and deleted. 200ms keeps pushes well inside the 2s
+ * freshness budget.
+ */
+const POLL_MS = 200
 
 export interface RunEventLine {
   at?: string
@@ -36,7 +43,6 @@ export function serveRunEventStream(
   const statePath = resolve(runDirectory, 'codex-agent.state.json')
   const eventsPath = resolve(runDirectory, 'codex-agent.events.jsonl')
   let eventsByteOffset = 0
-  const watchers: FSWatcher[] = []
   const timers: NodeJS.Timeout[] = []
   let closed = false
 
@@ -107,15 +113,25 @@ export function serveRunEventStream(
     timers.push(timer)
   }
 
-  try {
-    watchers.push(watch(dirname(statePath), (_eventType, filename) => {
-      if (filename === 'codex-agent.state.json') onChange('state')
-      if (filename === 'codex-agent.events.jsonl') onChange('events')
-    }))
-  } catch {
-    // Directory vanished (run deleted): the heartbeat keeps the connection
-    // honest and the client sees no further updates.
-  }
+  // mtime polling: see POLL_MS comment. A vanished run directory simply
+  // stops producing changes; the heartbeat keeps the connection honest.
+  let lastStateMtimeMs = 0
+  let lastEventsSize = -1
+  timers.push(setInterval(() => {
+    if (closed) return
+    void (async () => {
+      const stateStats = await stat(statePath).catch(() => undefined)
+      if (stateStats && stateStats.mtimeMs !== lastStateMtimeMs) {
+        lastStateMtimeMs = stateStats.mtimeMs
+        onChange('state')
+      }
+      const eventsStats = await stat(eventsPath).catch(() => undefined)
+      if (eventsStats && eventsStats.size !== lastEventsSize) {
+        lastEventsSize = eventsStats.size
+        onChange('events')
+      }
+    })()
+  }, POLL_MS))
 
   timers.push(setInterval(() => {
     if (!closed) response.write(`: keep-alive\n\n`)
@@ -130,8 +146,6 @@ export function serveRunEventStream(
   function close(): void {
     if (closed) return
     closed = true
-    for (const watcher of watchers) watcher.close()
-    for (const timer of timers) clearTimeout(timer)
     for (const timer of timers) clearInterval(timer)
     timers.length = 0
   }

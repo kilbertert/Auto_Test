@@ -101,8 +101,17 @@ describe('observation run event stream (SSE)', () => {
       servers.push(server)
       // Start collecting in the background, then advance the run mid-stream.
       const collection = collectSse(`${server.baseUrl}/api/runs/${runId}/events`, collected => {
-        const events = collected.filter(frame => frameEvent(frame) === 'events')
-        return events.length >= 2
+        const sawFinalizing = collected.some(frame => {
+          if (frameEvent(frame) !== 'state') return false
+          const data = frameData(frame) as Record<string, unknown> | undefined
+          return data?.stage === 'finalizing'
+        })
+        const sawToolStarted = collected.some(frame => {
+          if (frameEvent(frame) !== 'events') return false
+          const data = frameData(frame) as { lines?: Array<Record<string, unknown>> } | undefined
+          return data?.lines?.some(line => line.event === 'tool_started') ?? false
+        })
+        return sawFinalizing && sawToolStarted
       }, 6_000)
       await new Promise(resolveTimer => setTimeout(resolveTimer, 400))
       await writeFile(resolve(runDir, 'codex-agent.state.json'), JSON.stringify(stateFixture({ stage: 'finalizing', completedCaseIds: ['case-one'] })))
