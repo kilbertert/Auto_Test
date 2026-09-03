@@ -73,6 +73,11 @@ describe('observation server remote access (token gate)', () => {
       // The query form serves EventSource clients.
       expect((await fetch(`${server.baseUrl}`)).status).toBe(200)
       expect((await fetch(`http://127.0.0.1:${new URL(server.baseUrl).port}/api/runs?token=kiosk-token-1`)).status).toBe(200)
+      // Either channel carrying the valid token is enough — a wrong query
+      // token must not shadow a valid Bearer header.
+      expect((await fetch(`http://127.0.0.1:${new URL(server.baseUrl).port}/api/runs?token=wrong`, {
+        headers: { authorization: 'Bearer kiosk-token-1' },
+      })).status).toBe(200)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -108,6 +113,26 @@ describe('observation server remote access (token gate)', () => {
       // Without the token the stream endpoint is closed immediately.
       const denied = await fetch(`http://127.0.0.1:${port}/api/runs/20260903-080000-remote-01/events`)
       expect(denied.status).toBe(401)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('prints bracketed IPv6 and a reachability hint for wildcard binds', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
+    try {
+      await oneRun(directory)
+      // ::1 is loopback: bracketed URL, no token required by design.
+      const v6 = await startObservationServer({ runRoot: directory, host: '::1' })
+      servers.push(v6)
+      expect(v6.baseUrl).toContain('http://[::1]:')
+      expect(v6.baseUrl).not.toContain('token=')
+      const wildcard = await startObservationServer({ runRoot: directory, host: '0.0.0.0', token: 'wild-token' })
+      servers.push(wildcard)
+      expect(wildcard.baseUrl).toContain('http://0.0.0.0:')
+      expect(wildcard.reachHint).toContain('局域网')
+      // A wildcard bind is still fully token-gated.
+      expect((await fetch(`http://127.0.0.1:${new URL(wildcard.baseUrl).port}/api/runs`)).status).toBe(401)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

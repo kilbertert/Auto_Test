@@ -25,6 +25,8 @@ export interface ObservationRunEntry {
 export interface ObservationServer {
   baseUrl: string
   close: () => Promise<void>
+  /** For wildcard binds: how to reach the server from another machine. */
+  reachHint?: string
 }
 
 export interface StartObservationServerOptions {
@@ -205,12 +207,14 @@ export async function startObservationServer(options: StartObservationServerOpti
         }
         // EventSource cannot set headers, so the token also travels as a query.
         if (!loopbackOnly) {
-          const queryToken = url.searchParams.get('token')
+          const queryToken = url.searchParams.get('token') ?? undefined
           const bearer = request.headers.authorization?.startsWith('Bearer ')
             ? request.headers.authorization.slice('Bearer '.length)
             : undefined
-          const provided = queryToken ?? bearer
-          if (!provided || !timingSafeEqual(provided, token!)) {
+          // Either channel may carry the valid token.
+          const viaQuery = queryToken !== undefined && timingSafeEqual(queryToken, token!)
+          const viaBearer = bearer !== undefined && timingSafeEqual(bearer, token!)
+          if (!viaQuery && !viaBearer) {
             response.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'www-authenticate': 'Bearer', 'cache-control': 'no-store' })
             response.end(JSON.stringify({ error: '需要有效的访问令牌' }))
             return
@@ -279,8 +283,14 @@ export async function startObservationServer(options: StartObservationServerOpti
     server.listen(options.port ?? 0, host, resolveListen)
   })
   const address = server.address() as AddressInfo
-  const displayHost = address.family === 'IPv6' && !host.includes(':') ? `[${address.address}]` : host
+  // A bare IPv6 literal needs brackets in a URL; a wildcard bind has no
+  // single routable address, so surface the interfaces the viewer can try.
+  const isWildcard = host === '0.0.0.0' || host === '::' || host === '*'
+  const displayHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
   const baseUrl = `http://${displayHost}:${address.port}${loopbackOnly ? '' : `/?token=${token}`}`
+  const reachHint = isWildcard
+    ? `（已绑定全部网卡；请从本机局域网 IP 或主机名访问，例如 http://<本机IP>:${address.port}/?token=…）`
+    : undefined
 
   return {
     baseUrl,
@@ -293,5 +303,6 @@ export async function startObservationServer(options: StartObservationServerOpti
         server.close(error => error ? rejectClose(error) : resolveClose())
       })
     },
+    ...(reachHint ? { reachHint } : {}),
   }
 }

@@ -394,10 +394,12 @@ async function serveObservation(options: { host?: string; token?: string } = {})
   const host = options.host ?? '127.0.0.1'
   const server = await startObservationServer({ host, ...(options.token ? { token: options.token } : {}) })
   console.log(`\n观测面板已启动：${server.baseUrl}`)
+  if (server.reachHint) console.log(server.reachHint)
   if (host === '127.0.0.1' || host === '::1' || host === 'localhost') {
     console.log('只读观测面（仅本机回环地址）；按 Ctrl+C 退出。')
   } else {
-    console.log(`只读观测面（绑定 ${host}）；URL 已含访问令牌，请仅分享给可信查看者；按 Ctrl+C 退出。`)
+    console.log(`只读观测面（绑定 ${host}）；URL 已含访问令牌，仅分享给可信查看者。`)
+    console.log('注意：直连 HTTP 在网络中可被监听；跨不可信网络访问请置于 HTTPS 反向代理或可信隧道之后。按 Ctrl+C 退出。')
   }
   await new Promise<void>(resolveStop => {
     const stop = () => { process.off('SIGINT', stop); process.off('SIGTERM', stop); resolveStop() }
