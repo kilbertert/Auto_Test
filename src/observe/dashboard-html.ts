@@ -52,23 +52,44 @@ export function observationDashboardHtml(): string {
   const summary = document.getElementById('summary')
   const statusLabel = { running: '进行中', completed: '已完成', failed: '失败', invalid: '无法读取' }
   const outcomeLabel = { passed: '测试通过', product_failed: '发现产品问题', blocked: '被阻断', failed: '执行异常', none: '—' }
+  const stageLabel = { preparing: '准备中', executing: '执行中', finalizing: '交付中', completed: '已完成', failed: '失败' }
+  const statusClasses = new Set(['running', 'passed', 'product_failed', 'blocked', 'failed', 'invalid', 'completed'])
+  const cell = (value) => { const td = document.createElement('td'); td.textContent = value == null || value === '' ? '—' : String(value); return td }
+  const badgeCell = (status, label) => {
+    const td = document.createElement('td')
+    const span = document.createElement('span')
+    span.className = 'badge ' + (statusClasses.has(status) ? status : 'invalid')
+    span.textContent = label
+    td.appendChild(span)
+    return td
+  }
+  function renderTable(runs) {
+    const table = document.createElement('table')
+    const head = document.createElement('thead')
+    head.innerHTML = '<tr><th>运行</th><th>状态</th><th>阶段</th><th>结果</th><th>开始时间</th><th>更新时间</th></tr>'
+    table.appendChild(head)
+    const body = document.createElement('tbody')
+    for (const run of runs) {
+      const tr = document.createElement('tr')
+      tr.appendChild(cell(run.runId))
+      tr.appendChild(badgeCell(run.status, statusLabel[run.status] ?? String(run.status)))
+      tr.appendChild(cell(run.stage ? (stageLabel[run.stage] ?? run.stage) : '—'))
+      tr.appendChild(cell(run.outcome && run.outcome !== 'none' ? (outcomeLabel[run.outcome] ?? run.outcome) : '—'))
+      tr.appendChild(cell(run.startedAt ? new Date(run.startedAt).toLocaleString() : '—'))
+      tr.appendChild(cell(new Date(run.updatedAt).toLocaleString()))
+      body.appendChild(tr)
+    }
+    table.appendChild(body)
+    content.replaceChildren(table)
+  }
   async function render() {
     let data
-    try { data = await (await fetch('/api/runs')).json() } catch (e) { content.innerHTML = '<div class="error">无法连接观测服务：' + e + '</div>'; return }
+    try { data = await (await fetch('/api/runs')).json() } catch (e) { content.textContent = ''; const div = document.createElement('div'); div.className = 'error'; div.textContent = '无法连接观测服务：' + e; content.appendChild(div); return }
     const runs = data.runs || []
-    if (runs.length === 0) { content.innerHTML = '<div class="empty">还没有任何运行记录</div>'; summary.textContent = ''; return }
+    if (runs.length === 0) { content.textContent = '还没有任何运行记录'; content.className = 'empty'; summary.textContent = ''; return }
+    content.className = ''
     summary.textContent = runs.length + ' 个运行'
-    const rows = runs.map(run => \`<tr>
-      <td>\${run.runId}</td>
-      <td><span class="badge \${run.status}">\${statusLabel[run.status] ?? run.status}</span></td>
-      <td>\${outcomeLabel[run.outcome] ?? run.outcome ?? '—'}</td>
-      <td>\${run.startedAt ? new Date(run.startedAt).toLocaleString() : '—'}</td>
-      <td>\${new Date(run.updatedAt).toLocaleString()}</td>
-    </tr>\`).join('')
-    content.innerHTML = \`<table>
-      <thead><tr><th>运行</th><th>状态</th><th>结果</th><th>开始时间</th><th>更新时间</th></tr></thead>
-      <tbody>\${rows}</tbody>
-    </table>\`
+    renderTable(runs)
   }
   await render()
   setInterval(render, 5000)

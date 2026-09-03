@@ -26,8 +26,6 @@ export interface ObservationServer {
 export interface StartObservationServerOptions {
   /** Run root to scan; defaults to the platform Run root. */
   runRoot?: string
-  /** Loopback host; fixed to 127.0.0.1 for the observation plane. */
-  host?: '127.0.0.1'
   /** Port override for tests; default asks the OS for a free port. */
   port?: number
   /** Injection seam for tests; default serves the embedded single-file page. */
@@ -99,6 +97,10 @@ async function listRuns(runRoot: string): Promise<ObservationRunEntry[]> {
     .map((item) => item.entry)
 }
 
+const OUTCOMES = new Set(['passed', 'product_failed', 'blocked', 'failed'])
+const STATUSES = new Set(['running', 'completed', 'failed'])
+const STAGES = new Set(['preparing', 'executing', 'finalizing', 'completed', 'failed'])
+
 function runEntryFromState(run: RunScanItem, state: unknown): ObservationRunEntry {
   const runId = basename(run.directory)
   if (!isRecord(state) || state.version !== '2.0') {
@@ -109,14 +111,20 @@ function runEntryFromState(run: RunScanItem, state: unknown): ObservationRunEntr
   }
   const status = String(state.status)
   const stage = String(state.stage)
-  const outcome = state.outcome === undefined ? 'none' : String(state.outcome) as CodexTestOutcome
+  const outcome = state.outcome === undefined ? 'none' : String(state.outcome)
+  const statusValid = STATUSES.has(status)
+  const outcomeValid = outcome === 'none' || OUTCOMES.has(outcome)
+  if (!statusValid || !outcomeValid) {
+    return {
+      runId, status: 'invalid', stage: STAGES.has(stage) ? stage as CodexTestAgentState['stage'] : 'preparing', outcome: 'none',
+      startedAt: '', updatedAt: new Date(run.modifiedMs).toISOString(), finishedAt: undefined,
+    }
+  }
   return {
     runId,
-    status: status === 'running' || status === 'completed' || status === 'failed' ? status as CodexTestAgentState['status'] : 'invalid',
-    stage: stage === 'preparing' || stage === 'executing' || stage === 'finalizing' || stage === 'completed' || stage === 'failed'
-      ? stage as CodexTestAgentState['stage']
-      : 'preparing',
-    outcome,
+    status: status as CodexTestAgentState['status'],
+    stage: STAGES.has(stage) ? stage as CodexTestAgentState['stage'] : 'preparing',
+    outcome: outcome as CodexTestOutcome,
     startedAt: String(state.startedAt ?? ''),
     updatedAt: String(state.updatedAt ?? '') || new Date(run.modifiedMs).toISOString(),
     finishedAt: state.finishedAt === undefined ? undefined : String(state.finishedAt),
@@ -176,7 +184,8 @@ export async function startObservationServer(options: StartObservationServerOpti
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once('error', rejectListen)
-    server.listen(options.port ?? 0, options.host ?? '127.0.0.1', resolveListen)
+    // The observation plane is loopback-only by construction; no host override.
+    server.listen(options.port ?? 0, '127.0.0.1', resolveListen)
   })
   const address = server.address() as AddressInfo
   const baseUrl = `http://127.0.0.1:${address.port}`

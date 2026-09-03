@@ -174,4 +174,44 @@ describe('observation server (read-only Run list)', () => {
     expect(html).not.toContain('src="')   // no external assets
     expect(html).not.toContain('href="') // no external links
   })
+
+  it('renders run rows via text nodes so hostile directory names cannot inject HTML', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-'))
+    try {
+      await writeRun(directory, '20260901-080000-hostile-zz99', await stateFixture())
+      const server = await startObservationServer({ runRoot: directory })
+      servers.push(server)
+      const response = await fetch(`${server.baseUrl}/api/runs`)
+      const body = await response.json() as { runs: Array<{ runId: string }> }
+      expect(response.status).toBe(200)
+      // The API passes the raw directory name through as data; the embedded
+      // page builds rows with textContent (no innerHTML for run fields), so
+      // the value is always displayed as text. The page must never template
+      // run fields straight into HTML.
+      expect(body.runs[0]?.runId).toBe('20260901-080000-hostile-zz99')
+      const html = observationDashboardHtml()
+      expect(html).not.toContain('${run.')          // no run fields templated into HTML
+      expect(html).not.toContain('.innerHTML = ${') // no interpolated innerHTML
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('marks states with an unknown outcome as invalid instead of trusting them', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-'))
+    try {
+      await writeRun(directory, '20260901-080000-weird-aa11', await stateFixture({
+        status: 'running', outcome: 'mysterious_outcome' as never,
+      }))
+      const server = await startObservationServer({ runRoot: directory })
+      servers.push(server)
+      const response = await fetch(`${server.baseUrl}/api/runs`)
+      const body = await response.json() as { runs: Array<{ status: string; outcome: string }> }
+      expect(response.status).toBe(200)
+      expect(body.runs[0]?.status).toBe('invalid')
+      expect(body.runs[0]?.outcome).toBe('none')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })
