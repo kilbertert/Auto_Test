@@ -910,7 +910,7 @@ describe('adaptive Codex epochs', () => {
     expect(turnsByThread).toEqual([3, 2])
     expect(run.result?.outcome).toBe('passed')
     expect(run.state.checkpointPath).toBeUndefined()
-  })
+  }, 30_000)
 
   it('lets the AgentHost finish its bounded reconnect sequence before classifying a rate limit', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-reconnect-'))

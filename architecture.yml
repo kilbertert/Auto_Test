@@ -7,7 +7,7 @@ layers:
   agent: [src.agent]                        # agent orchestration
   workflow: [src.workflow]                  # workflow intake, profiles, and acceptance reporting
   io: [src.input, src.compiler]             # workbook parsing, redaction, and replay compilation
-  support: [src.usability, src.eval]        # interactive usability helpers and evaluation
+  support: [src.usability, src.eval, src.observe]  # usability helpers, evaluation, read-only observation
   foundation: [src.core]                    # pure foundation (types/diagnostics)
 
 rules:
