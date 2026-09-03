@@ -154,7 +154,7 @@ export async function startObservationServer(options: StartObservationServerOpti
     void (async () => {
       try {
         const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
+        if (request.method !== 'GET') {
           json(response, 405, { error: '只读观测面：仅支持 GET' })
           return
         }
