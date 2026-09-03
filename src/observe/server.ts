@@ -1,5 +1,6 @@
-import { createServer, type ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readdir, readFile, stat } from 'node:fs/promises'
+import { randomBytes, timingSafeEqual as timingSafeEqualBuffer } from 'node:crypto'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { CodexTestAgentState, CodexTestOutcome } from '../agent/types.js'
@@ -24,6 +25,8 @@ export interface ObservationRunEntry {
 export interface ObservationServer {
   baseUrl: string
   close: () => Promise<void>
+  /** For wildcard binds: how to reach the server from another machine. */
+  reachHint?: string
 }
 
 export interface StartObservationServerOptions {
@@ -33,6 +36,10 @@ export interface StartObservationServerOptions {
   port?: number
   /** Injection seam for tests; default serves the embedded single-file page. */
   html?: string
+  /** Bind host. Default 127.0.0.1 (loopback-only); any other value requires a token and is an explicit exposure decision. */
+  host?: string
+  /** Shared-secret token. Required (auto-generated when omitted) for any non-loopback bind. */
+  token?: string
 }
 
 interface RunScanItem {
@@ -171,6 +178,25 @@ async function serveIndex(response: ServerResponse): Promise<void> {
  */
 export async function startObservationServer(options: StartObservationServerOptions = {}): Promise<ObservationServer> {
   const runRoot = resolve(options.runRoot ?? defaultRunRoot())
+  const host = options.host ?? '127.0.0.1'
+  const loopbackOnly = host === '127.0.0.1' || host === '::1' || host === 'localhost'
+  // Any non-loopback bind is an explicit exposure decision: it must carry a
+  // token so the read-only plane is never anonymously reachable on a network.
+  const token = options.token ?? (loopbackOnly ? undefined : randomBytes(24).toString('base64url'))
+  if (!loopbackOnly && !token) {
+    throw new Error('非回环绑定必须提供访问令牌（--token），或让框架自动生成')
+  }
+  const timingSafeEqual = (a: string, b: string): boolean => {
+    const left = Buffer.from(a)
+    const right = Buffer.from(b)
+    return left.length === right.length && timingSafeEqualBuffer(left, right)
+  }
+  const authorized = (request: IncomingMessage): boolean => {
+    if (loopbackOnly) return true
+    const header = request.headers.authorization
+    if (header?.startsWith('Bearer ') && timingSafeEqual(header.slice('Bearer '.length), token!)) return true
+    return false
+  }
   const server = createServer((request, response) => {
     void (async () => {
       try {
@@ -178,6 +204,21 @@ export async function startObservationServer(options: StartObservationServerOpti
         if (request.method !== 'GET') {
           json(response, 405, { error: '只读观测面：仅支持 GET' })
           return
+        }
+        // EventSource cannot set headers, so the token also travels as a query.
+        if (!loopbackOnly) {
+          const queryToken = url.searchParams.get('token') ?? undefined
+          const bearer = request.headers.authorization?.startsWith('Bearer ')
+            ? request.headers.authorization.slice('Bearer '.length)
+            : undefined
+          // Either channel may carry the valid token.
+          const viaQuery = queryToken !== undefined && timingSafeEqual(queryToken, token!)
+          const viaBearer = bearer !== undefined && timingSafeEqual(bearer, token!)
+          if (!viaQuery && !viaBearer) {
+            response.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'www-authenticate': 'Bearer', 'cache-control': 'no-store' })
+            response.end(JSON.stringify({ error: '需要有效的访问令牌' }))
+            return
+          }
         }
         if (url.pathname === '/' || url.pathname === '/index.html') {
           await serveIndex(response)
@@ -237,11 +278,19 @@ export async function startObservationServer(options: StartObservationServerOpti
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once('error', rejectListen)
-    // The observation plane is loopback-only by construction; no host override.
-    server.listen(options.port ?? 0, '127.0.0.1', resolveListen)
+    // Default is loopback-only; binding elsewhere is an explicit exposure
+    // decision and is gated by the token check above.
+    server.listen(options.port ?? 0, host, resolveListen)
   })
   const address = server.address() as AddressInfo
-  const baseUrl = `http://127.0.0.1:${address.port}`
+  // A bare IPv6 literal needs brackets in a URL; a wildcard bind has no
+  // single routable address, so surface the interfaces the viewer can try.
+  const isWildcard = host === '0.0.0.0' || host === '::' || host === '*'
+  const displayHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  const baseUrl = `http://${displayHost}:${address.port}${loopbackOnly ? '' : `/?token=${token}`}`
+  const reachHint = isWildcard
+    ? `（已绑定全部网卡；请从本机局域网 IP 或主机名访问，例如 http://<本机IP>:${address.port}/?token=…）`
+    : undefined
 
   return {
     baseUrl,
@@ -254,5 +303,6 @@ export async function startObservationServer(options: StartObservationServerOpti
         server.close(error => error ? rejectClose(error) : resolveClose())
       })
     },
+    ...(reachHint ? { reachHint } : {}),
   }
 }

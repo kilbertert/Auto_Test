@@ -390,10 +390,17 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
 }
 
 /** Serve the read-only observation dashboard until Ctrl+C. */
-async function serveObservation(): Promise<void> {
-  const server = await startObservationServer()
+async function serveObservation(options: { host?: string; token?: string } = {}): Promise<void> {
+  const host = options.host ?? '127.0.0.1'
+  const server = await startObservationServer({ host, ...(options.token ? { token: options.token } : {}) })
   console.log(`\n观测面板已启动：${server.baseUrl}`)
-  console.log('只读观测面；按 Ctrl+C 退出。')
+  if (server.reachHint) console.log(server.reachHint)
+  if (host === '127.0.0.1' || host === '::1' || host === 'localhost') {
+    console.log('只读观测面（仅本机回环地址）；按 Ctrl+C 退出。')
+  } else {
+    console.log(`只读观测面（绑定 ${host}）；URL 已含访问令牌，仅分享给可信查看者。`)
+    console.log('注意：直连 HTTP 在网络中可被监听；跨不可信网络访问请置于 HTTPS 反向代理或可信隧道之后。按 Ctrl+C 退出。')
+  }
   await new Promise<void>(resolveStop => {
     const stop = () => { process.off('SIGINT', stop); process.off('SIGTERM', stop); resolveStop() }
     process.once('SIGINT', stop)
@@ -652,7 +659,9 @@ async function main(): Promise<void> {
     return
   }
   if (command === 'dashboard') {
-    await serveObservation()
+    const host = valueAfter(args, '--host')
+    const token = valueAfter(args, '--token')
+    await serveObservation({ ...(host ? { host } : {}), ...(token ? { token } : {}) })
     return
   }
   if (command === '--help' || command === 'help') {
@@ -665,7 +674,7 @@ async function main(): Promise<void> {
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
-    console.log('      npm run easy -- dashboard   # 启动只读观测面板（本机回环地址）')
+    console.log('      npm run easy -- dashboard [--host 0.0.0.0] [--token <token>]   # 启动只读观测面板；默认仅本机回环，--host 非回环时强制令牌')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return
   }

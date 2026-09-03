@@ -61,6 +61,8 @@ export function observationDashboardHtml(): string {
 <main id="content"><div class="empty">正在加载运行列表…</div></main>
 <script>
 (async () => {
+  const tokenParam = new URLSearchParams(location.search).get('token')
+  const withToken = (path) => tokenParam ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tokenParam) : path
   const content = document.getElementById('content')
   const summary = document.getElementById('summary')
   const statusLabel = { running: '进行中', completed: '已完成', failed: '失败', invalid: '无法读取' }
@@ -108,12 +110,12 @@ export function observationDashboardHtml(): string {
     content.textContent = '正在加载运行详情…'
     if (detailSource) { detailSource.close(); detailSource = null }
     let detail
-    try { detail = await (await fetch('/api/runs/' + encodeURIComponent(runId))).json() } catch (e) { content.textContent = '无法加载运行详情：' + e; return }
+    try { detail = await (await fetch(withToken('/api/runs/' + encodeURIComponent(runId)))).json() } catch (e) { content.textContent = '无法加载运行详情：' + e; return }
     if (!detail || detail.error) { content.textContent = '无法加载运行详情：' + (detail ? detail.error : '未知错误'); return }
     if (detail.entry.status === 'running') {
       const feed = document.createElement('ul'); feed.className = 'feed'
       const feedSection = section('实时事件', feed)
-      detailSource = new EventSource('/api/runs/' + encodeURIComponent(runId) + '/events')
+      detailSource = new EventSource(withToken('/api/runs/' + encodeURIComponent(runId) + '/events'))
       detailSource.addEventListener('state', (e) => {
         try {
           const state = JSON.parse(e.data)
@@ -202,7 +204,7 @@ export function observationDashboardHtml(): string {
               let relativePath = entry.path
               if (relativePath.startsWith('evidence/')) relativePath = relativePath.slice('evidence/'.length)
               const link = document.createElement('a')
-              link.href = '/api/runs/' + encodeURIComponent(runId) + '/evidence/' + relativePath.split('/').map(encodeURIComponent).join('/')
+              link.href = withToken('/api/runs/' + encodeURIComponent(runId) + '/evidence/' + relativePath.split('/').map(encodeURIComponent).join('/')
               link.target = '_blank'; link.rel = 'noopener'
               link.textContent = (entry.kind ? entry.kind + '：' : '') + entry.path
               li.appendChild(link)
@@ -235,7 +237,7 @@ export function observationDashboardHtml(): string {
   }
   async function render() {
     let data
-    try { data = await (await fetch('/api/runs')).json() } catch (e) { content.textContent = ''; const div = document.createElement('div'); div.className = 'error'; div.textContent = '无法连接观测服务：' + e; content.appendChild(div); return }
+    try { data = await (await fetch(withToken('/api/runs'))).json() } catch (e) { content.textContent = ''; const div = document.createElement('div'); div.className = 'error'; div.textContent = '无法连接观测服务：' + e; content.appendChild(div); return }
     const runs = data.runs || []
     if (runs.length === 0) { content.textContent = '还没有任何运行记录'; content.className = 'empty'; summary.textContent = ''; return }
     content.className = ''
