@@ -118,6 +118,47 @@ describe('observation server remote access (token gate)', () => {
     }
   })
 
+  it('honors a fixed port for FRP tunnel setups and validates the flag', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
+    try {
+      await oneRun(directory)
+      // Use a scratch port here (the registered 11880 may be live in dev);
+      // this test pins the behavior, not the registry allocation.
+      const port = 21451
+      const server = await startObservationServer({ runRoot: directory, port })
+      servers.push(server)
+      expect(new URL(server.baseUrl).port).toBe(String(port))
+      // The fixed port is released on close (needed for tunnel restarts).
+      await server.close()
+      const rebound = await startObservationServer({ runRoot: directory, port })
+      servers.push(rebound)
+      expect(new URL(rebound.baseUrl).port).toBe(String(port))
+      expect((await fetch(`${rebound.baseUrl}/api/runs`)).status).toBe(200)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('enforces an explicit token even on a loopback bind (tunnel reachability)', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
+    try {
+      await oneRun(directory)
+      // Loopback + explicit token: the token gate must hold, because a
+      // loopback bind is reachable from other machines through an FRP or
+      // SSH-forward tunnel — the recommended remote-access pattern.
+      const server = await startObservationServer({ runRoot: directory, token: 'tunnel-token' })
+      servers.push(server)
+      expect(server.baseUrl).toContain('token=tunnel-token')
+      const routes = ['/', '/api/runs', '/api/runs/20260903-080000-remote-01']
+      for (const route of routes) {
+        expect((await fetch(`http://127.0.0.1:${new URL(server.baseUrl).port}${route}`)).status).toBe(401)
+        expect((await fetch(`http://127.0.0.1:${new URL(server.baseUrl).port}${route}?token=tunnel-token`)).status).toBe(200)
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('prints bracketed IPv6 and a reachability hint for wildcard binds', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-remote-'))
     try {

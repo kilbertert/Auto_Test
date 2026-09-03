@@ -390,9 +390,9 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
 }
 
 /** Serve the read-only observation dashboard until Ctrl+C. */
-async function serveObservation(options: { host?: string; token?: string } = {}): Promise<void> {
+async function serveObservation(options: { host?: string; token?: string; port?: number } = {}): Promise<void> {
   const host = options.host ?? '127.0.0.1'
-  const server = await startObservationServer({ host, ...(options.token ? { token: options.token } : {}) })
+  const server = await startObservationServer({ host, ...(options.token ? { token: options.token } : {}), ...(options.port !== undefined ? { port: options.port } : {}) })
   console.log(`\n观测面板已启动：${server.baseUrl}`)
   if (server.reachHint) console.log(server.reachHint)
   if (host === '127.0.0.1' || host === '::1' || host === 'localhost') {
@@ -661,7 +661,15 @@ async function main(): Promise<void> {
   if (command === 'dashboard') {
     const host = valueAfter(args, '--host')
     const token = valueAfter(args, '--token')
-    await serveObservation({ ...(host ? { host } : {}), ...(token ? { token } : {}) })
+    const portValue = valueAfter(args, '--port')
+    if (portValue !== undefined && (!/^\d+$/.test(portValue) || Number(portValue) < 1 || Number(portValue) > 65535)) {
+      throw new Error('--port 必须是 1-65535 的端口号')
+    }
+    await serveObservation({
+      ...(host ? { host } : {}),
+      ...(token ? { token } : {}),
+      ...(portValue !== undefined ? { port: Number(portValue) } : {}),
+    })
     return
   }
   if (command === '--help' || command === 'help') {
@@ -674,7 +682,7 @@ async function main(): Promise<void> {
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
-    console.log('      npm run easy -- dashboard [--host 0.0.0.0] [--token <token>]   # 启动只读观测面板；默认仅本机回环，--host 非回环时强制令牌')
+    console.log('      npm run easy -- dashboard [--port <端口>] [--host 0.0.0.0] [--token <token>]   # 启动只读观测面板；默认仅本机回环自动选端口；--host 非回环时强制令牌')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return
   }
