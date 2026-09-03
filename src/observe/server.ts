@@ -1,6 +1,6 @@
 import { createServer, type ServerResponse } from 'node:http'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { CodexTestAgentState, CodexTestOutcome } from '../agent/types.js'
 import { defaultRunRoot } from '../usability/run-directory.js'
@@ -138,6 +138,16 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path
 }
 
+
+/** Validate one requested run id: exactly one safe directory segment that resolves inside the run root. */
+function runDirectoryFor(runRoot: string, requestedId: string): string | undefined {
+  if (requestedId === '.' || requestedId === '..' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(requestedId)) return undefined
+  const resolved = resolve(runRoot, requestedId)
+  const under = relative(runRoot, resolved)
+  if (under === '' || under.startsWith('..') || isAbsolute(under)) return undefined
+  return resolved
+}
+
 function json(response: ServerResponse, code: number, body: unknown): void {
   const payload = JSON.stringify(body)
   response.writeHead(code, {
@@ -179,15 +189,11 @@ export async function startObservationServer(options: StartObservationServerOpti
         }
         const eventsMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(url.pathname)
         if (eventsMatch) {
-          // A run id is one directory name: reject separators, dots, encodings.
-          const requestedId = decodeURIComponent(eventsMatch[1]!)
-          if (!/^[A-Za-z0-9._-]+$/.test(requestedId)) {
-            json(response, 404, { error: '未找到' })
-            return
-          }
-          const runDirectory = resolve(runRoot, requestedId)
-          const stateExists = await stat(resolve(runDirectory, STATE_FILE)).then(() => true, () => false)
-          if (!stateExists) {
+          const runDirectory = runDirectoryFor(runRoot, decodeURIComponent(eventsMatch[1]!))
+          const stateExists = runDirectory
+            ? await stat(resolve(runDirectory, STATE_FILE)).then(() => true, () => false)
+            : false
+          if (!runDirectory || !stateExists) {
             json(response, 404, { error: '未找到' })
             return
           }
@@ -196,14 +202,12 @@ export async function startObservationServer(options: StartObservationServerOpti
         }
         const detailMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname)
         if (detailMatch) {
-          // A run id is one directory name: reject separators, dots, encodings.
-          const requestedId = decodeURIComponent(detailMatch[1]!)
-          if (!/^[A-Za-z0-9._-]+$/.test(requestedId)) {
+          const runDirectory = runDirectoryFor(runRoot, decodeURIComponent(detailMatch[1]!))
+          if (!runDirectory) {
             json(response, 404, { error: '未找到' })
             return
           }
-          const statePath = resolve(runRoot, requestedId, STATE_FILE)
-          const detail = await runDetail(statePath)
+          const detail = await runDetail(resolve(runDirectory, STATE_FILE))
           if (!detail) {
             json(response, 404, { error: '未找到' })
             return

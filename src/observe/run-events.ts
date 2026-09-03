@@ -60,22 +60,31 @@ export function serveRunEventStream(
     }
   }
 
+  /**
+   * Read events after `fromByte` using a real byte cursor. Only complete
+   * newline-terminated lines are consumed: the cursor stops at the byte
+   * after the last `\n`, so a half-written tail line survives until its
+   * newline arrives. A file that shrank (rotation/truncation) is re-read
+   * from the start so replaced content still reaches the client.
+   */
   const readEventLines = async (fromByte: number): Promise<{ lines: RunEventLine[]; nextByte: number }> => {
     try {
-      const stats = await stat(eventsPath)
-      if (stats.size < fromByte) return { lines: [], nextByte: stats.size } // truncated/rotated: resync
-      const text = await readFile(eventsPath, 'utf8')
-      const chunk = text.slice(fromByte)
+      const buffer = await readFile(eventsPath)
+      const start = fromByte > 0 && fromByte <= buffer.length ? fromByte : 0
+      const chunk = buffer.subarray(start)
+      const lastNewline = chunk.lastIndexOf(10)
+      if (lastNewline === -1) return { lines: [], nextByte: start }
+      const complete = chunk.subarray(0, lastNewline + 1)
       const lines: RunEventLine[] = []
-      for (const line of chunk.split('\n')) {
+      for (const line of complete.toString('utf8').split('\n')) {
         if (!line.trim()) continue
         try {
           lines.push(JSON.parse(line) as RunEventLine)
         } catch {
-          // partial tail line: wait for the rest on the next change
+          // corrupt complete line: skip it, keep the cursor moving
         }
       }
-      return { lines, nextByte: text.length }
+      return { lines, nextByte: start + lastNewline + 1 }
     } catch {
       return { lines: [], nextByte: fromByte }
     }
@@ -98,19 +107,22 @@ export function serveRunEventStream(
 
   const pushSnapshot = async (): Promise<void> => {
     await pushState()
-    const { lines } = await readEventLines(0)
-    const snapshotLines = lines.slice(-SNAPSHOT_EVENT_LINES)
-    const { nextByte } = await readEventLines(0)
+    const { lines, nextByte } = await readEventLines(0)
     eventsByteOffset = nextByte
+    const snapshotLines = lines.slice(-SNAPSHOT_EVENT_LINES)
     if (snapshotLines.length > 0) sendEvent(response, 'events', { lines: redactAgentArtifactValue(snapshotLines, []) as RunEventLine[] })
   }
 
+  // One replaceable debounce timer per kind: fired timers do not accumulate.
+  const debounceTimers: Partial<Record<'state' | 'events', NodeJS.Timeout>> = {}
   const onChange = (kind: 'state' | 'events'): void => {
     if (closed) return
-    const timer = setTimeout(() => {
+    const existing = debounceTimers[kind]
+    if (existing) clearTimeout(existing)
+    debounceTimers[kind] = setTimeout(() => {
+      delete debounceTimers[kind]
       void (kind === 'state' ? pushState() : pushNewEvents())
     }, 150)
-    timers.push(timer)
   }
 
   // mtime polling: see POLL_MS comment. A vanished run directory simply
@@ -148,6 +160,11 @@ export function serveRunEventStream(
     closed = true
     for (const timer of timers) clearInterval(timer)
     timers.length = 0
+    for (const kind of ['state', 'events'] as const) {
+      const timer = debounceTimers[kind]
+      if (timer) clearTimeout(timer)
+      delete debounceTimers[kind]
+    }
   }
 
   return { close }

@@ -110,7 +110,15 @@ export function observationDashboardHtml(): string {
       const feedSection = section('实时事件', feed)
       detailSource = new EventSource('/api/runs/' + encodeURIComponent(runId) + '/events')
       detailSource.addEventListener('state', (e) => {
-        try { renderDetail(JSON.parse(e.data), runId, feed, feedSection) } catch { /* ignore malformed frame */ }
+        try {
+          const state = JSON.parse(e.data)
+          renderDetail(state, runId, feed, feedSection)
+          if (state.status === 'completed' || state.status === 'failed') {
+            if (detailSource) { detailSource.close(); detailSource = null }
+            // fall back to the settled detail view for the final artifacts
+            void showDetail(runId)
+          }
+        } catch { /* ignore malformed frame */ }
       })
       detailSource.addEventListener('events', (e) => {
         try {

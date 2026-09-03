@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CodexTestAgentState } from '../src/agent/types.js'
 import { startObservationServer, type ObservationServer } from '../src/observe/server.js'
@@ -175,15 +175,81 @@ describe('observation run event stream (SSE)', () => {
   it('returns 404 for unknown runs and hostile ids on the stream endpoint', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-sse-'))
     try {
+      // A sibling directory with a state file must not be reachable via `..`.
+      const sibling = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-sibling-'))
+      await writeFile(resolve(sibling, 'codex-agent.state.json'), JSON.stringify(stateFixture()))
       const server = await startObservationServer({ runRoot: directory })
       servers.push(server)
       expect((await fetch(`${server.baseUrl}/api/runs/none-such/events`)).status).toBe(404)
       expect((await fetch(`${server.baseUrl}/api/runs/${encodeURIComponent('..')}/events`)).status).toBe(404)
+      expect((await fetch(`${server.baseUrl}/api/runs/../${basename(sibling)}/events`.replace('..', encodeURIComponent('..')))).status).toBe(404)
       expect((await fetch(`${server.baseUrl}/api/runs/a%2Fb/events`)).status).toBe(404)
+      await rm(sibling, { recursive: true, force: true })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  it('keeps a byte-accurate cursor across multibyte event content', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-sse-'))
+    try {
+      const runId = '20260901-087000-live-ss06'
+      const runDir = resolve(directory, runId)
+      await mkdir(runDir, { recursive: true })
+      await writeFile(resolve(runDir, 'codex-agent.state.json'), JSON.stringify(stateFixture()))
+      // Chinese + emoji content: UTF-16 slicing would misalign the cursor here.
+      await writeFile(resolve(runDir, 'codex-agent.events.jsonl'), JSON.stringify({ at: '2026-09-01T08:70:00.000Z', event: 'agent_message', text: '登录页面已打开,验证码是1️⃣2️⃣3️⃣' }) + '\n')
+      const server = await startObservationServer({ runRoot: directory })
+      servers.push(server)
+      const frames = await collectSse(`${server.baseUrl}/api/runs/${runId}/events`, collected =>
+        collected.some(frame => frameEvent(frame) === 'events'))
+      const first = frames.find(frame => frameEvent(frame) === 'events')
+      expect((frameData(first!) as { lines: Array<Record<string, unknown>> }).lines[0]?.text).toContain('验证码')
+      // Append a second event: the cursor must still be byte-aligned.
+      const collection = collectSse(`${server.baseUrl}/api/runs/${runId}/events`, collected => {
+        const events = collected.filter(frame => frameEvent(frame) === 'events')
+        const all = events.flatMap(frame => (frameData(frame) as { lines: Array<Record<string, unknown>> }).lines)
+        return all.some(line => line.event === 'tool_completed')
+      }, 6_000)
+      await new Promise(resolveTimer => setTimeout(resolveTimer, 300))
+      await writeFile(resolve(runDir, 'codex-agent.events.jsonl'), JSON.stringify({ at: '2026-09-01T08:70:01.000Z', event: 'agent_message', text: '登录页面已打开,验证码是1️⃣2️⃣3️⃣' }) + '\n' + JSON.stringify({ at: '2026-09-01T08:70:02.000Z', event: 'tool_completed' }) + '\n', { flag: 'a' })
+      const frames2 = await collection
+      const joined = frames2.join('\n')
+      expect(joined).toContain('tool_completed')
+      expect(joined).toContain('验证码')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 10_000)
+
+  it('resends the whole file from offset zero after truncation', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-sse-'))
+    try {
+      const runId = '20260901-088000-live-ss07'
+      const runDir = resolve(directory, runId)
+      await mkdir(runDir, { recursive: true })
+      await writeFile(resolve(runDir, 'codex-agent.state.json'), JSON.stringify(stateFixture()))
+      await writeFile(resolve(runDir, 'codex-agent.events.jsonl'), JSON.stringify({ at: 't1', event: 'thread_started' }) + '\n' + JSON.stringify({ at: 't2', event: 'turn_started' }) + '\n')
+      const server = await startObservationServer({ runRoot: directory })
+      servers.push(server)
+      // Consume the snapshot, then rotate the file to shorter content.
+      await collectSse(`${server.baseUrl}/api/runs/${runId}/events`, collected =>
+        collected.some(frame => frameEvent(frame) === 'events'))
+      const collection = collectSse(`${server.baseUrl}/api/runs/${runId}/events`, collected => {
+        const events = collected.filter(frame => frameEvent(frame) === 'events')
+        const all = events.flatMap(frame => (frameData(frame) as { lines: Array<Record<string, unknown>> }).lines)
+        return all.some(line => line.event === 'session_rotated')
+      }, 6_000)
+      await new Promise(resolveTimer => setTimeout(resolveTimer, 300))
+      await writeFile(resolve(runDir, 'codex-agent.events.jsonl'), JSON.stringify({ at: 't3', event: 'session_rotated' }) + '\n')
+      const frames = await collection
+      const all = frames.filter(frame => frameEvent(frame) === 'events')
+        .flatMap(frame => (frameData(frame) as { lines: Array<Record<string, unknown>> }).lines)
+      expect(all.some(line => line.event === 'session_rotated')).toBe(true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 10_000)
 
   it('stops streaming and releases watchers when the client disconnects', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-observe-sse-'))
