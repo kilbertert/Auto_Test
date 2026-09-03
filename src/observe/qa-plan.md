@@ -1,6 +1,6 @@
-# 观测面板 QA 计划(切片 #171:服务器骨架 + 运行列表)
+# 观测面板 QA 计划
 
-范围:只读观测服务器的启动/关闭、运行列表正确性、隐私边界。后续切片(详情/SSE/证据查看)另行扩展本计划。
+范围:只读观测面全量——服务器启动/关闭、运行列表、运行详情(进度/逐用例结果/环境阻塞)、SSE 实时推送、证据查看与路径隔离。各切片的执行记录按时间顺序追加于下。
 
 **执行记录(2026-09-03,Linux x64 / Node 24.15,commit 见 PR,实施者 Claude Code)**:OBS-1 至 OBS-5 全部通过。OBS-1/3 以 curl 等价(HTML 200 + `Auto-Test 观测面板` 标题、`/api/runs` 排序 running 在前、corrupt run 显示 invalid);OBS-4 秘密标记 `OBS-SECRET-MARKER` 在 `/` 与 `/api/runs` 响应中出现 0 次,`.agent-private/run-values.json` 直读 404;OBS-5 仅绑定 `127.0.0.1:35453`,未知路径 404、POST 405,关闭后端口释放。fixture 已清理。
 

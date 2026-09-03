@@ -39,8 +39,10 @@ _Avoid_: Output dir (generic)
 **Observation plane**:
 The read-only projection of run artifacts for humans: a loopback web view of
 runs, live progress, case results, and evidence. It never writes, never holds
-control authority, and never exposes private material. Console summaries and
-the web view are two surfaces of one projection.
+control authority, and serves only path-isolated, structurally redacted
+artifacts; image evidence is displayed as-is, so what a run captured is what
+an authorized local viewer sees. Console summaries and the web view are two
+surfaces of one projection.
 _Avoid_: Dashboard (implementation name), Monitoring (vaguer)
 
 **Control plane**:
