@@ -29,6 +29,8 @@ export function observationDashboardHtml(): string {
   section h2 { font-size: 15px; margin: 0 0 8px; color: #4b5563; }
   .back { margin-bottom: 12px; font-size: 13px; }
   .note { padding: 8px 12px; background: #fef3c7; border-radius: 6px; font-size: 13px; }
+  ul.feed { list-style: none; padding-left: 0; max-height: 260px; overflow-y: auto; font-size: 13px; font-family: ui-monospace, monospace; }
+  ul.feed li { padding: 2px 0; border-bottom: 1px dashed #e6e8ec; }
   @media (prefers-color-scheme: dark) {
     body { background: #101418; color: #e5e7eb; }
     table { background: #161b22; }
@@ -99,20 +101,57 @@ export function observationDashboardHtml(): string {
   }
   async function showDetail(runId) {
     content.textContent = '正在加载运行详情…'
+    if (detailSource) { detailSource.close(); detailSource = null }
     let detail
     try { detail = await (await fetch('/api/runs/' + encodeURIComponent(runId))).json() } catch (e) { content.textContent = '无法加载运行详情：' + e; return }
     if (!detail || detail.error) { content.textContent = '无法加载运行详情：' + (detail ? detail.error : '未知错误'); return }
-    const container = document.createElement('div')
+    if (detail.entry.status === 'running') {
+      const feed = document.createElement('ul'); feed.className = 'feed'
+      const feedSection = section('实时事件', feed)
+      detailSource = new EventSource('/api/runs/' + encodeURIComponent(runId) + '/events')
+      detailSource.addEventListener('state', (e) => {
+        try { renderDetail(JSON.parse(e.data), runId, feed, feedSection) } catch { /* ignore malformed frame */ }
+      })
+      detailSource.addEventListener('events', (e) => {
+        try {
+          const payload = JSON.parse(e.data)
+          for (const line of (payload.lines || [])) {
+            const item = document.createElement('li')
+            const at = line.at ? new Date(line.at).toLocaleTimeString() + ' ' : ''
+            const kind = line.event ?? line.type ?? '事件'
+            item.textContent = at + kind
+            feed.appendChild(item)
+          }
+          while (feed.children.length > 100) feed.removeChild(feed.firstChild)
+        } catch { /* ignore malformed frame */ }
+      })
+      renderDetail(detail, runId, feed, feedSection)
+      return
+    }
+    renderDetail(detail, runId)
+  }
+  let detailSource = null
+  function renderDetail(detail, runId, liveFeed, liveFeedSection) {
+    const container = document.createElement('div'); container.id = 'detail-container'
     const back = document.createElement('button'); back.textContent = '← 返回运行列表'; back.className = 'back'
-    back.addEventListener('click', () => { void render() })
+    back.addEventListener('click', () => {
+      if (detailSource) { detailSource.close(); detailSource = null }
+      void render()
+    })
     container.appendChild(back)
-    const title = document.createElement('h2'); title.textContent = detail.summary.title + ' — ' + runId
+    const title = document.createElement('h2')
+    title.textContent = (detail.summary?.title ?? '运行') + ' — ' + runId
     container.appendChild(title)
-    const progress = detail.progress
+    const progress = detail.progress ?? {
+      activeEpochIndex: detail.activeEpoch?.index, activeEpochTotal: detail.activeEpoch?.total,
+      activeEpochStage: detail.activeEpoch?.stage, epochCount: detail.epochCount,
+      completedCaseCount: Array.isArray(detail.completedCaseIds) ? detail.completedCaseIds.length : 0,
+      runInterruptionSummary: detail.runInterruption?.summary, runInterruptionNextAction: detail.runInterruption?.nextAction,
+    }
     const progressList = document.createElement('ul')
     const li = (label, value) => { const item = document.createElement('li'); item.textContent = label + (value == null ? '—' : String(value)); return item }
-    progressList.appendChild(li('状态：', statusLabel[detail.entry.status] ?? detail.entry.status))
-    progressList.appendChild(li('阶段：', stageLabel[detail.entry.stage] ?? detail.entry.stage))
+    progressList.appendChild(li('状态：', statusLabel[detail.entry?.status ?? detail.status] ?? detail.entry?.status ?? detail.status))
+    progressList.appendChild(li('阶段：', stageLabel[detail.entry?.stage ?? detail.stage] ?? detail.entry?.stage ?? detail.stage))
     if (progress.activeEpochTotal != null) progressList.appendChild(li('Epoch 进度：', (progress.activeEpochIndex ?? '—') + ' / ' + progress.activeEpochTotal + (progress.activeEpochStage ? '（' + progress.activeEpochStage + '）' : '')))
     if (progress.epochCount != null) progressList.appendChild(li('已规划 Epoch 数：', progress.epochCount))
     progressList.appendChild(li('已完成用例：', progress.completedCaseCount))
@@ -122,8 +161,8 @@ export function observationDashboardHtml(): string {
     }
     container.appendChild(section('运行进度', progressList))
     const summaryList = document.createElement('ul')
-    for (const line of (detail.summary.lines || [])) { const item = document.createElement('li'); item.textContent = line; summaryList.appendChild(item) }
-    container.appendChild(section('结果摘要', summaryList))
+    for (const line of (detail.summary?.lines || [])) { const item = document.createElement('li'); item.textContent = line; summaryList.appendChild(item) }
+    if (summaryList.children.length > 0) container.appendChild(section('结果摘要', summaryList))
     if (detail.resultProblem) { const note = document.createElement('p'); note.className = 'note'; note.textContent = detail.resultProblem; container.appendChild(note) }
     if (detail.cases && detail.cases.length > 0) {
       const table = document.createElement('table')
@@ -154,6 +193,7 @@ export function observationDashboardHtml(): string {
       }
       container.appendChild(section('待补充的环境（解除后可恢复运行）', blockers))
     }
+    if (liveFeedSection) container.appendChild(liveFeedSection)
     content.replaceChildren(container)
   }
   async function render() {

@@ -6,6 +6,7 @@ import type { CodexTestAgentState, CodexTestOutcome } from '../agent/types.js'
 import { defaultRunRoot } from '../usability/run-directory.js'
 import { observationDashboardHtml } from './dashboard-html.js'
 import { runDetail } from './run-detail.js'
+import { serveRunEventStream } from './run-events.js'
 
 const STATE_FILE = 'codex-agent.state.json'
 
@@ -176,6 +177,23 @@ export async function startObservationServer(options: StartObservationServerOpti
           json(response, 200, { runs })
           return
         }
+        const eventsMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(url.pathname)
+        if (eventsMatch) {
+          // A run id is one directory name: reject separators, dots, encodings.
+          const requestedId = decodeURIComponent(eventsMatch[1]!)
+          if (!/^[A-Za-z0-9._-]+$/.test(requestedId)) {
+            json(response, 404, { error: '未找到' })
+            return
+          }
+          const runDirectory = resolve(runRoot, requestedId)
+          const stateExists = await stat(resolve(runDirectory, STATE_FILE)).then(() => true, () => false)
+          if (!stateExists) {
+            json(response, 404, { error: '未找到' })
+            return
+          }
+          serveRunEventStream(response, runDirectory)
+          return
+        }
         const detailMatch = /^\/api\/runs\/([^/]+)$/.exec(url.pathname)
         if (detailMatch) {
           // A run id is one directory name: reject separators, dots, encodings.
@@ -211,10 +229,13 @@ export async function startObservationServer(options: StartObservationServerOpti
   return {
     baseUrl,
     close: async () => {
+      if (!server.listening) return // idempotent: double close is a no-op
+      // Drop live SSE connections first so close() is not held hostage by
+      // keep-alive streams, then stop the listener.
+      server.closeAllConnections()
       await new Promise<void>((resolveClose, rejectClose) => {
         server.close(error => error ? rejectClose(error) : resolveClose())
       })
-      server.closeAllConnections()
     },
   }
 }

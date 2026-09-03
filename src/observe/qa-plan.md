@@ -13,3 +13,5 @@
 | OBS-5 | 任意 | 服务已启动 | 无 | `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/` 后检查 `ss -tlnp` 绑定地址 | 端口仅绑定 127.0.0.1;Ctrl+C 后端口释放(`ss` 无监听) | 无 |
 
 自动化对应:tests/observe-server.test.ts 已覆盖 OBS-1/2/3 的投影逻辑与 OBS-4 的 404 边界(合成 fixture);OBS-4 的秘密标记不变量与 OBS-5 的 loopback 绑定在测试 `rejects non-GET methods and unknown paths`、`binds to loopback only` 中固化。手动步骤 OBS-1/2/3/5 属浏览器交互,在 PR 合并前由实施者执行一次并回填结果。
+
+**SSE 切片(#173)追加(2026-09-03 执行)**:tests/observe-run-events.test.ts 6 个测试自动化覆盖——连接即推 state 快照 + 事件行;文件变化 2s 内推增量(state 推进 + events 追加);15s 心跳注释行;未知/穿越 runId 404;客户端断开后 close 幂等且端口可复用;**脱敏纵深不变量**(上游 redact 缺口留下 credential-shaped 值时,SSE 输出仍被 `redactAgentArtifactValue` 二次脱敏,JWT 原文零出现)。手动浏览器验证(进行中 Run 详情页 EventSource 自动刷新)合并前用 QA fixture 复验一次。
