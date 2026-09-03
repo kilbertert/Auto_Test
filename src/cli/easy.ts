@@ -32,6 +32,7 @@ import { isBuiltInAgentHostId } from '../agent/host-registry.js'
 import { readAutoTestPackageVersion } from '../agent/build-info.js'
 import type { AgentHostId } from '../agent/host.js'
 import { defaultRunDirectory, defaultRunRoot } from '../usability/run-directory.js'
+import { startObservationServer } from '../observe/server.js'
 
 interface EasyRunOptions {
   filePath: string
@@ -388,6 +389,19 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
   })
 }
 
+/** Serve the read-only observation dashboard until Ctrl+C. */
+async function serveObservation(): Promise<void> {
+  const server = await startObservationServer()
+  console.log(`\n观测面板已启动：${server.baseUrl}`)
+  console.log('只读观测面；按 Ctrl+C 退出。')
+  await new Promise<void>(resolveStop => {
+    const stop = () => { process.off('SIGINT', stop); process.off('SIGTERM', stop); resolveStop() }
+    process.once('SIGINT', stop)
+    process.once('SIGTERM', stop)
+  })
+  await server.close()
+}
+
 async function doctor(agentHostId: 'codex' | 'omp' = configuredAgentHost()): Promise<boolean> {
   if (agentHostId === 'omp') {
     const ompExecutable = process.env.AUTO_TEST_OMP_BIN || 'omp'
@@ -496,6 +510,7 @@ async function menu(): Promise<void> {
     console.log('  2. 注册或更新测试环境')
     console.log('  3. 查看最近一次结果')
     console.log('  4. 检查运行环境')
+    console.log('  5. 打开观测面板')
     console.log('  0. 退出')
     const choice = await ask('请选择', '1')
     if (choice === '0') return
@@ -507,7 +522,8 @@ async function menu(): Promise<void> {
         if (path) await printSummary(path)
         else console.log('还没有找到历史测试结果。')
       } else if (choice === '4') await doctor()
-      else console.log('请输入 0 到 4。')
+      else if (choice === '5') await serveObservation()
+      else console.log('请输入 0 到 5。')
     } catch (error) {
       console.error(`\n操作失败：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -635,6 +651,10 @@ async function main(): Promise<void> {
     await printSummary(resolve(statePath))
     return
   }
+  if (command === 'dashboard') {
+    await serveObservation()
+    return
+  }
   if (command === '--help' || command === 'help') {
     console.log('用法：npm run easy（交互菜单）')
     console.log('      npm run easy -- run --file cases.xlsx --url https://example.test/ [--agent-host codex|omp] [--agent-bin path] [--agent-home path] [--headed|--headless] [--case-limit N|--one]')
@@ -645,6 +665,7 @@ async function main(): Promise<void> {
     console.log('      默认 AgentHost 为 codex；使用 --agent-host omp 切换到 OMP RPC')
     console.log('      npm run easy -- register --profile test --url https://example.test/ [--capture-login]')
     console.log('      npm run easy -- status')
+    console.log('      npm run easy -- dashboard   # 启动只读观测面板（本机回环地址）')
     console.log('      npm run easy -- doctor [--agent-host codex|omp]')
     return
   }

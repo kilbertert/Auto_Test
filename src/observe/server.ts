@@ -1,0 +1,193 @@
+import { createServer, type ServerResponse } from 'node:http'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import type { AddressInfo } from 'node:net'
+import type { CodexTestAgentState, CodexTestOutcome } from '../agent/types.js'
+import { defaultRunRoot } from '../usability/run-directory.js'
+import { observationDashboardHtml } from './dashboard-html.js'
+
+const STATE_FILE = 'codex-agent.state.json'
+
+export interface ObservationRunEntry {
+  runId: string
+  status: CodexTestAgentState['status'] | 'invalid'
+  stage: CodexTestAgentState['stage']
+  outcome: CodexTestOutcome | 'none'
+  startedAt: string
+  updatedAt: string
+  finishedAt: string | undefined
+}
+
+export interface ObservationServer {
+  baseUrl: string
+  close: () => Promise<void>
+}
+
+export interface StartObservationServerOptions {
+  /** Run root to scan; defaults to the platform Run root. */
+  runRoot?: string
+  /** Loopback host; fixed to 127.0.0.1 for the observation plane. */
+  host?: '127.0.0.1'
+  /** Port override for tests; default asks the OS for a free port. */
+  port?: number
+  /** Injection seam for tests; default serves the embedded single-file page. */
+  html?: string
+}
+
+interface RunScanItem {
+  directory: string
+  statePath: string
+  modifiedMs: number
+}
+
+/** Read one JSON file, returning undefined on read or parse failure. */
+async function readJsonFile(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+/**
+ * Find every run directory under the root that holds a state file.
+ * Walks one directory level at a time: recursive withFileTypes readdir is
+ * unreliable on Windows, matching the approach of the easy status scanner.
+ */
+async function scanRunRoot(root: string): Promise<RunScanItem[]> {
+  const found: RunScanItem[] = []
+  const pending = [root]
+  while (pending.length > 0) {
+    const directory = pending.pop()
+    if (!directory) continue
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const child = resolve(directory, entry.name)
+      if (entry.isDirectory()) pending.push(child)
+      else if (entry.isFile() && entry.name === STATE_FILE) {
+        try {
+          const stats = await stat(child)
+          found.push({ directory: dirname(child), statePath: child, modifiedMs: stats.mtimeMs })
+        } catch {
+          // state file vanished mid-scan; skip it
+        }
+      }
+    }
+  }
+  return found
+}
+
+async function listRuns(runRoot: string): Promise<ObservationRunEntry[]> {
+  const runs = await scanRunRoot(runRoot)
+  const entries: Array<{ entry: ObservationRunEntry; modifiedMs: number }> = []
+  for (const run of runs) {
+    const state = await readJsonFile(run.statePath)
+    entries.push({ entry: runEntryFromState(run, state), modifiedMs: run.modifiedMs })
+  }
+  // Newest first; invalid entries sort last within the same mtime bucket.
+  return entries
+    .sort((left, right) => right.modifiedMs - left.modifiedMs)
+    .map((item) => item.entry)
+}
+
+function runEntryFromState(run: RunScanItem, state: unknown): ObservationRunEntry {
+  const runId = basename(run.directory)
+  if (!isRecord(state) || state.version !== '2.0') {
+    return {
+      runId, status: 'invalid', stage: 'preparing', outcome: 'none',
+      startedAt: '', updatedAt: new Date(run.modifiedMs).toISOString(), finishedAt: undefined,
+    }
+  }
+  const status = String(state.status)
+  const stage = String(state.stage)
+  const outcome = state.outcome === undefined ? 'none' : String(state.outcome) as CodexTestOutcome
+  return {
+    runId,
+    status: status === 'running' || status === 'completed' || status === 'failed' ? status as CodexTestAgentState['status'] : 'invalid',
+    stage: stage === 'preparing' || stage === 'executing' || stage === 'finalizing' || stage === 'completed' || stage === 'failed'
+      ? stage as CodexTestAgentState['stage']
+      : 'preparing',
+    outcome,
+    startedAt: String(state.startedAt ?? ''),
+    updatedAt: String(state.updatedAt ?? '') || new Date(run.modifiedMs).toISOString(),
+    finishedAt: state.finishedAt === undefined ? undefined : String(state.finishedAt),
+  }
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
+}
+
+function json(response: ServerResponse, code: number, body: unknown): void {
+  const payload = JSON.stringify(body)
+  response.writeHead(code, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  response.end(payload)
+}
+
+/** Serve the embedded dashboard HTML. */
+async function serveIndex(response: ServerResponse): Promise<void> {
+  response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+  response.end(observationDashboardHtml())
+}
+
+/**
+ * Start the read-only observation server. It scans the Run root, serves the
+ * single-file dashboard, and exposes a JSON list of runs. It never writes
+ * anything and never exposes `.agent-private`.
+ */
+export async function startObservationServer(options: StartObservationServerOptions = {}): Promise<ObservationServer> {
+  const runRoot = resolve(options.runRoot ?? defaultRunRoot())
+  const server = createServer((request, response) => {
+    void (async () => {
+      try {
+        const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          json(response, 405, { error: '只读观测面：仅支持 GET' })
+          return
+        }
+        if (url.pathname === '/' || url.pathname === '/index.html') {
+          await serveIndex(response)
+          return
+        }
+        if (url.pathname === '/api/runs') {
+          const runs = await listRuns(runRoot)
+          json(response, 200, { runs })
+          return
+        }
+        json(response, 404, { error: '未找到' })
+      } catch (error) {
+        json(response, 500, { error: `观测面内部错误：${error instanceof Error ? error.message : String(error)}` })
+      }
+    })()
+  })
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen)
+    server.listen(options.port ?? 0, options.host ?? '127.0.0.1', resolveListen)
+  })
+  const address = server.address() as AddressInfo
+  const baseUrl = `http://127.0.0.1:${address.port}`
+
+  return {
+    baseUrl,
+    close: async () => {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close(error => error ? rejectClose(error) : resolveClose())
+      })
+      server.closeAllConnections()
+    },
+  }
+}
