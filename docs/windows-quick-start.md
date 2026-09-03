@@ -108,6 +108,8 @@ $env:AUTO_TEST_PLAYWRIGHT_DOWNLOAD_HOST = "https://your-mirror.example/playwrigh
 
 `execution_receipts` MCP 查询默认提供当前 Run 的紧凑回执摘要；当前 active epoch 仅作为可选筛选条件。完整回执文件仍用于确定性校验和审计。回执 ID 包含 epoch 命名空间和 turn 序号，thread 轮换或恢复时重复出现的 `item_*` 不会互相覆盖。
 
+选择主菜单的「打开观测面板」（或命令行 `npm run easy -- dashboard`）启动只读观测面板：仅绑定本机回环地址（`127.0.0.1`），端口自动分配并打印可点击 URL；浏览器中实时查看运行进度（阶段/epoch/事件流自动刷新）、逐用例结果与证据截图；面板只读，不提供控制操作，不展示 `.agent-private` 私有材料。关闭面板（Ctrl+C）不影响正在进行的运行。观测面板页面内嵌在程序内，便携包无需任何额外资源文件。
+
 选择“开始一次新测试”：
 
 1. 在弹出的窗口中选择测试用例 Excel；

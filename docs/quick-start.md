@@ -125,6 +125,14 @@ Core 拥有 bounded fan-out 策略（`fanoutPolicy`），通过 Control MCP `tes
 
 ## 6. 结果和恢复
 
+除了用命令行查看结果,也可以启动只读观测面板在浏览器里查看进度与结果:
+
+```bash
+npm run easy -- dashboard
+```
+
+面板仅绑定 `127.0.0.1`(端口自动分配并打印 URL),实时刷新进行中运行的阶段/epoch/事件流(SSE),已完成运行可查看逐用例结果与证据文件;只读,不提供任何控制操作,不展示 `.agent-private` 与原始 Excel。详见 [README 观测面板](../README.md#观测面板只读)。
+
 主要文件：
 
 - `codex-agent.state.json`：Run 状态、线程代数、完成 case、active epoch、无密钥的 AgentHost/模型绑定指纹、checkpoint 和最近一次 turn usage；
