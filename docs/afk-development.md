@@ -6,33 +6,46 @@ Select the model supply explicitly. The profile is resolved on the server and
 credentials never belong in the repository:
 
 ```bash
-# GPT via Psydo Responses API
-AFK_PROFILE=psydo pnpm afk -- <issue-number>
-
-# DeepSeek V4 Pro via Alibaba Cloud Model Studio Responses API
-AFK_PROFILE=aliyun-deepseek pnpm afk -- <issue-number>
-
-# GLM via the configured Ark Claude-compatible endpoint
-AFK_PROFILE=claude-ark pnpm afk -- <issue-number>
+# StepFun — the AFK default
+AFK_PROFILE=claude-stepfun pnpm afk -- <issue-number>
 
 # Direct Claude profile from .sandcastle/.env
 AFK_PROFILE=claude pnpm afk -- <issue-number>
 ```
 
-The `psydo` profile uses Sandcastle's Codex provider and `gpt-5.6-sol` by
-default. Override the model only when the selected provider supports it:
+Both profiles are one host settings file, mounted read-only into the sandbox
+rather than baked into the image:
+
+| profile | endpoint | host file |
+|---|---|---|
+| `claude` | the Anthropic API | whatever credential the host shell exports |
+| `claude-stepfun` | StepFun's native Anthropic Messages API | `~/cliproxyapi/settings.stepfun.json` |
+
+The model comes from the `ANTHROPIC_DEFAULT_*_MODEL` entries in that file, so
+`AFK_MODEL` is only needed to override it:
 
 ```bash
-AFK_PROFILE=psydo AFK_MODEL=gpt-5.6-sol pnpm afk -- <issue-number>
-AFK_PROFILE=claude-ark AFK_MODEL=glm-latest pnpm afk -- <issue-number>
-AFK_PROFILE=aliyun-deepseek AFK_MODEL=deepseek-v4-pro-0813 pnpm afk -- <issue-number>
+AFK_PROFILE=claude-stepfun AFK_MODEL=step-5-preview pnpm afk -- <issue-number>
 ```
 
-GitHub Actions reads the repository variable `AFK_PROFILE` and defaults to
-`psydo`. Set it to `claude-ark`, `psydo`, or `aliyun-deepseek` to select the
-provider; workflow files do not need editing. The Alibaba credential and
-endpoint are read from the server-local `AFK_ALIYUN_CSV` path and are never
-committed.
+Set `AFK_STEPFUN_SETTINGS` when the settings file lives elsewhere.
+
+Rotating the token is an edit to that host file — there is no image rebuild and
+no `--no-cache` to remember. Nothing about the endpoint enters an image layer.
+
+GitHub Actions reads the repository variable `AFK_PROFILE`; the workflow files
+fall back to `claude-stepfun` when it is unset, so they do not need editing to
+switch.
+
+### Retired profiles
+
+`claude-ark`, `agentrouter`, `psydo`, and `aliyun-deepseek` were removed by the
+1.2.0 template. The first three resolved to host settings files under
+`cliproxyapi/` whose upstream quota is exhausted, so any run selecting them
+failed before the agent started; `aliyun-deepseek` was the only Codex-provider
+profile, so retiring it also dropped the Codex agent path from this repository's
+AFK setup. Their server-local credential files (`aliyun-deepseek.csv`,
+`codex.*.toml`, `psydo-primary.key`) are no longer read here.
 
 The runner creates an isolated Docker worktree on `agent/issue-<number>` (or
 the `AFK_BRANCH` override), runs at most three iterations, and leaves delivery
@@ -48,7 +61,7 @@ Merge.
 
 ```bash
 # Planner loop over `ready-for-agent` open issues (max 4 in parallel)
-AFK_PROFILE=claude-ark pnpm ralph
+AFK_PROFILE=claude-stepfun pnpm ralph
 ```
 
 Each iteration:

@@ -12,7 +12,8 @@ the execution host stays replaceable.
 
 Use AgentHost-only execution; the legacy runtime entry point and the old
 planner/recovery/controller chain are removed. Model supply is selected through
-server-local profiles (`claude-ark`, `psydo`, and `aliyun-deepseek`), with
+server-local profiles (`claude` and `claude-stepfun`, each a host
+settings file mounted read-only into the sandbox), with
 credentials kept outside the repository.
 
 ## Consequences
