@@ -144,7 +144,9 @@ Provider API Key、测试账号口令、真实个人数据都属于**私有材�
 - 密钥只以环境变量名（`envKey`）出现在配置里，值从不落盘到 Profile；
 - Excel 中的凭据在 intake 阶段被替换为 `secretRef`，原始值放在不可枚举属性里，
   序列化 Manifest 不会泄漏；
-- 默认 `direct` 模式下 Agent 拿到的是运行值，但**私有目录 `.agent-private/` 始终不可读**；
+- 默认 `direct` 模式下，本轮运行值由 `run-values.json` 显式交给 Agent（并在提示词中给出路径）；
+  `--opaque-test-data` 则退化为只给别名；两种模式下 **Provider 凭据、Codex auth 与无关主机凭据
+  都不进入运行值**；
 - 事件流、结果、报告在写出前统一脱敏。
 
 ### 推论六：首次执行成功后，值得保留一条不调用模型的路径
@@ -256,7 +258,7 @@ flowchart TB
 | `host.ts` | `AgentHost` 抽象：唯一执行接缝（`start` / `resume` / `probe` / `capabilities` / `modelProvider`） |
 | `codex-host.ts` / `omp-host.ts` | 两个内置宿主实现：Codex 走 SDK 进程内，OMP 走 stdio JSON-RPC |
 | `codex-provider.ts` / `omp-provider.ts` / `provider-runtime.ts` | Provider 适配器：把同一 descriptor 翻译成各宿主的隔离配置、模型目录与环境（**唯一允许接触宿主格式的地方**） |
-| `workspace.ts` | 磁盘契约：`agent-workspace/`（可见）与 `.agent-private/`（不可见）的边界与权限 |
+| `workspace.ts` | 磁盘契约：`agent-workspace/` 与 `.agent-private/` 的划分、权限与**访问边界**（见 4.4） |
 | `result.ts` | 结果合同：JSON Schema 校验、容错解析、`enforceMutationLedger` |
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
@@ -360,7 +362,7 @@ artifacts/runs/<timestamp>-<stem>-<rand>/          ← Run root
 │   ├── execution-receipts.json       被动捕获的 Playwright 回执
 │   ├── case-results.json             确定性聚合的交付 artifact
 │   └── replay/                       passed case 的回归 spec 与 manifest
-├── .agent-private/             0700  Agent 不可读
+├── .agent-private/             0700  运行私有目录（访问边界见下）
 │   ├── mutation-ledger.json          副作用账本（终态必须 pending=0）
 │   ├── environment-requirements.json 环境需求
 │   ├── case-results/                 逐 case 幂等事实源（一个 case 一个 JSON）
@@ -374,7 +376,18 @@ artifacts/runs/<timestamp>-<stem>-<rand>/          ← Run root
 └── <原名>-Auto-Test-结果.xlsx        按来源行回写的原件副本（原件不改写）
 ```
 
-边界就是 `.agent-private/` 这一层：**Agent 拿不到，观测面板也拿不到。**
+**这一层不是"Agent 完全不可读"，而是按用途分级**——免得日后改边界时被错误的直觉带偏：
+
+| 对象 | Agent 能否访问 | 说明 |
+|---|---|---|
+| `run-values.json`、`checkpoints/` | **能**（仅 `direct` 模式） | 运行值必须交给 Agent；`direct` 下 `.agent-private/` 本身是 run 工作区内的可写目录。`--opaque-test-data` 时该文件根本不生成，只给 `playwright-secrets.env` 里的别名 |
+| `mutation-ledger.json`、`environment-requirements.json`、`case-results/`、`execution-epochs/` | 间接（经 Control MCP） | Agent 通过 `mutation_begin` / `environment_requirement_record` / `case_result_record` 写入，而不是直接读写文件 |
+| `agent-home/`（隔离的 AgentHost home） | 否，但宿主进程必须读 | 这是 Agent 自己进程的配置目录，属于宿主所有权而非工具权限 |
+| **观测面板** | 一律不可达 | 与 Agent 权限无关：证据服务 root 钉死在 `agent-workspace/evidence`，且显式拒绝任何含 `.agent-private` 的路径 |
+
+所以推论五的凭据边界**不靠 `.agent-private/` 目录权限实现**，而是靠"哪些值被写进运行值"：
+Provider API Key、Codex auth、无关主机凭据从不进入 `run-values.json`；
+Excel 凭据以 `secretRef` 替换，别名与真实值的映射只存在于运行值与私有目录。
 `workspace.sha256` 与 Manifest 在 resume 时重新校验，运行身份不可漂移。
 
 ### 4.5 与人接触的接缝：观测面 vs 控制面
