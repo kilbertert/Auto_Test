@@ -81,3 +81,62 @@ export function redactSensitiveContent(value: string): string {
 export function redactSensitiveText(value: string): string {
   return redactSensitiveContent(normalizeText(value))
 }
+
+const sensitiveStructuredKeys = [
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api[_-]?key',
+  'access[_-]?token',
+  'refresh[_-]?token',
+  'id[_-]?token',
+  'auth[_-]?token',
+  'jwt[_-]?token',
+  'jwt',
+  'password',
+  'passwd',
+  'pwd',
+  'secret',
+  'client[_-]?secret',
+  'session[_-]?token',
+  'token',
+  '用户名',
+  '账号',
+  '密码',
+  '验证码',
+  '口令',
+  '令牌',
+  '密钥',
+  '访问令牌',
+  '刷新令牌',
+  '会话令牌',
+].join('|')
+
+const keyedCredentialPattern = `((?<![A-Za-z0-9_])(?:\\\\?["'])?(?:${sensitiveStructuredKeys})(?:\\\\?["'])?\\s*[:：=]\\s*)`
+
+/**
+ * Suppress credential-shaped values that carry no known secret to match exactly: JWTs, keyed
+ * credentials, and authorization headers. Artifact and report scrubbers both apply this, so the same
+ * run cannot leak from a report a value its own Evidence suppressed.
+ */
+export function redactCredentialValues(value: string): string {
+  return value
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{5,}){2,4}\b/g, '<redacted-jwt>')
+    .replace(new RegExp(`${keyedCredentialPattern}"(?:\\\\.|[^"\\\\])*"`, 'gi'), '$1"<redacted>"')
+    .replace(new RegExp(`${keyedCredentialPattern}'(?:\\\\.|[^'\\\\])*'`, 'gi'), "$1'<redacted>'")
+    .replace(new RegExp(`${keyedCredentialPattern}[^\\s,;&}\\]]+`, 'gi'), '$1<redacted>')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
+    .replace(
+      // Deliberate asymmetry, chosen in the safe direction: stop only at the report's spaced ` | `
+      // evidence separator, and treat every other `|` as credential content. That over-redacts an
+      // *unspaced* `|` separator in the free-form artifacts this also serves (CSV/log/Markdown via
+      // redactAgentArtifactText), costing recall, but it never under-redacts a credential that
+      // contains a pipe — the leak direction this backstop exists to prevent. The two cases are
+      // indistinguishable without the caller's structure, so the real fix is a per-surface split
+      // policy in the RedactionPolicy module tracked by #165, not a wider regex here.
+      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)(?:(?!\s\|\s)[^"',\r\n}])+/gi,
+      '$1<redacted>',
+    )
+}

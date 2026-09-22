@@ -81,4 +81,77 @@ describe('workflow acceptance report', () => {
     expect(serialized).not.toContain('private-password')
     expect(serialized).not.toContain('+6590000001')
   })
+
+  it('suppresses credential-shaped values that no vault secret covers', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl'
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{
+          description: 'ended',
+          passed: true,
+          evidence: `Authorization: Bearer ${jwt} | refresh_token=refresh-value-123 | cookie=session=abc123`,
+        }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain(jwt)
+    expect(serialized).not.toContain('refresh-value-123')
+    expect(serialized).not.toContain('abc123')
+  })
+
+  it('keeps the non-credential evidence that follows a credential header', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl'
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{
+          description: 'ended',
+          passed: true,
+          evidence: `Authorization: Bearer ${jwt} | status=200 | assertion=passed`,
+        }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain(jwt)
+    expect(serialized).toContain('status=200')
+    expect(serialized).toContain('assertion=passed')
+  })
+
+  it('does not truncate a credential value that itself contains a pipe', () => {
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{
+          description: 'ended',
+          passed: true,
+          evidence: 'cookie: session=abc|secret-tail-value',
+        }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain('secret-tail-value')
+  })
+
+  it('accepts over-redacting an unspaced separator rather than truncating a credential', () => {
+    // Pins the safe direction of the trade-off documented in redactCredentialValues: an unspaced
+    // separator loses the trailing evidence, which is recoverable; the opposite choice would leak.
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{ description: 'ended', passed: true, evidence: 'Authorization: Basic abc123|status=200' }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain('abc123')
+    expect(serialized).not.toContain('status=200')
+  })
 })
