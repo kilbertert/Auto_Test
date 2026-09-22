@@ -80,7 +80,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
           AFK_AGENT_GH_TOKEN: ${{ secrets.AFK_AGENT_READ_TOKEN }}
-          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
+          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'claude-stepfun' }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: ../controller/node_modules/.bin/tsx ../controller/.sandcastle/review/review.ts
 

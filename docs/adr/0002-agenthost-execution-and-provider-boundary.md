@@ -12,8 +12,9 @@ the execution host stays replaceable.
 
 Use AgentHost-only execution; the legacy runtime entry point and the old
 planner/recovery/controller chain are removed. Model supply is selected through
-server-local profiles (`claude-ark`, `psydo`, and `aliyun-deepseek`), with
-credentials kept outside the repository.
+server-local profiles, with credentials kept outside the repository. The
+specific profiles offered are operational and change over time; the current set
+is listed in `docs/afk-development.md`.
 
 ## Consequences
 

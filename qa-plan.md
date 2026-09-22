@@ -27,7 +27,7 @@ AFK-B12: blocked on provider availability. The owner-authored disposable PR
 33273244207 reached both parallel review axes but the configured provider
 returned a subscription error. The workflow marked the PR `agent:blocked` and
 did not push or publish a review. PR #151 and issue #152 were closed, the
-canary branch and worktree were removed, and `AFK_PROFILE` was restored to
-`aliyun-deepseek`. Re-run AFK-B12 after a healthy provider is configured.
+canary branch and worktree were removed, and `AFK_PROFILE` was restored to the
+then-current default. Re-run AFK-B12 after a healthy provider is configured.
 
 Complexity and mutation tools are not applicable to workflow YAML. The template-owned shell state machine has focused stale-base, merge-preservation, and race-rejection coverage; this repository verifies the deployed policy and byte identity.

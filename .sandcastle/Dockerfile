@@ -1,5 +1,18 @@
 # AFK sandbox image for a Node.js project.
 # node 24 matches most Node projects' engines; bookworm keeps a stable libc.
+#
+# Build the `claude-stepfun` profile's endpoint with the key as a BuildKit
+# secret, never a build arg — a build arg is recorded in image metadata, where
+# `docker history` would expose it:
+#
+#   DOCKER_BUILDKIT=1 docker build \
+#     --secret id=stepfun_api_key,src=/run/secrets/stepfun_api_key \
+#     -t sandcastle:auto-test-governance .sandcastle
+#
+# Pass --no-cache when the key changes. A secret mount does not invalidate the
+# layer cache, so a rebuilt image would silently keep the previously baked key
+# and fail at runtime with an authentication error that points nowhere near the
+# cause. Omitting the secret entirely does fail the build (required=true).
 FROM node:24-bookworm
 
 ARG AGENT_UID=1000
@@ -37,11 +50,27 @@ RUN npm install --global @anthropic-ai/claude-code \
     'set -eu' \
     'case "${AFK_PROFILE:-claude}" in' \
     '  claude) exec /usr/local/bin/claude-real "$@" ;;' \
-    '  claude-ark|agentrouter|psydo) args=(); while [ "$#" -gt 0 ]; do if [ "$1" = "--model" ]; then shift 2; else args+=("$1"); shift; fi; done; exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 /usr/local/bin/claude-real --settings /home/agent/.afk-profile-settings.json "${args[@]}" ;;' \
+    '  claude-stepfun) args=(); while [ "$#" -gt 0 ]; do if [ "$1" = "--model" ]; then shift 2; else args+=("$1"); shift; fi; done; exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 /usr/local/bin/claude-real --settings /home/agent/.afk-stepfun-settings.json "${args[@]}" ;;' \
     '  *) echo "unsupported AFK_PROFILE" >&2; exit 2 ;;' \
     'esac' > /usr/local/bin/claude \
   && chmod 755 /usr/local/bin/claude \
   && npm cache clean --force
+
+# StepFun endpoint for the `claude-stepfun` profile. Claude Code appends
+# `/v1/messages` itself, so the base URL is the provider root that precedes
+# `/v1`. StepFun serves the Anthropic Messages API natively, so no translation
+# layer is involved. The token is supplied at build time as a secret and never
+# lands in a layer or in the repository.
+ARG STEPFUN_BASE_URL=https://api.stepfun.com/step_plan
+ARG STEPFUN_MODEL=step-5-preview
+RUN --mount=type=secret,id=stepfun_api_key,required=true \
+    STEPFUN_API_KEY="$(cat /run/secrets/stepfun_api_key)" \
+  && printf '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "%s",\n    "ANTHROPIC_AUTH_TOKEN": "%s",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "%s",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "%s",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "%s"\n  }\n}\n' \
+    "${STEPFUN_BASE_URL}" "${STEPFUN_API_KEY}" \
+    "${STEPFUN_MODEL}" "${STEPFUN_MODEL}" "${STEPFUN_MODEL}" \
+    > /home/agent/.afk-stepfun-settings.json \
+  && chown ${AGENT_UID}:${AGENT_GID} /home/agent/.afk-stepfun-settings.json \
+  && chmod 600 /home/agent/.afk-stepfun-settings.json
 
 USER ${AGENT_UID}:${AGENT_GID}
 WORKDIR /home/agent

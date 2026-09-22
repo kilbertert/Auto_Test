@@ -188,7 +188,7 @@ jobs:
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true'
         id: implement
         env:
-          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
+          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'claude-stepfun' }}
           BRANCH: ${{ steps.branch.outputs.name }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/implement/implement.ts
@@ -217,7 +217,7 @@ jobs:
       - name: Write PR title and description
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
         env:
-          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'psydo' }}
+          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'claude-stepfun' }}
           BRANCH: ${{ steps.branch.outputs.name }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/write-pr/write-pr.ts

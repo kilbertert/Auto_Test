@@ -61,6 +61,9 @@ Missing delivery credentials produce `agent:blocked`; there is no non-triggering
 
 ## Providers
 
-The configured Sandcastle profile is server-global: `claude`, `claude-ark`,
-`agentrouter`, `psydo`, or `aliyun-deepseek`. Set `AFK_PROFILE` for local runs
-or the repository variable for Actions; no project-side credential is needed.
+The configured Sandcastle profile is server-global: `claude` or
+`claude-stepfun`. Set `AFK_PROFILE` for local runs or the repository variable for
+Actions; no project-side credential is needed. The four older profiles
+(`claude-ark`, `agentrouter`, `psydo`, `aliyun-deepseek`) were retired when their
+upstream quota was exhausted; see `docs/afk-development.md` for the StepFun
+endpoint and image-rebuild contract.

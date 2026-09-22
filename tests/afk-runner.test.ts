@@ -10,7 +10,7 @@ describe("AFK runner", () => {
     expect(prompt).toContain("Do not merge, push, close issues");
     expect(runner).toContain('branchStrategy: { type: "branch", branch, baseBranch: "origin/main" }');
     expect(runner).toContain('maxIterations: Number(process.env.AFK_ITERATIONS ?? 3)');
-    expect(runner).toContain('claude|claude-ark|agentrouter|psydo|aliyun-deepseek');
+    expect(runner).toContain('claude|claude-stepfun');
   });
 
   it("keeps official planning skills as the only planning entry", async () => {

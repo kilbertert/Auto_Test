@@ -6,33 +6,47 @@ Select the model supply explicitly. The profile is resolved on the server and
 credentials never belong in the repository:
 
 ```bash
-# GPT via Psydo Responses API
-AFK_PROFILE=psydo pnpm afk -- <issue-number>
-
-# DeepSeek V4 Pro via Alibaba Cloud Model Studio Responses API
-AFK_PROFILE=aliyun-deepseek pnpm afk -- <issue-number>
-
-# GLM via the configured Ark Claude-compatible endpoint
-AFK_PROFILE=claude-ark pnpm afk -- <issue-number>
+# StepFun — the AFK default (see below)
+AFK_PROFILE=claude-stepfun pnpm afk -- <issue-number>
 
 # Direct Claude profile from .sandcastle/.env
 AFK_PROFILE=claude pnpm afk -- <issue-number>
 ```
 
-The `psydo` profile uses Sandcastle's Codex provider and `gpt-5.6-sol` by
-default. Override the model only when the selected provider supports it:
+`claude-stepfun` bakes its endpoint into the sandbox image rather than reading a
+host settings file, so it has no `AFK_*_SETTINGS` override and nothing to mount.
+Rebuilding the image therefore needs the key, passed as a BuildKit secret —
+never a build arg, which `docker history` would expose:
 
 ```bash
-AFK_PROFILE=psydo AFK_MODEL=gpt-5.6-sol pnpm afk -- <issue-number>
-AFK_PROFILE=claude-ark AFK_MODEL=glm-latest pnpm afk -- <issue-number>
-AFK_PROFILE=aliyun-deepseek AFK_MODEL=deepseek-v4-pro-0813 pnpm afk -- <issue-number>
+DOCKER_BUILDKIT=1 docker build \
+  --secret id=stepfun_api_key,src=/run/secrets/stepfun_api_key \
+  -t sandcastle:auto-test-governance .sandcastle
 ```
 
-GitHub Actions reads the repository variable `AFK_PROFILE` and defaults to
-`psydo`. Set it to `claude-ark`, `psydo`, or `aliyun-deepseek` to select the
-provider; workflow files do not need editing. The Alibaba credential and
-endpoint are read from the server-local `AFK_ALIYUN_CSV` path and are never
-committed.
+Add `--no-cache` whenever the key changes. A secret mount does not invalidate the
+layer cache, so a rotation would silently rebuild an image still carrying the old
+key, and the failure surfaces later as an authentication error at run time rather
+than at build time. A build with the secret missing does fail, because the mount
+is declared `required=true`.
+
+The base URL is the provider root preceding `/v1` (Claude Code appends
+`/v1/messages` itself), and the profile uses the default bridge network rather
+than `network: host`.
+
+GitHub Actions reads the repository variable `AFK_PROFILE`; workflow files fall
+back to `claude-stepfun` when it is unset, so they do not need editing to switch.
+
+### Retired profiles
+
+`claude-ark`, `agentrouter`, `psydo`, and `aliyun-deepseek` were removed. The
+first three resolved to host settings files under `cliproxyapi/` whose upstream
+quota is exhausted — every AFK model call failed, which is why the `claude-ark`
+default was replaced. `aliyun-deepseek` was the only Codex-provider profile here,
+so removing it also dropped the Codex agent path from this repository's AFK
+setup; `claude-stepfun` and `claude` both run Claude Code. Their server-local
+credential files (`aliyun-deepseek.csv`, `codex.*.toml`, `psydo-primary.key`)
+are no longer read by this repository.
 
 The runner creates an isolated Docker worktree on `agent/issue-<number>` (or
 the `AFK_BRANCH` override), runs at most three iterations, and leaves delivery
@@ -48,7 +62,7 @@ Merge.
 
 ```bash
 # Planner loop over `ready-for-agent` open issues (max 4 in parallel)
-AFK_PROFILE=claude-ark pnpm ralph
+AFK_PROFILE=claude-stepfun pnpm ralph
 ```
 
 Each iteration:
