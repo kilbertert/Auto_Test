@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Auto-Test 架构",
+    "subtitle": "AI 辅助 Web 自动化测试 · Codex-native 路径(AgentHost: Codex / OMP)",
+    "output": "auto-test-architecture.html",
+    "quality_profile": "standard",
+    "visual_preset": "signal-flow",
+    "viewBox": [1720, 720],
+    "views": [
+      {
+        "id": "codex-native-flow",
+        "label": "Codex-native 路径",
+        "focus": ["easy", "intake", "readiness", "envprofile", "runner", "codexhost", "delivery"],
+        "note": "默认产品路径:Excel → intake → readiness → 环境 profile → 双 turn 执行 → 交付"
+      },
+      {
+        "id": "control-and-replay",
+        "label": "控制与重放",
+        "focus": ["runner", "controlmcp", "playwright", "replaycompiler", "workbook"],
+        "note": "auto-test-control MCP 与 Playwright MCP 在执行回合暴露;成功后编译为 MCP replay 回归"
+      },
+      {
+        "id": "contracts",
+        "label": "契约与结果",
+        "focus": ["readiness", "runner", "delivery", "validation"],
+        "note": "结果契约与 Mutation Ledger 在交付回合由 harness 强制校验"
+      }
+    ]
+  },
+  "components": [
+    { "id": "engineer",   "type": "external", "label": "测试工程师",      "sublabel": "owner",              "pos": [40,    80],  "size": [150, 64] },
+
+    { "id": "xlsx",       "type": "frontend",  "label": "测试用例 Excel",  "sublabel": "LTA xlsx",            "pos": [260,    80], "size": [170, 60] },
+    { "id": "media",      "type": "frontend",  "label": "图片 / brief",    "sublabel": "embedded",            "pos": [260,   170], "size": [170, 60] },
+    { "id": "easy",       "type": "frontend",  "label": "easy.cmd / ts",   "sublabel": "CLI 入口",            "pos": [260,   260], "size": [170, 60], "tag": "中文菜单" },
+    { "id": "agenttest",  "type": "frontend",  "label": "agent-test.ts",   "sublabel": "npm run agent:test",  "pos": [260,   360], "size": [170, 60] },
+
+    { "id": "intake",     "type": "backend",   "label": "intakeWorkflowXlsx", "sublabel": "src/workflow/intake", "pos": [500,  120], "size": [180, 64], "tag": "manifest+secrets" },
+    { "id": "readiness",  "type": "security",  "label": "intake-readiness",   "sublabel": "stable contract?",     "pos": [500,  240], "size": [180, 64], "tag": "pre-exec block" },
+    { "id": "envprofile", "type": "backend",   "label": "environment-profile", "sublabel": "scope+merge+load",    "pos": [500,  360], "size": [180, 64] },
+
+    { "id": "workspace",  "type": "database",  "label": "AgentWorkspace",  "sublabel": "per-run isolated",     "pos": [500,  500], "size": [180, 64], "tag": "playwright+control cfg" },
+
+    { "id": "runner",     "type": "cloud",     "label": "runAgentTest",    "sublabel": "src/agent/runner",     "pos": [780,  260], "size": [200, 90], "tag": "双 turn 设计" },
+
+    { "id": "codexhost",  "type": "external",  "label": "AgentHost",       "sublabel": "Codex / OMP",          "pos": [1060, 100], "size": [180, 64], "tag": "AUTO_TEST_AGENT_HOME" },
+    { "id": "controlmcp", "type": "messagebus","label": "auto-test-control MCP", "sublabel": "control-server.ts", "pos": [1060, 200], "size": [180, 64], "tag": "run-scoped" },
+    { "id": "playwright", "type": "external",  "label": "Playwright MCP",  "sublabel": "browser automation",   "pos": [1060, 320], "size": [180, 64] },
+
+    { "id": "delivery",   "type": "security",  "label": "delivery turn",   "sublabel": "codexTestResultSchema","pos": [780,  440], "size": [200, 64], "tag": "2nd turn" },
+    { "id": "validation", "type": "security",  "label": "finalResultProblems",  "sublabel": "确定性校验",       "pos": [1060, 440], "size": [180, 64], "tag": "mutation ledger" },
+    { "id": "workbook",   "type": "database",  "label": "result workbook",   "sublabel": "artifact-redaction",   "pos": [1320, 200], "size": [180, 64], "tag": "xlsx 输出" },
+    { "id": "replaycompiler","type": "cloud",  "label": "mcp-replay",      "sublabel": "compiler/mcp-replay", "pos": [1320, 440], "size": [180, 64], "tag": "→ Playwright 回归" }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Codex-native 路径(默认)",
+      "wraps": ["xlsx", "media", "easy", "agenttest", "intake", "readiness", "envprofile", "workspace", "runner", "codexhost", "controlmcp", "playwright", "delivery", "validation", "workbook", "replaycompiler"]
+    }
+  ],
+  "connections": [
+    { "id": "eng-xlsx",         "from": "engineer",   "to": "xlsx",      "label": "提供" },
+    { "id": "eng-media",        "from": "engineer",   "to": "media",     "label": "可选" },
+    { "id": "eng-easy",         "from": "engineer",   "to": "easy",      "label": "启动" },
+    { "id": "xlsx-intake",      "from": "xlsx",       "to": "intake",    "label": "xlsx" },
+    { "id": "media-intake",     "from": "media",      "to": "intake",    "label": "embedded" },
+    { "id": "easy-intake",      "from": "easy",       "to": "intake",    "label": "trigger" },
+    { "id": "agenttest-intake", "from": "agenttest",  "to": "intake",    "label": "trigger" },
+
+    { "id": "intake-readiness", "from": "intake",     "to": "readiness", "label": "manifest", "labelAt": [590, 198] },
+    { "id": "intake-envprofile","from": "intake",     "to": "envprofile","label": "profile ctx",  "labelAt": [480, 318], "via": [[480, 160], [480, 392], [500, 392]] },
+    { "id": "intake-workspace", "from": "intake",     "to": "workspace", "label": "raw copies",   "labelAt": [1040, 60], "via": [[590, 152], [1040, 152], [1040, 532], [680, 532]] },
+    { "id": "envprofile-workspace","from": "envprofile","to": "workspace","label": "scope+secrets","via": [[590, 424], [590, 500]] },
+
+    { "id": "readiness-runner", "from": "readiness",  "to": "runner",    "label": "stable?",       "labelAt": [680, 318], "via": [[680, 272], [680, 305], [780, 305]] },
+    { "id": "envprofile-runner","from": "envprofile", "to": "runner",    "label": "profile ctx", "labelAt": [680, 330] },
+    { "id": "workspace-runner", "from": "workspace",  "to": "runner",    "label": "isolated home", "labelAt": [600, 580], "via": [[470, 564], [470, 660], [1040, 660], [1040, 305], [780, 305]] },
+
+    { "id": "runner-host",      "from": "runner",     "to": "codexhost", "label": "select+prepare" },
+    { "id": "runner-control",   "from": "runner",     "to": "controlmcp","label": "register" },
+    { "id": "runner-pw",        "from": "runner",     "to": "playwright","label": "browser MCP" },
+
+    { "id": "host-control",     "from": "codexhost",  "to": "controlmcp","label": "tool call",     "labelAt": [1143, 178], "via": [[1157, 132], [1157, 200]] },
+    { "id": "host-pw",          "from": "codexhost",  "to": "playwright","label": "tool call",     "labelAt": [1154, 278], "via": [[1157, 132], [1300, 132], [1300, 352], [1157, 352]] },
+
+    { "id": "host-delivery",    "from": "codexhost",  "to": "delivery",  "label": "2nd turn",  "via": [[1060, 132], [1010, 132], [1010, 472], [980, 472]], "labelAt": [1010, 380] },
+    { "id": "delivery-validate","from": "delivery",   "to": "validation","label": "CodexTestAgentResult", "labelAt": [1020, 518] },
+
+    { "id": "validate-workbook","from": "validation", "to": "workbook",  "label": "redacted",  "labelAt": [1240, 398], "via": [[1240, 472], [1300, 472], [1300, 232], [1320, 232]] },
+    { "id": "validate-replay",  "from": "validation", "to": "replaycompiler","label": "successful runs", "labelAt": [1235, 518], "via": [[1150, 504], [1320, 504]] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Codex-native(默认路径)",
+      "items": [
+        "核心是 src/agent/runner.ts — 一个 thin harness around Codex",
+        "工程模型:Excel intake → readiness → env profile → 双 turn runner → 交付结果",
+        "故意不实现第二套页面语义/规划器/低智运行时"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "双 turn 设计",
+      "items": [
+        "turn 1:执行(无输出 schema,完整 agent 权限,无 tool call 不应失败)",
+        "turn 2:同一 thread 上交付(codexTestResultSchema / src/agent/result.ts)",
+        "防止第一回合超大请求在调用前就爆"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "结果契约与 Mutation Ledger",
+      "items": [
+        "harness 校验:workflowId + sourceSha256 一致、每个 case 出现一次且有证据",
+        "outcome 一致;product_failed 归因 product;blocked 必有 blocker",
+        "Mutation Ledger 无 pending 条目;最多 --max-finalization-turns(默认 2)修正轮"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "回放与回归",
+      "items": [
+        "成功的 Codex-native run → src/compiler/mcp-replay.ts 编译成 Playwright 回归 spec",
+        "legacy IR/Workflow Runtime/Planner/Recovery 路径已删除,不是 fallback",
+        "架构迁移记录见 docs/architecture-journey-ir-runtime-to-codex-native.md"
+      ]
+    }
+  ]
+}
