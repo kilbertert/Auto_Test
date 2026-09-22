@@ -129,7 +129,11 @@ export function redactCredentialValues(value: string): string {
     .replace(new RegExp(`${keyedCredentialPattern}[^\\s,;&}\\]]+`, 'gi'), '$1<redacted>')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
     .replace(
-      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)[^"',\r\n}|]+/gi,
+      // Stop only at the report's ` | ` evidence separator so following evidence survives, but keep
+      // consuming an unspaced `|` so a credential that contains one is not truncated and leaked.
+      // ponytail: a credential containing a spaced ` | ` still truncates; that shape is far rarer
+      // than the evidence separator, and tightening it would need a value grammar, not a regex.
+      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)(?:(?!\s\|\s)[^"',\r\n}])+/gi,
       '$1<redacted>',
     )
 }

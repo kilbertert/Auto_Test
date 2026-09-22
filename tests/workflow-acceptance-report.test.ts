@@ -121,4 +121,21 @@ describe('workflow acceptance report', () => {
     expect(serialized).toContain('status=200')
     expect(serialized).toContain('assertion=passed')
   })
+
+  it('does not truncate a credential value that itself contains a pipe', () => {
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{
+          description: 'ended',
+          passed: true,
+          evidence: 'cookie: session=abc|secret-tail-value',
+        }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain('secret-tail-value')
+  })
 })
