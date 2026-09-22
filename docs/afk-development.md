@@ -21,12 +21,11 @@ rather than baked into the image:
 | `claude` | the Anthropic API | whatever credential the host shell exports |
 | `claude-stepfun` | StepFun's native Anthropic Messages API | `~/cliproxyapi/settings.stepfun.json` |
 
-The model comes from the `ANTHROPIC_DEFAULT_*_MODEL` entries in that file, so
-`AFK_MODEL` is only needed to override it:
-
-```bash
-AFK_PROFILE=claude-stepfun AFK_MODEL=step-5-preview pnpm afk -- <issue-number>
-```
+The model comes from the `ANTHROPIC_DEFAULT_*_MODEL` entries in that file. To
+change it, edit those entries — the sandbox wrapper strips `--model` for this
+profile, because the settings file owns the model, so `AFK_MODEL` has no effect
+here. (Under the `claude` profile it does: that wrapper passes arguments
+through, and there is no settings file for it.)
 
 Set `AFK_STEPFUN_SETTINGS` when the settings file lives elsewhere.
 
