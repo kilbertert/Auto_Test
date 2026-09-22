@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
@@ -15,6 +15,15 @@ import {
 import type { CodexTestCaseDecision, CodexTestCaseResult, CodexTestFieldCompositionGate } from '../src/agent/types.js'
 
 const directories: string[] = []
+
+const root = resolve(import.meta.dirname, '..')
+
+async function readSourceFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(resolve(root, directory), { recursive: true })
+  return entries
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((entry) => resolve(root, directory, entry))
+}
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
@@ -209,6 +218,42 @@ describe('RunArtifactStore initialization', () => {
     await writeJson(store.layout.manifestPath, { ...manifest, source: { ...manifest.source, sha256: 'b'.repeat(64) } })
 
     await expect(store.initialize({ resume: true })).rejects.toThrow(/workflow identity/)
+  })
+})
+
+/**
+ * Journal layout ownership. A consumer that re-derives where a journal artifact
+ * lives, or re-implements what a stored entry means, is the shallow coupling
+ * this module exists to remove, so the layout is pinned from the outside.
+ */
+describe('RunArtifactStore journal layout ownership', () => {
+  it('leaves no journal artifact path derivation outside the store', async () => {
+    const sources = await Promise.all(
+      (await readSourceFiles('src')).map(async (file) => ({ file, text: await readFile(file, 'utf8') })),
+    )
+
+    for (const artifactName of [
+      'mutation-ledger.json',
+      'environment-requirements.json',
+      'field-compositions.json',
+      'execution-receipts.json',
+    ]) {
+      const owners = sources.filter(({ text }) => text.includes(`'${artifactName}'`) || text.includes(`"${artifactName}"`))
+      expect(owners.map(({ file }) => relative(root, file)).sort(), artifactName).toEqual(['src/agent/run-artifact-store.ts'])
+    }
+  })
+
+  it('removes the compatibility delegates that only forwarded to the store', async () => {
+    for (const module of ['case-result-store.ts', 'environment-requirements.ts']) {
+      await expect(access(resolve(root, 'src/agent', module)), module).rejects.toThrow()
+    }
+    const sources = await Promise.all(
+      (await readSourceFiles('src')).map(async (file) => ({ file, text: await readFile(file, 'utf8') })),
+    )
+    for (const module of ['case-result-store.js', 'environment-requirements.js']) {
+      const importers = sources.filter(({ text }) => new RegExp(`from '(\\.\\.?/)+${module.replace('.', '\\.')}'`).test(text))
+      expect(importers.map(({ file }) => relative(root, file))).toEqual([])
+    }
   })
 })
 

@@ -126,11 +126,10 @@ export function normalizeEnvironmentOrigin(value: string): string {
 }
 
 /**
- * The run root that owns one journal artifact path. Callers that still hand a
- * journal helper a single artifact path rather than the run root (the
- * compatibility delegates, and read-only consumers with a run directory)
- * recover the run root here, so the inverse of the layout stays in one place
- * instead of being guessed per caller.
+ * The run root that owns one journal artifact path. A caller configured with a
+ * single journal path rather than a run root (the Control MCP config names the
+ * Mutation Ledger) recovers the run root here, so the inverse of the layout
+ * stays in one place instead of being guessed per caller.
  */
 export function runRootForJournalArtifact(artifactPath: string): string {
   return resolve(artifactPath, '..', '..')
@@ -231,9 +230,10 @@ function isRunIdentityManifest(value: unknown): value is WorkflowIntakeManifest 
 
 /**
  * Open the journal of a run that already persisted its manifest. A caller that
- * holds a run directory but not the intake manifest (an observe consumer, a
- * comparison, or a compatibility delegate) loads the persisted run identity
- * instead of supplying its own, so read-back identity cannot drift.
+ * holds a run directory but not the intake manifest (an observation-plane
+ * projection, or the resume path of the execution entry point) loads the
+ * persisted run identity instead of supplying its own, so read-back identity
+ * cannot drift between the run that wrote the journal and the one reading it.
  */
 export async function openRunArtifactStoreForRun(runRoot: string): Promise<RunArtifactStore> {
   const layout = runArtifactLayout(runRoot)

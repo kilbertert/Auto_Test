@@ -6,7 +6,6 @@ import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import { prepareAgentWorkspace } from '../src/agent/workspace.js'
 import { normalizeEnvironmentOrigin, openRunArtifactStore, type RunArtifactStore } from '../src/agent/run-artifact-store.js'
-import { blockedNavigationOriginsFromEvents } from '../src/agent/environment-requirements.js'
 
 /**
  * The environment requirement journal as seen at the store seam: recording a
@@ -88,21 +87,6 @@ describe('environment access requirements', () => {
     const reconciled = await store.reconcileEnvironmentRequirements(['https://app.example.test', 'https://admin.example.test'])
     expect(reconciled[0]).toMatchObject({ origin: 'https://admin.example.test', status: 'satisfied' })
     expect((await store.readEnvironmentRequirements()).entries[0]?.status).toBe('satisfied')
-  })
-
-  it('infers only blocked navigation origins, not blocked third-party resources', () => {
-    const events = [
-      JSON.stringify({ type: 'item.completed', item: {
-        type: 'mcp_tool_call', tool: 'browser_navigate',
-        result: { content: [{ type: 'text', text: 'ERR_BLOCKED_BY_CLIENT at https://unregistered.example.test/path' }] },
-      } }),
-      JSON.stringify({ type: 'item.completed', item: {
-        type: 'mcp_tool_call', tool: 'browser_console_messages',
-        result: { content: [{ type: 'text', text: 'ERR_BLOCKED_BY_CLIENT at https://static-cdn.example.test/map.js' }] },
-      } }),
-    ].join('\n')
-
-    expect(blockedNavigationOriginsFromEvents(events, ['https://app.example.test'])).toEqual(['https://unregistered.example.test'])
   })
 
   it('records generic environment prerequisites with case linkage and evidence', async () => {

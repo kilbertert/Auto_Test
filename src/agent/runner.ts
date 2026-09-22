@@ -9,7 +9,6 @@ import { redactAgentTextArtifact, redactAgentTextArtifacts, sanitizeAgentDeliver
 import { readAgentBuildInfo } from './build-info.js'
 import { createLegacyCodexAgentHost } from './codex-host.js'
 import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, splitAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
-import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import type { ExecutionReceiptRecorder } from './execution-receipts.js'
@@ -1017,7 +1016,6 @@ export async function runAgentTest(
     const store = openRunArtifactStore({ runRoot: outputDirectory, manifest: options.manifest })
     runStore = store
     const checkpointDirectory = resolve(workspace.privateDirectory, 'checkpoints')
-    const resultDirectory = caseResultDirectory(outputDirectory)
     const scrubGeneratedArtifacts = async (): Promise<void> => {
       await redactAgentTextArtifact(eventsPath, redactionSecrets)
       const sanitization = await sanitizeAgentDeliveryEvidencePaths(workspace.workspaceDirectory, redactionSecrets)
@@ -1068,7 +1066,7 @@ export async function runAgentTest(
               enforceEnvironmentRequirements(recovered.result, environmentRequirements),
               ledger,
             ), redactionSecrets)
-            await writeCaseResultRecords(resultDirectory, options.manifest, 'recovered-delivery', result.cases)
+            await store.recordCaseResults({ epochId: 'recovered-delivery', cases: result.cases })
             await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
             await writePrivateJson(resultPath, result)
             progress.report('stage', `已有逐 case 交付通过确定性校验，无需再次启动浏览器或 AgentHost：${result.outcome}`)
@@ -1127,7 +1125,7 @@ export async function runAgentTest(
     await writePrivateJson(statePath, state)
     progress.report('stage', `隔离测试工作区已准备，正在启动 ${host.displayName} 测试线程`)
     const fullAgentAccess = (options.testDataAccess ?? 'direct') === 'direct'
-    const existingRecords = await readCaseResultRecords(resultDirectory, options.manifest)
+    const existingRecords = await journalEntries(store.readCaseResultRecords())
     progress.recordCaseResults(existingRecords.map((record) => ({ caseId: record.result.caseId, outcome: record.result.outcome })))
     const completedCaseIds = new Set([
       ...state.completedCaseIds,
@@ -1594,7 +1592,7 @@ export async function runAgentTest(
       if (epochResult.mutations.some((mutation) => mutation.status === 'pending')) {
         const requirements = await journalEntries(store.readEnvironmentRequirements())
         const ledger = await journalEntries(store.readMutationLedger())
-        const allRecords = await readCaseResultRecords(resultDirectory, options.manifest)
+        const allRecords = await journalEntries(store.readCaseResultRecords())
         const cases = [...allRecords.map((record) => record.result), ...epochResult.cases]
         const completed = new Set(cases.map((item) => item.caseId))
         const remainingManifest = {
@@ -1623,7 +1621,7 @@ export async function runAgentTest(
 
       epochResult = redactAgentJsonArtifact(epochResult, redactionSecrets)
       await writePrivateJson(epochResultPath(workspace, epoch), epochResult)
-      await writeCaseResultRecords(resultDirectory, options.manifest, epoch.id, epochResult.cases)
+      await store.recordCaseResults({ epochId: epoch.id, cases: epochResult.cases })
       for (const item of epochResult.cases) completedCaseIds.add(item.caseId)
       const { activeEpoch: _activeEpoch, ...stateWithoutActiveEpoch } = state
       state = updateAgentTestState(stateWithoutActiveEpoch, {
@@ -1676,7 +1674,7 @@ export async function runAgentTest(
 
     const requirements = await journalEntries(store.readEnvironmentRequirements())
     const ledger = await journalEntries(store.readMutationLedger())
-    const records = await readCaseResultRecords(resultDirectory, options.manifest)
+    const records = await journalEntries(store.readCaseResultRecords())
     let result: CodexTestAgentResult
     try {
       result = enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }), requirements), ledger)
@@ -1738,7 +1736,7 @@ export async function runAgentTest(
           requirementsError = redactAgentValue(requirementsReadError instanceof Error ? requirementsReadError.message : String(requirementsReadError), redactionSecrets)
         }
         try {
-          recordedCases = (await readCaseResultRecords(caseResultDirectory(outputDirectory), options.manifest)).map((record) => record.result)
+          recordedCases = (await journalEntries(runStore.readCaseResultRecords())).map((record) => record.result)
         } catch (caseReadError) {
           caseStoreError = redactAgentValue(caseReadError instanceof Error ? caseReadError.message : String(caseReadError), redactionSecrets)
         }

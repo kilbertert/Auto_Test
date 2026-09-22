@@ -292,15 +292,32 @@ describe('AgentHost competition contract', () => {
     const omp = await makeRun(root, 'omp', expected)
     await rm(resolve(omp, 'agent-host-selection.json'))
     await writeFile(resolve(omp, 'codex-agent.state.json'), '{broken json')
-    await rm(resolve(omp, '.agent-private', 'mutation-ledger.json'))
     await writeFile(resolve(omp, 'agent-workspace', 'test-manifest.json'), JSON.stringify({ phases: 'not-an-array' }))
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
     expect(report.verdict).toBe('invalid')
     expect(report.contractProblems.some((problem) => problem.includes('缺少 agent-host-selection.json'))).toBe(true)
     expect(report.contractProblems.some((problem) => problem.includes('codex-agent.state.json 无法读取'))).toBe(true)
-    expect(report.contractProblems.some((problem) => problem.includes('缺少 .agent-private/mutation-ledger.json'))).toBe(true)
     expect(report.contractProblems.some((problem) => problem.includes('test-manifest.json 结构无效'))).toBe(true)
+  })
+
+  it('reports a candidate whose journal artifact is missing or names a foreign case', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-journal-'))
+    directories.push(root)
+    const expected = result()
+    const codex = await makeRun(root, 'codex', expected)
+    const omp = await makeRun(root, 'omp', expected)
+    await rm(resolve(omp, '.agent-private', 'mutation-ledger.json'))
+    await writeFile(resolve(codex, '.agent-private', 'mutation-ledger.json'), JSON.stringify([{
+      id: 'foreign-write', caseId: 'not-in-manifest', description: 'uninvited write', risk: 'write', status: 'pending',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:30.000Z', evidence: [],
+    }]))
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('invalid')
+    // Both candidates are read through the store, so the same journal artifact is
+    // missing for one and rejected for the other instead of being accepted twice.
+    expect(report.contractProblems.some((problem) => problem.includes('Mutation Ledger is missing'))).toBe(true)
+    expect(report.contractProblems.some((problem) => problem.includes('references an unknown case not-in-manifest'))).toBe(true)
   })
 
   it('returns an invalid contract for a missing run directory', async () => {

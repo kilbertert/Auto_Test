@@ -16,6 +16,7 @@ import type {
 import { parseAgentTestResult } from './result.js'
 import { failureModeCounts } from './failure-mode.js'
 import { usageFrom } from './host.js'
+import { openRunArtifactStore, runArtifactLayout } from './run-artifact-store.js'
 import { writePrivateJson } from './state.js'
 
 export interface AgentCompetitionOracleCase {
@@ -174,6 +175,30 @@ async function readArtifact<T>(path: string): Promise<JsonArtifact<T>> {
   } catch (error) {
     return { exists: true, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * The journal artifacts of one candidate run. Where the Mutation Ledger and the
+ * execution receipts live, and which stored entries belong to this run, are the
+ * RunArtifactStore's rules, so both candidates are compared on the same
+ * identity-checked reading instead of on two hand-derived paths.
+ */
+async function readCandidateJournal(
+  runDirectory: string,
+  manifest: WorkflowIntakeManifest,
+  candidateLabel: string,
+  validationProblems: string[],
+): Promise<{ ledger: CodexTestMutationLedgerEntry[]; receipts: CodexTestExecutionReceipt[] }> {
+  const store = openRunArtifactStore({ runRoot: runDirectory, manifest })
+  const ledger = await store.readMutationLedger()
+  const receipts = await store.readExecutionReceipts()
+  if (ledger.problems.length > 0) {
+    validationProblems.push(`${candidateLabel} 的 Mutation Ledger 无法读取：${ledger.problems.join('; ')}`)
+  }
+  if (receipts.problems.length > 0) {
+    validationProblems.push(`${candidateLabel} 的执行回执无法读取：${receipts.problems.join('; ')}`)
+  }
+  return { ledger: ledger.entries, receipts: receipts.entries }
 }
 
 function emptyResult(): AgentTestResult {
@@ -596,6 +621,7 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
   const runDirectory = resolve(runDirectoryInput)
   const validationProblems: string[] = []
   const candidateLabel = basename(runDirectory)
+  const layout = runArtifactLayout(runDirectory)
   const selectionArtifact = await readArtifact<AgentHostSelectionArtifact>(resolve(runDirectory, 'agent-host-selection.json'))
   const selection = recordValue(selectionArtifact.value) as AgentHostSelectionArtifact | undefined ?? {}
   if (!selectionArtifact.exists) validationProblems.push(`${candidateLabel} 缺少 agent-host-selection.json`)
@@ -640,29 +666,23 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
     ? stateArtifact.value as CodexTestAgentState
     : emptyState(result)
 
-  const ledgerArtifact = await readArtifact<CodexTestMutationLedgerEntry[]>(resolve(runDirectory, '.agent-private', 'mutation-ledger.json'))
-  const ledger = Array.isArray(ledgerArtifact.value) && ledgerArtifact.value.every((entry) => Boolean(recordValue(entry)))
-    ? ledgerArtifact.value
-    : []
-  if (!ledgerArtifact.exists) validationProblems.push(`${candidateLabel} 缺少 .agent-private/mutation-ledger.json`)
-  else if (ledgerArtifact.error) validationProblems.push(`${candidateLabel} 的 Mutation Ledger 无法读取：${ledgerArtifact.error}`)
-  else if (!Array.isArray(ledgerArtifact.value)) validationProblems.push(`${candidateLabel} 的 Mutation Ledger 不是数组`)
-  else if (ledgerArtifact.value.some((entry) => !recordValue(entry))) validationProblems.push(`${candidateLabel} 的 Mutation Ledger 包含无效条目`)
-
-  const receiptsArtifact = await readArtifact<CodexTestExecutionReceipt[]>(resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'))
-  let receipts: CodexTestExecutionReceipt[] = []
-  if (Array.isArray(receiptsArtifact.value) && receiptsArtifact.value.every((receipt) => Boolean(recordValue(receipt)))) {
-    receipts = receiptsArtifact.value
-  }
-  if (receiptsArtifact.error) validationProblems.push(`${candidateLabel} 的执行回执无法读取：${receiptsArtifact.error}`)
-  else if (receiptsArtifact.value !== undefined && !Array.isArray(receiptsArtifact.value)) validationProblems.push(`${candidateLabel} 的执行回执不是数组`)
-  else if (Array.isArray(receiptsArtifact.value) && receiptsArtifact.value.some((receipt) => !recordValue(receipt))) validationProblems.push(`${candidateLabel} 的执行回执包含无效条目`)
-
-  const manifestArtifact = await readArtifact<WorkflowIntakeManifest>(resolve(runDirectory, 'agent-workspace', 'test-manifest.json'))
+  const manifestArtifact = await readArtifact<WorkflowIntakeManifest>(layout.manifestPath)
   const manifest = isManifest(manifestArtifact.value) ? manifestArtifact.value : undefined
   if (!manifestArtifact.exists) validationProblems.push(`${candidateLabel} 缺少 immutable test-manifest.json`)
   else if (manifestArtifact.error) validationProblems.push(`${candidateLabel} 的 immutable test-manifest.json 无法读取：${manifestArtifact.error}`)
   else if (!manifest) validationProblems.push(`${candidateLabel} 的 immutable test-manifest.json 结构无效`)
+
+  // The Mutation Ledger and the execution receipts are journal artifacts, so the
+  // store owns where each one lives and which stored entries belong to this run.
+  // A candidate without a usable run identity cannot open its journal at all,
+  // which is already reported above as an immutable test-manifest.json problem.
+  let ledger: CodexTestMutationLedgerEntry[] = []
+  let receipts: CodexTestExecutionReceipt[] = []
+  if (manifest) {
+    const journal = await readCandidateJournal(runDirectory, manifest, candidateLabel, validationProblems)
+    ledger = journal.ledger
+    receipts = journal.receipts
+  }
 
   const inputBundleArtifact = await readArtifact<InputBundleArtifact>(resolve(runDirectory, 'input-bundle.json'))
   const inputBundle = recordValue(inputBundleArtifact.value) as InputBundleArtifact | undefined

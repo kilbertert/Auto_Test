@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises'
-import { writePrivateJson } from './state.js'
 import { normalizeAgentEvent } from './host.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
@@ -65,6 +64,11 @@ function browserReceipt(
   }
 }
 
+/**
+ * Raw file read of one receipt artifact. The RunArtifactStore composes this
+ * primitive with the journal path layout and read-back identity; a caller that
+ * wants this run's receipts asks the store instead.
+ */
 export async function readExecutionReceipts(path: string): Promise<CodexTestExecutionReceipt[]> {
   try {
     const value = JSON.parse(await readFile(path, 'utf8')) as unknown
@@ -116,20 +120,13 @@ export function summarizeExecutionReceipts(
 }
 
 /**
- * Where a recorder keeps its receipts. The RunArtifactStore supplies the
- * canonical, identity-checked one; a caller that still holds a receipt path
- * gets the plain file-bound one from `ExecutionReceiptRecorder.create`.
+ * Where a recorder keeps its receipts: the RunArtifactStore supplies the
+ * canonical, identity-checked journal, so a recorder only ever opens through
+ * the store rather than binding itself to a receipt file path.
  */
 export interface ExecutionReceiptJournal {
   read(): Promise<CodexTestExecutionReceipt[]>
   write(receipts: CodexTestExecutionReceipt[]): Promise<void>
-}
-
-function filesystemJournal(path: string): ExecutionReceiptJournal {
-  return {
-    read: () => readExecutionReceipts(path),
-    write: (receipts) => writePrivateJson(path, receipts),
-  }
 }
 
 export class ExecutionReceiptRecorder {
@@ -156,11 +153,6 @@ export class ExecutionReceiptRecorder {
 
   static async open(journal: ExecutionReceiptJournal, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
     return new ExecutionReceiptRecorder(journal, caseIds, namespace, await journal.read())
-  }
-
-  /** Compatibility constructor for a caller that holds a receipt artifact path but no store yet. */
-  static create(path: string, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
-    return ExecutionReceiptRecorder.open(filesystemJournal(path), caseIds, namespace)
   }
 
   async observe(value: unknown): Promise<void> {

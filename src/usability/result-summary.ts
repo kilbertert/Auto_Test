@@ -9,6 +9,7 @@ import type {
   CodexTestMutationLedgerEntry,
   CodexTestMutationResult,
 } from '../agent/types.js'
+import { openRunArtifactStoreForRun } from '../agent/run-artifact-store.js'
 import { redactSensitiveText } from '../input/text.js'
 
 export interface FriendlyRunSummary {
@@ -109,6 +110,22 @@ function mutationStatusLine(mutations: Array<Pick<CodexTestMutationResult | Code
   if (pending > 0) return `业务残留：${pending} 项 Mutation 仍为 pending，继续前必须先核对或恢复。`
   if (mutations.length > 0) return '业务残留：无未核销写入，Mutation Ledger pending=0。'
   return '业务残留：Mutation Ledger 未记录待恢复写入（pending=0）。'
+}
+
+/**
+ * The Mutation Ledger as the projection surface consumes it. The store owns
+ * where the journal lives and which stored entries belong to this run, so a
+ * ledger that is absent, or that names a Case outside the persisted Manifest,
+ * is reported as unconfirmed instead of being counted as business residue.
+ */
+async function readMutationLedger(runRoot: string): Promise<CodexTestMutationLedgerEntry[] | undefined> {
+  try {
+    const store = await openRunArtifactStoreForRun(runRoot)
+    const journal = await store.readMutationLedger()
+    return journal.problems.length > 0 ? undefined : journal.entries
+  } catch {
+    return undefined
+  }
 }
 
 function defaultNextAction(result: CodexTestAgentResult): string {
@@ -247,8 +264,7 @@ async function codexAgentSummary(statePath: string, state: CodexTestAgentState):
       lines: [`当前阶段：${state.stage}${state.agentHost ? `，宿主：${state.agentHost}` : ''}${state.threadId ? `，线程：${state.threadId}` : ''}。`],
     }
   }
-  const ledgerPath = resolve(dirname(statePath), '.agent-private', 'mutation-ledger.json')
-  const ledger = await readJson<CodexTestMutationLedgerEntry[]>(ledgerPath).catch(() => undefined)
+  const ledger = await readMutationLedger(dirname(statePath))
   return {
     title: '测试执行异常结束',
     outcome: 'failed',
