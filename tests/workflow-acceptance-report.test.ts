@@ -101,4 +101,24 @@ describe('workflow acceptance report', () => {
     expect(serialized).not.toContain('refresh-value-123')
     expect(serialized).not.toContain('abc123')
   })
+
+  it('keeps the non-credential evidence that follows a credential header', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl'
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{
+          description: 'ended',
+          passed: true,
+          evidence: `Authorization: Bearer ${jwt} | status=200 | assertion=passed`,
+        }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain(jwt)
+    expect(serialized).toContain('status=200')
+    expect(serialized).toContain('assertion=passed')
+  })
 })

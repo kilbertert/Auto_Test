@@ -235,7 +235,7 @@ flowchart TB
 | 模块 | 职责 |
 |---|---|
 | `input/xlsx.ts` | 表头映射式工作簿读取：`readWorkbookCases` 产出规范列，不按列号猜列。样式损坏的工作簿需 XML 直读 |
-| `input/headers.ts` / `input/text.ts` | 表头别名归一、文本归一与 `redactSensitiveContent` 通用脱敏 |
+| `input/headers.ts` / `input/text.ts` | 表头别名归一、文本归一，以及通用脱敏原语：`redactSensitiveContent`（PII/关键词）与 `redactCredentialValues`（JWT、keyed credential、Authorization/Bearer/cookie 头）。**两类 surface 共用这一份凭据规则**，所以报告不会漏掉 Evidence 已抑制的值 |
 | `compiler/mcp-replay.ts` | 把一段 MCP Playwright 调用轨迹编译为回归 spec，并**拒绝**任何不稳定片段（见推论六） |
 
 #### L3 `workflow` — 输入编制、Profile 与验收报告（2359 行）
@@ -248,7 +248,7 @@ flowchart TB
 | `environment-profile.ts` | 环境注册表：origins、auth、`policy.allowWrite/allowDestructive`；加载期强制不变量 |
 | `model-profile.ts` | 模型注册表：宿主中立的供应商描述，Profile → `AgentModelProviderDescriptor` 的翻译（520 行） |
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
-| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏 |
+| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族 |
 
 #### L4 `src/agent` — 执行外壳（最大层，9865 行 / 40 文件）
 

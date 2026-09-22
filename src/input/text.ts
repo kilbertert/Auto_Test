@@ -129,7 +129,7 @@ export function redactCredentialValues(value: string): string {
     .replace(new RegExp(`${keyedCredentialPattern}[^\\s,;&}\\]]+`, 'gi'), '$1<redacted>')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
     .replace(
-      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)[^"',\r\n}]+/gi,
+      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)[^"',\r\n}|]+/gi,
       '$1<redacted>',
     )
 }
