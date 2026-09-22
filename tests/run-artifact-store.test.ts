@@ -355,6 +355,7 @@ describe('RunArtifactStore read-back identity', () => {
     expect(decisions.entries).toEqual([])
     expect(decisions.problems[0]).toMatch(/^Case results is not valid JSON: /)
   })
+
   it('rejects Mutation Ledger entries that do not match the run contract', async () => {
     const { store } = await openPreparedStore()
     await writeJson(store.layout.mutationLedgerPath, [ledgerEntry({ risk: 'read' }), ledgerEntry({ id: 'mutation-2', createdAt: 'not-a-timestamp' })])
