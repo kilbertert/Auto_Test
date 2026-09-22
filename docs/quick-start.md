@@ -131,7 +131,7 @@ Core 拥有 bounded fan-out 策略（`fanoutPolicy`），通过 Control MCP `tes
 npm run easy -- dashboard
 ```
 
-面板仅绑定 `127.0.0.1`(端口自动分配并打印 URL),实时刷新进行中运行的阶段/epoch/事件流(SSE),已完成运行可查看逐用例结果与证据文件;只读,不提供任何控制操作,不展示 `.agent-private` 与原始 Excel。详见 [README 观测面板](../README.md#观测面板只读)。
+面板仅绑定 `127.0.0.1`(端口自动分配并打印 URL),实时刷新进行中运行的阶段/epoch/事件流(SSE),已完成运行可查看逐用例结果与证据文件;只读,不提供任何控制操作,不展示 `.agent-private` 与原始 Excel。设计边界（路径隔离、二次脱敏、令牌模型、观测面与控制面的分离）见 [README 观测面接缝](../README.md#45-与人接触的接缝观测面-vs-控制面)。
 
 主要文件：
 
