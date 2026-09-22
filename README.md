@@ -250,7 +250,7 @@ flowchart TB
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
 | `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族 |
 
-#### L4 `src/agent` — 执行外壳（最大层，10413 行 / 36 文件）
+#### L4 `src/agent` — 执行外壳（最大层，10391 行 / 36 文件）
 
 | 模块 | 职责 |
 |---|---|
@@ -386,7 +386,7 @@ artifacts/runs/<timestamp>-<stem>-<rand>/          ← Run root
 | `agent-home/`（隔离的 AgentHost home） | 否，但宿主进程必须读 | 这是 Agent 自己进程的配置目录，属于宿主所有权而非工具权限 |
 | **观测面板** | 一律不可达 | 与 Agent 权限无关：证据服务 root 钉死在 `agent-workspace/evidence`，且显式拒绝任何含 `.agent-private` 的路径 |
 
-**journal artifact 只有一个存储权威**：上表中每个 journal 文件的位置、新 Run 与 resume 的初始化规则、append 与状态迁移、以及回读时的运行身份校验，都由 `run-artifact-store.ts` 一个模块负责。Runner、Control MCP、交付恢复、跨 Run 比较与观测面（控制台摘要 / 只读面板）都向它打开同一个 store 读取或写入，而不再各自推导路径与校验规则；缺一个 journal 文件是"还没有记录"还是"这不是一个已初始化的 Run"，也由该文件自身的语义在 store 内回答，调用方不会看到同一个 artifact 在一条路径上是空、在另一条路径上报错。
+**journal artifact 只有一个存储权威**：上表中每个 journal 文件的位置、新 Run 与 resume 的初始化规则、append 与状态迁移、以及回读时的运行身份校验，都由 `run-artifact-store.ts` 一个模块负责。Runner、Control MCP、交付恢复、跨 Run 比较与观测面（控制台摘要 / 只读面板）都向它打开同一个 store 读取或写入，而不再各自推导路径与校验规则；缺一个 journal 文件是"还没有记录"还是"这不是一个已初始化的 Run"，由该文件自身的语义在 store 内决定，且读与写给同一个答案——Mutation Ledger 缺失时 `mutation_list` 报错，`mutation_begin` / `mutation_resolve` 也拒绝落笔，不会把它当空账本重建而丢掉此前已记录的写入；Control MCP 的 config 因此只保留 `mutationLedgerPath` 这一个 run-root 键，不再持久化任何 per-artifact journal 路径，免得一个过期值把一次恢复中的写指到别处。
 
 所以推论五的凭据边界**不靠 `.agent-private/` 目录权限实现**，而是靠"哪些值被写进运行值"：
 Provider API Key、Codex auth、无关主机凭据从不进入 `run-values.json`；

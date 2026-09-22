@@ -1,10 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
-import { readExecutionReceipts } from '../src/agent/execution-receipts.js'
 import { runAgentTest } from '../src/agent/runner.js'
 import { openRunArtifactStore, runArtifactLayout } from '../src/agent/run-artifact-store.js'
 import type { ModelProfile } from '../src/workflow/model-profile.js'
@@ -113,6 +112,15 @@ const interactionReceipt = {
   kind: 'interaction', status: 'completed', recordedAt: '2026-09-01T00:00:10.000Z',
 }
 
+/**
+ * One receipt artifact read straight from its file. The store is the only reader
+ * of the run journal in production; this test keeps an independent read so the
+ * store's identity-checked view is compared against the bytes the run wrote.
+ */
+async function readReceiptFile(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(path, 'utf8')) as unknown
+}
+
 /** What settlement reports for one ledger entry: the ledger's own fields minus its timestamps. */
 function settledMutations(): Array<Omit<(typeof compensatedLedger)[number], 'createdAt' | 'updatedAt'>> {
   return compensatedLedger.map(({ createdAt: _createdAt, updatedAt: _updatedAt, ...entry }) => entry)
@@ -200,7 +208,7 @@ describe('runner journal reads through RunArtifactStore', () => {
     expect(run.result?.outcome).toBe('blocked')
     expect(run.result?.mutations).toEqual(settledMutations())
     expect(run.result?.environmentRequirements).toEqual([pendingRequirement])
-    const directReceipts = await readExecutionReceipts(layout.executionReceiptsPath)
+    const directReceipts = await readReceiptFile(layout.executionReceiptsPath)
     expect(directReceipts).toEqual([interactionReceipt])
     const storeReceipts = await openRunArtifactStore({ runRoot: outputDirectory, manifest: workflow }).readExecutionReceipts()
     expect(storeReceipts.problems).toEqual([])
@@ -237,7 +245,7 @@ describe('runner journal reads through RunArtifactStore', () => {
     expect(resumed.result?.cases[0]).toMatchObject({ caseId: 'place-order', failureSource: 'environment' })
     expect(resumed.result?.mutations).toEqual(settledMutations())
     expect(resumed.result?.environmentRequirements).toEqual([pendingRequirement])
-    const directReceipts = await readExecutionReceipts(layout.executionReceiptsPath)
+    const directReceipts = await readReceiptFile(layout.executionReceiptsPath)
     expect(directReceipts).toEqual([interactionReceipt])
     expect((await openRunArtifactStore({ runRoot: outputDirectory, manifest: workflow }).readExecutionReceipts()).entries)
       .toEqual(directReceipts)

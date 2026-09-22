@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -129,12 +129,6 @@ async function callFailure(client: Client, name: string, args: Record<string, un
   return content[0]?.text ?? ''
 }
 
-/** A control config that carries no per-artifact journal path, as an older run's config does. */
-function legacyControlConfig(config: AgentTestControlConfig): AgentTestControlConfig {
-  const { environmentRequirementsPath, executionReceiptsPath, fieldCompositionPath, ...rest } = config
-  return rest
-}
-
 const fieldGateInput = {
   caseId: 'place-order',
   fieldId: 'budget-value',
@@ -152,11 +146,11 @@ const fieldGateInput = {
 }
 
 describe('control MCP journal tools over the RunArtifactStore', () => {
-  it('resolves the journal layout from the store when the control config omits the journal paths', async () => {
+  it('resolves the journal layout from the store when the control config declares no journal path', async () => {
     const { runRoot, store } = await prepareRun()
-    const client = await connect(legacyControlConfig(
+    const client = await connect(
       JSON.parse(await readFile(`${runRoot}/.agent-private/control-config.json`, 'utf8')) as AgentTestControlConfig,
-    ))
+    )
 
     await call(client, 'environment_requirement_record', {
       caseIds: ['inspect-board'],
@@ -184,14 +178,17 @@ describe('control MCP journal tools over the RunArtifactStore', () => {
   it('reaches the store layout even when the control config carries a stale journal path', async () => {
     const run = await prepareRun()
     const layout = runArtifactLayout(run.runRoot)
-    const staleConfig: AgentTestControlConfig = {
+    // A control config as an earlier version of the tool persisted it: journal
+    // artifact paths next to the run-root key. The store derives every path from
+    // the run root, so a stale value can never redirect where a resumed run writes.
+    const staleConfig = JSON.parse(JSON.stringify({
       ...run.controlConfig,
       mutationLedgerPath: layout.mutationLedgerPath,
       caseResultsPath: layout.caseResultsPath,
       environmentRequirementsPath: resolve(run.runRoot, 'agent-workspace', 'stale-requirements.json'),
       executionReceiptsPath: resolve(run.runRoot, 'agent-workspace', 'stale-receipts.json'),
       fieldCompositionPath: resolve(run.runRoot, 'agent-workspace', 'stale-gates.json'),
-    }
+    })) as AgentTestControlConfig
     const client = await connect(staleConfig)
 
     await call(client, 'mutation_begin', {
@@ -223,9 +220,9 @@ describe('control MCP journal tools over the RunArtifactStore', () => {
     expect(JSON.parse(await readFile(layout.environmentRequirementsPath, 'utf8'))).toHaveLength(1)
     expect(JSON.parse(await readFile(layout.fieldCompositionsPath, 'utf8'))).toHaveLength(1)
     expect(JSON.parse(await readFile(layout.caseResultsPath, 'utf8'))).toHaveLength(1)
-    expect(await readFile(staleConfig.environmentRequirementsPath!, 'utf8').catch(() => undefined)).toBeUndefined()
-    expect(await readFile(staleConfig.fieldCompositionPath!, 'utf8').catch(() => undefined)).toBeUndefined()
-    expect(await readFile(staleConfig.executionReceiptsPath!, 'utf8').catch(() => undefined)).toBeUndefined()
+    for (const stalePath of ['stale-requirements.json', 'stale-gates.json', 'stale-receipts.json']) {
+      expect(await readFile(resolve(run.runRoot, 'agent-workspace', stalePath), 'utf8').catch(() => undefined)).toBeUndefined()
+    }
 
     const ledger = await call(client, 'mutation_list', {})
     expect(ledger).toEqual([expect.objectContaining({ id: 'mutation-order-1', status: 'pending' })])
@@ -295,6 +292,27 @@ describe('control MCP journal tools over the RunArtifactStore', () => {
     expect((await store.readMutationLedger()).entries).toEqual([
       expect.objectContaining({ id: 'mutation-order-1', status: 'compensated' }),
     ])
+  })
+
+  it('refuses a business mutation when the run no longer holds its Mutation Ledger', async () => {
+    const { client, store } = await prepareRun()
+    await rm(store.layout.mutationLedgerPath, { force: true })
+
+    expect(await callFailure(client, 'mutation_begin', {
+      id: 'mutation-order-1',
+      caseId: 'place-order',
+      description: 'Persist one business order',
+      risk: 'write',
+    })).toContain('Mutation Ledger is missing')
+    expect(await callFailure(client, 'mutation_resolve', {
+      id: 'mutation-order-1',
+      status: 'compensated',
+      evidence: ['evidence/live-note.md'],
+    })).toContain('Mutation Ledger is missing')
+    // Recreating the ledger would silently drop the mutations this run recorded
+    // before it was lost, so the artifact stays absent and both paths refuse.
+    expect(await access(store.layout.mutationLedgerPath).then(() => true, () => false)).toBe(false)
+    expect(await callFailure(client, 'mutation_list', {})).toContain('Mutation Ledger is missing')
   })
 
   it('keeps one case result per case and rejects an unknown case', async () => {

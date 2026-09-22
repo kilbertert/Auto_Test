@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises'
 import { normalizeAgentEvent } from './host.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
@@ -61,22 +60,6 @@ function browserReceipt(
     kind: browserReceiptKind(tool),
     status: 'completed',
     recordedAt: new Date().toISOString(),
-  }
-}
-
-/**
- * Raw file read of one receipt artifact. The RunArtifactStore composes this
- * primitive with the journal path layout and read-back identity; a caller that
- * wants this run's receipts asks the store instead.
- */
-export async function readExecutionReceipts(path: string): Promise<CodexTestExecutionReceipt[]> {
-  try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as unknown
-    if (!Array.isArray(value)) throw new Error('Execution receipts must be an array')
-    return value as CodexTestExecutionReceipt[]
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
   }
 }
 

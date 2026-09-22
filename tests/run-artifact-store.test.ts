@@ -8,6 +8,7 @@ import { prepareAgentWorkspace, type AgentWorkspace } from '../src/agent/workspa
 import {
   caseResultRecordFileName,
   openRunArtifactStore,
+  openRunArtifactStoreForRun,
   runArtifactLayout,
   type EnvironmentRequirementInput,
   type RunArtifactStore,
@@ -187,7 +188,7 @@ describe('RunArtifactStore initialization', () => {
     if (process.platform !== 'win32') {
       expect((await stat(store.layout.mutationLedgerPath)).mode & 0o777).toBe(0o600)
     }
-    expect(await store.readCaseResultRecords()).toEqual({ missing: true, missingMeans: 'empty', entries: [], problems: [] })
+    expect(await store.readCaseResultRecords()).toEqual({ entries: [], problems: [] })
   })
 
   it('keeps persisted run journal entries when a resume reinitializes the store', async () => {
@@ -210,7 +211,7 @@ describe('RunArtifactStore initialization', () => {
     await writeJson(store.layout.manifestPath, { ...manifest, workflowId: 'another-run' })
 
     await expect(store.initialize({ resume: true })).rejects.toThrow(/workflow identity/)
-    expect(await store.readMutationLedger()).toMatchObject({ missing: false, entries: [] })
+    expect(await store.readMutationLedger()).toEqual({ entries: [], problems: [] })
   })
 
   it('refuses to initialize a resume whose source hash does not match the persisted run', async () => {
@@ -262,9 +263,10 @@ describe('RunArtifactStore missing artifact meaning', () => {
     const runRoot = await tempRunRoot()
     const store = openRunArtifactStore({ runRoot, manifest })
 
+    // The Mutation Ledger is the one artifact whose absence means the run root
+    // does not hold an initialized run, so the store reports it as a problem
+    // instead of handing back an empty ledger as if nothing had been recorded.
     const ledger = await store.readMutationLedger()
-    expect(ledger.missing).toBe(true)
-    expect(ledger.missingMeans).toBe('error')
     expect(ledger.entries).toEqual([])
     expect(ledger.problems).toHaveLength(1)
     expect(ledger.problems[0]).toMatch(/Mutation Ledger is missing/)
@@ -276,7 +278,7 @@ describe('RunArtifactStore missing artifact meaning', () => {
       store.readCaseResultDecisions(),
       store.readCaseResultRecords(),
     ]) {
-      expect(await read).toEqual({ missing: true, missingMeans: 'empty', entries: [], problems: [] })
+      expect(await read).toEqual({ entries: [], problems: [] })
     }
   })
 })
@@ -324,7 +326,6 @@ describe('RunArtifactStore read-back identity', () => {
     expect((await store.readMutationLedger()).entries).toEqual([ledgerEntry({ status: 'compensated' })])
     expect((await store.readMutationLedger()).problems).toEqual([])
     const requirements = await store.readEnvironmentRequirements()
-    expect(requirements.missing).toBe(false)
     expect(requirements.entries.map((item) => item.id)).toEqual(['environment-origin-1'])
     expect(requirements.problems).toEqual([])
     const receipts = await store.readExecutionReceipts()
@@ -364,7 +365,6 @@ describe('RunArtifactStore read-back identity', () => {
     await writeJson(store.caseResultRecordPath('inspect-board'), { ...caseResult('inspect-board'), workflowId: 'another-run' })
 
     const record = await store.readCaseResultRecords()
-    expect(record.missing).toBe(false)
     expect(record.entries).toEqual([])
     expect(record.problems.join(' ')).toMatch(/identity does not match the current run/)
   })
@@ -447,7 +447,6 @@ describe('RunArtifactStore case result records', () => {
 
     await store.recordCaseResults({ epochId: 'epoch-0002', cases: [deliveredResult('inspect-board', 'Board rendered again')] })
     const records = await store.readCaseResultRecords()
-    expect(records.missing).toBe(false)
     expect(records.problems).toEqual([])
     expect(records.entries.map((record) => record.result.summary)).toEqual(['Board rendered again'])
     expect(records.entries[0]?.epochId).toBe('epoch-0002')
@@ -458,7 +457,7 @@ describe('RunArtifactStore case result records', () => {
 
     await expect(store.recordCaseResults({ epochId: 'epoch-0001', cases: [deliveredResult('retired-case', 'Ignored')] }))
       .rejects.toThrow(/unknown case retired-case/)
-    expect(await store.readCaseResultRecords()).toEqual({ missing: true, missingMeans: 'empty', entries: [], problems: [] })
+    expect(await store.readCaseResultRecords()).toEqual({ entries: [], problems: [] })
   })
 
   it('rejects two results for one case in a single append', async () => {
@@ -587,7 +586,6 @@ describe('RunArtifactStore execution receipts', () => {  function event(item: Re
     await recorder.observe(event({ id: 'click', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' }))
 
     const receipts = await store.readExecutionReceipts()
-    expect(receipts.missing).toBe(false)
     expect(receipts.problems).toEqual([])
     expect(receipts.entries.map((receipt) => receipt.id)).toEqual(['single-thread:turn-0001:click'])
     expect(workspace.executionReceiptsPath).toBe(store.layout.executionReceiptsPath)
@@ -620,7 +618,6 @@ describe('RunArtifactStore environment requirements', () => {
     expect(merged.id).toBe(first.id)
     expect(merged.caseIds).toEqual(['place-order', 'inspect-board'])
     const read = await store.readEnvironmentRequirements()
-    expect(read.missing).toBe(false)
     expect(read.problems).toEqual([])
     expect(read.entries).toHaveLength(1)
   })
@@ -779,5 +776,71 @@ describe('RunArtifactStore mutation ledger transitions', () => {
     const ledger = await store.readMutationLedger()
     expect(ledger.entries.map((entry) => entry.id)).toEqual(['mutation-create'])
     expect(ledger.problems).toEqual([])
+  })
+})
+
+describe('RunArtifactStore persisted run identity', () => {
+  it('opens the journal of a run that persisted its own manifest', async () => {
+    const { store, runRoot } = await openPreparedStore()
+    await writeJson(store.layout.mutationLedgerPath, [ledgerEntry()])
+
+    const reopened = await openRunArtifactStoreForRun(runRoot)
+
+    expect(reopened.identity).toEqual(store.identity)
+    expect((await reopened.readMutationLedger()).entries).toHaveLength(1)
+  })
+
+  it('refuses a persisted manifest whose phases name no case instead of opening an identity with an undefined case', async () => {
+    const { store, runRoot } = await openPreparedStore()
+    await writeJson(store.layout.mutationLedgerPath, [ledgerEntry()])
+    const persisted = JSON.parse(await readFile(store.layout.manifestPath, 'utf8')) as WorkflowIntakeManifest
+    await writeJson(store.layout.manifestPath, {
+      ...persisted,
+      phases: persisted.phases.map((phase) => ({ ...phase, id: undefined })),
+    })
+
+    await expect(openRunArtifactStoreForRun(runRoot)).rejects.toThrow(/not a valid run identity/)
+  })
+
+  it('refuses a business write to a Mutation Ledger the run no longer holds instead of restarting it', async () => {
+    const { store } = await openPreparedStore()
+    await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+    await rm(store.layout.mutationLedgerPath, { force: true })
+
+    // A half-lost ledger must not be recreated as an empty one: that would drop
+    // the recorded mutations while the read path reports the run as broken.
+    await expect(store.recordMutationLedgerEntry({
+      id: 'mutation-next', caseId: 'place-order', description: 'Create one more business record', risk: 'write',
+    })).rejects.toThrow(/Mutation Ledger is missing/)
+    await expect(store.transitionMutationLedgerEntry({ id: 'mutation-create', status: 'compensated', evidence: ['evidence/compensated.md'] }))
+      .rejects.toThrow(/Mutation Ledger is missing/)
+    expect(await access(store.layout.mutationLedgerPath).then(() => true, () => false)).toBe(false)
+    expect((await store.readMutationLedger()).problems).toHaveLength(1)
+  })
+})
+
+describe('RunArtifactStore unreadable journal artifacts', () => {
+  it('reports a receipts or requirements artifact that is not a JSON array with the same problem shape as the other journals', async () => {
+    const { store } = await openPreparedStore()
+    await writeFile(store.layout.executionReceiptsPath, '{"entries": []}')
+    await writeFile(store.layout.environmentRequirementsPath, '{"entries": []}')
+
+    expect((await store.readExecutionReceipts()).problems)
+      .toEqual(['Execution receipts is invalid: expected a JSON array of entries'])
+    expect((await store.readExecutionReceipts()).entries).toEqual([])
+    expect((await store.readEnvironmentRequirements()).problems)
+      .toEqual(['Environment requirements is invalid: expected a JSON array of entries'])
+    expect((await store.readEnvironmentRequirements()).entries).toEqual([])
+  })
+
+  it('reports an artifact that is not valid JSON as unreadable instead of empty', async () => {
+    const { store } = await openPreparedStore()
+    await writeFile(store.layout.executionReceiptsPath, 'not json')
+    await writeFile(store.layout.environmentRequirementsPath, 'not json')
+
+    expect((await store.readExecutionReceipts()).problems[0]).toMatch(/^Execution receipts is not valid JSON: /)
+    expect((await store.readEnvironmentRequirements()).problems[0]).toMatch(/^Environment requirements is not valid JSON: /)
   })
 })

@@ -16,7 +16,7 @@ import type {
 import { parseAgentTestResult } from './result.js'
 import { failureModeCounts } from './failure-mode.js'
 import { usageFrom } from './host.js'
-import { openRunArtifactStore, runArtifactLayout } from './run-artifact-store.js'
+import { isRunIdentityManifest, openRunArtifactStore, runArtifactLayout } from './run-artifact-store.js'
 import { writePrivateJson } from './state.js'
 
 export interface AgentCompetitionOracleCase {
@@ -241,18 +241,6 @@ function emptyState(result: AgentTestResult): CodexTestAgentState {
     threadGeneration: 0,
     completedCaseIds: [],
   }
-}
-
-function isManifest(value: unknown): value is WorkflowIntakeManifest {
-  const record = recordValue(value)
-  const source = recordValue(record?.source)
-  return typeof record?.workflowId === 'string' &&
-    Array.isArray(record?.phases) &&
-    record.phases.every((phase) => {
-      const item = recordValue(phase)
-      return typeof item?.id === 'string' && item.id.trim().length > 0
-    }) &&
-    typeof source?.sha256 === 'string'
 }
 
 function manifestCaseIds(manifest: WorkflowIntakeManifest | undefined): Set<string> {
@@ -667,7 +655,7 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
     : emptyState(result)
 
   const manifestArtifact = await readArtifact<WorkflowIntakeManifest>(layout.manifestPath)
-  const manifest = isManifest(manifestArtifact.value) ? manifestArtifact.value : undefined
+  const manifest = isRunIdentityManifest(manifestArtifact.value) ? manifestArtifact.value : undefined
   if (!manifestArtifact.exists) validationProblems.push(`${candidateLabel} 缺少 immutable test-manifest.json`)
   else if (manifestArtifact.error) validationProblems.push(`${candidateLabel} 的 immutable test-manifest.json 无法读取：${manifestArtifact.error}`)
   else if (!manifest) validationProblems.push(`${candidateLabel} 的 immutable test-manifest.json 结构无效`)
@@ -773,7 +761,7 @@ async function contractProblems(candidates: LoadedCandidate[], manifest: Workflo
   if (!workflowId) problems.push('比较合同缺少 workflowId')
   if (!isSha256(sourceSha256)) problems.push('比较合同缺少有效 sourceSha256')
   const embeddedManifests = candidates.map((candidate) => candidate.manifest)
-  const suppliedManifest = manifest === undefined || isManifest(manifest) ? manifest : undefined
+  const suppliedManifest = manifest === undefined || isRunIdentityManifest(manifest) ? manifest : undefined
   if (manifest !== undefined && suppliedManifest === undefined) problems.push('比较调用方提供的 immutable test-manifest.json 结构无效')
   if (embeddedManifests.some((item) => item === undefined)) problems.push('至少一个 AgentHost run 缺少 immutable test-manifest.json')
   const contractManifest = suppliedManifest ?? embeddedManifests[0]

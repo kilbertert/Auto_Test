@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { access, readdir, readFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
-import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
+import { ExecutionReceiptRecorder } from './execution-receipts.js'
 import { writePrivateJson } from './state.js'
 import type {
   CodexTestCaseDecision,
@@ -137,16 +137,19 @@ export function runRootForJournalArtifact(artifactPath: string): string {
 
 /**
  * What one absent artifact means. `empty` is a journal with nothing recorded
- * yet; `error` is a run root that does not hold an initialized run. Callers
- * cannot confuse the two because every read reports which one it saw.
+ * yet; `error` is a run root that does not hold an initialized run. The store
+ * answers it per artifact instead of leaving the decision to each caller, so no
+ * caller sees one artifact as "empty" on one path and as a failure on another.
  */
-export type RunArtifactMissingMeaning = 'empty' | 'error'
+type RunArtifactMissingMeaning = 'empty' | 'error'
 
+/**
+ * One validated journal reading. Entries are trustworthy only while no problem
+ * is reported: a journal holding one rejected entry is not partly readable, so
+ * the store hands back no entries at all rather than a subset of the truth.
+ */
 export interface RunArtifactRead<T> {
-  missing: boolean
-  missingMeans: RunArtifactMissingMeaning
   entries: T
-  /** Identity and content rejections; entries are trustworthy only when this is empty. */
   problems: string[]
 }
 
@@ -220,12 +223,20 @@ export function openRunArtifactStore(options: OpenRunArtifactStoreOptions): RunA
   return new FilesystemRunArtifactStore(options)
 }
 
-function isRunIdentityManifest(value: unknown): value is WorkflowIntakeManifest {
+/**
+ * Whether a persisted `test-manifest.json` is a usable run identity: the
+ * workflow id, the source hash it was read from, and one Case id per phase.
+ * This is the single predicate of that question, so a caller holding a run
+ * directory (the resume path, cross-run comparison) accepts exactly the run
+ * identity the store itself opens a journal with.
+ */
+export function isRunIdentityManifest(value: unknown): value is WorkflowIntakeManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const manifest = value as Partial<WorkflowIntakeManifest>
   return typeof manifest.workflowId === 'string' &&
     typeof manifest.source?.sha256 === 'string' &&
-    Array.isArray(manifest.phases)
+    Array.isArray(manifest.phases) &&
+    manifest.phases.every((phase) => typeof phase?.id === 'string' && phase.id.trim().length > 0)
 }
 
 /**
@@ -421,21 +432,23 @@ function environmentRequirementProblems(
     .map((caseId) => unknownCaseProblem('Environment requirement', caseId, requirement.id)))
 }
 
-function executionReceiptProblems(
-  receipts: CodexTestExecutionReceipt[],
+function executionReceipts(
+  raw: unknown[],
   identity: RunArtifactIdentity,
-): string[] {
+): JournalConversion<CodexTestExecutionReceipt> {
+  const entries: CodexTestExecutionReceipt[] = []
   const problems: string[] = []
-  for (const [index, receipt] of receipts.entries()) {
-    if (!isExecutionReceipt(receipt)) {
+  for (const [index, value] of raw.entries()) {
+    if (!isExecutionReceipt(value)) {
       problems.push(`Execution receipt ${index} is malformed: expected an object with an id`)
       continue
     }
-    if (receipt.caseId && !identity.caseIds.includes(receipt.caseId)) {
-      problems.push(unknownCaseProblem('Execution receipt', receipt.caseId, receipt.id))
+    entries.push(value)
+    if (value.caseId && !identity.caseIds.includes(value.caseId)) {
+      problems.push(unknownCaseProblem('Execution receipt', value.caseId, value.id))
     }
   }
-  return problems
+  return { entries, problems }
 }
 
 function stableRequirementId(input: Pick<EnvironmentRequirementInput, 'kind' | 'origin' | 'condition'>): string {
@@ -548,34 +561,21 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
 
   /**
    * Journal artifacts whose entries are normalized as they are read back, and
-   * whose absence means "nothing recorded yet" rather than a failed run. The
-   * store still owns what each read means, so no caller has to decide whether
-   * one missing file is an empty journal or an uninitialized run.
+   * whose absence means "nothing recorded yet" rather than a failed run. Both go
+   * through the same read as the other journals, so an unreadable one is
+   * reported with the same shape instead of its own error path.
    */
   async readEnvironmentRequirements(): Promise<RunArtifactRead<CodexTestEnvironmentRequirement[]>> {
-    const path = this.layout.environmentRequirementsPath
-    const missing = !await existsPath(path)
-    let entries: CodexTestEnvironmentRequirement[]
-    try {
-      entries = await readRequirements(path)
-    } catch (error) {
-      return { missing, missingMeans: 'empty', entries: [], problems: [`Environment requirements could not be read: ${errorMessage(error)}`] }
-    }
-    const problems = environmentRequirementProblems(entries, this.identity)
-    return { missing, missingMeans: 'empty', entries: problems.length === 0 ? entries : [], problems }
+    return this.readJournal('Environment requirements', this.layout.environmentRequirementsPath, 'empty',
+      (raw) => {
+        const entries = raw.map(normalizeRequirement)
+        return { entries, problems: environmentRequirementProblems(entries, this.identity) }
+      })
   }
 
   async readExecutionReceipts(): Promise<RunArtifactRead<CodexTestExecutionReceipt[]>> {
-    const path = this.layout.executionReceiptsPath
-    const missing = !await existsPath(path)
-    let entries: CodexTestExecutionReceipt[]
-    try {
-      entries = await readExecutionReceipts(path)
-    } catch (error) {
-      return { missing, missingMeans: 'empty', entries: [], problems: [`Execution receipts could not be read: ${errorMessage(error)}`] }
-    }
-    const problems = executionReceiptProblems(entries, this.identity)
-    return { missing, missingMeans: 'empty', entries: problems.length === 0 ? entries : [], problems }
+    return this.readJournal('Execution receipts', this.layout.executionReceiptsPath, 'empty',
+      (raw) => executionReceipts(raw, this.identity))
   }
 
   /**
@@ -591,7 +591,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
       stored = await readdir(directory)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { missing: true, missingMeans: 'empty', entries: [], problems: [] }
+        return { entries: [], problems: [] }
       }
       throw error
     }
@@ -628,8 +628,6 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
       records.push(record)
     }
     return {
-      missing: false,
-      missingMeans: 'empty',
       entries: problems.length === 0 ? records : [],
       problems,
     }
@@ -836,7 +834,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
       throw new Error(`Cannot record a mutation for unknown case ${input.caseId}`)
     }
     const entries = await this.journalForWrite('Mutation Ledger', this.layout.mutationLedgerPath,
-      (raw) => mutationLedgerEntries(raw, this.identity))
+      (raw) => mutationLedgerEntries(raw, this.identity), 'error')
     const existing = entries.find((entry) => entry.id === input.id)
     // Re-registering an unresolved mutation is idempotent; a resolved one may
     // only be represented by a new id, or a different business action would
@@ -869,7 +867,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
       throw new Error('Resolved mutations must include saved verification evidence')
     }
     const entries = await this.journalForWrite('Mutation Ledger', this.layout.mutationLedgerPath,
-      (raw) => mutationLedgerEntries(raw, this.identity))
+      (raw) => mutationLedgerEntries(raw, this.identity), 'error')
     const entry = entries.find((item) => item.id === input.id)
     if (!entry) throw new Error(`Unknown mutation id: ${input.id}`)
     const resolved: CodexTestMutationLedgerEntry = {
@@ -897,27 +895,31 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     const artifact = await readArrayArtifact(label, path)
     const converted = convert(artifact.value)
     const problems = [...artifact.problems, ...converted.problems]
+    if (artifact.missing && missingMeans === 'error') problems.push(missingProblem(label, path))
     return {
-      missing: artifact.missing,
-      missingMeans,
-      // A journal with one rejected entry is not partly readable: callers that
-      // ignore the problem list must never act on a subset of the truth.
       entries: problems.length === 0 ? converted.entries : [],
-      problems: [...problems, ...(artifact.missing && missingMeans === 'error' ? [missingProblem(label, path)] : [])],
+      problems,
     }
   }
 
   /**
    * One artifact as it stands before a write. Appending to an absent artifact
-   * creates it, so a missing one is empty here; an artifact that fails read-back
-   * identity stops the write instead of being overwritten.
+   * that means "nothing recorded yet" creates it, so a missing one is empty
+   * here; an artifact whose absence means the run root is not an initialized
+   * run refuses the write instead of being recreated, so a half-lost journal
+   * cannot silently restart the run's own record. An artifact that fails
+   * read-back identity stops the write too, instead of being overwritten.
    */
   private async journalForWrite<E>(
     label: string,
     path: string,
     convert: (raw: unknown[]) => JournalConversion<E>,
+    absentMeans: RunArtifactMissingMeaning = 'empty',
   ): Promise<E[]> {
     const artifact = await readArrayArtifact(label, path)
+    if (artifact.missing && absentMeans === 'error') {
+      throw new Error(missingProblem(label, path))
+    }
     const converted = convert(artifact.value)
     const problems = [...artifact.problems, ...converted.problems]
     if (problems.length > 0) {
