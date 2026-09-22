@@ -11,9 +11,8 @@ import { createLegacyCodexAgentHost } from './codex-host.js'
 import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, splitAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
-import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
-import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
+import type { ExecutionReceiptRecorder } from './execution-receipts.js'
 import { AgentHostError, agentHostErrorKindForMessage, agentHostErrorMessageForMatching, normalizeAgentEvent, normalizeAgentHostError } from './host.js'
 import type { AgentEvent, AgentHost, AgentHostId, AgentHostLaunchOptions, AgentHostRuntime, AgentHostSession, AgentInputPart } from './host.js'
 import { createAgentHost } from './host-registry.js'
@@ -22,6 +21,7 @@ import { AgentTestProgressReporter, type AgentTestProgressSink } from './progres
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
 import { failureModeFor } from './failure-mode.js'
+import { openRunArtifactStore, runArtifactLayout, type RunArtifactRead, type RunArtifactStore } from './run-artifact-store.js'
 import { initialAgentTestState, updateAgentTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
@@ -393,8 +393,13 @@ async function waitForProviderRateLimit(error: AgentHostError): Promise<void> {
   if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
 }
 
+/**
+ * A Mutation Ledger the store refused to read back is a broken delivery
+ * artifact, not an unavailable infrastructure dependency: the run is blocked on
+ * this run's own record instead of being retried as a transient failure.
+ */
 function isMutationLedgerViolation(message: string): boolean {
-  return /mutation ledger is invalid|mutation ledger is not valid json/i.test(message)
+  return /mutation ledger/i.test(message)
 }
 
 function infrastructureBlockDetails(message: string): {
@@ -672,36 +677,35 @@ function deliveryBlockedResult(
   }, ledger)
 }
 
-async function readMutationLedger(path: string): Promise<CodexTestMutationLedgerEntry[]> {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(await readFile(path, 'utf8'))
-  } catch (error) {
-    throw new Error(`Mutation Ledger is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error('Mutation Ledger is invalid: expected a JSON array of entries')
-  }
-  const isIsoTimestamp = (value: unknown): value is string => typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
-    !Number.isNaN(Date.parse(value))
-  const invalidIndex = parsed.findIndex((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true
-    const value = entry as Record<string, unknown>
-    return typeof value.id !== 'string' ||
-      typeof value.caseId !== 'string' ||
-      typeof value.description !== 'string' ||
-      (value.risk !== 'write' && value.risk !== 'destructive') ||
-      (value.status !== 'pending' && value.status !== 'compensated' && value.status !== 'accepted') ||
-      !isIsoTimestamp(value.createdAt) ||
-      !isIsoTimestamp(value.updatedAt) ||
-      !Array.isArray(value.evidence) ||
-      value.evidence.some((item) => typeof item !== 'string')
-  })
-  if (invalidIndex >= 0) {
-    throw new Error(`Mutation Ledger is invalid: entry ${invalidIndex} does not match the run contract`)
-  }
-  return parsed as CodexTestMutationLedgerEntry[]
+/**
+ * One journal read as the Runner consumes it. The store owns where each journal
+ * artifact lives, whether an absent one is an empty journal or an uninitialized
+ * run, and which stored entries may be read back; it never hands back a subset
+ * of a journal it rejected, so a problem fails the read instead of letting
+ * settlement or recovery act on a partial view of the run's own record.
+ */
+async function journalEntries<T>(read: Promise<RunArtifactRead<T[]>>): Promise<T[]> {
+  const journal = await read
+  if (journal.problems.length > 0) throw new Error(journal.problems.join('; '))
+  return journal.entries
+}
+
+/**
+ * The prerequisite journal as the Runner consumes it: read-back identity first,
+ * then the case links a delivered result no longer blames on the environment.
+ * Settlement, the resume recovery shortcut, and the interruption path all reach
+ * it, so an entry recorded for another run, Case, or workflow is refused
+ * everywhere instead of being accepted wherever a caller read the file itself.
+ */
+async function reconciledEnvironmentRequirements(
+  store: RunArtifactStore,
+  cases: Array<Pick<CodexTestCaseResult, 'caseId' | 'failureSource' | 'environmentRequirementIds'>>,
+): Promise<CodexTestEnvironmentRequirement[]> {
+  // Read-back identity comes first: a journal the store rejects fails the read
+  // before its case links are rewritten for a delivered result.
+  const requirements = await store.readEnvironmentRequirements()
+  if (requirements.problems.length > 0) throw new Error(requirements.problems.join('; '))
+  return store.reconcileEnvironmentRequirementCaseLinks(cases)
 }
 
 /** Tool name the host's agent must invoke to read the immutable test contract. */
@@ -736,15 +740,6 @@ function isPreflightActionEvent(event: AgentEvent): boolean {
 
 function isControlContractToolEvent(event: AgentEvent): boolean {
   return isToolEvent(event) && event.server === 'auto-test-control' && event.tool === 'test_contract'
-}
-
-async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await readFile(path, 'utf8')) as T
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
-    throw error
-  }
 }
 
 function environmentRequirementsForCases(
@@ -892,7 +887,7 @@ export async function runAgentTest(
   const statePath = resolve(outputDirectory, 'codex-agent.state.json')
   const resultPath = resolve(outputDirectory, 'codex-agent.result.json')
   const eventsPath = resolve(outputDirectory, 'codex-agent.events.jsonl')
-  const existingLedgerPath = resolve(outputDirectory, '.agent-private', 'mutation-ledger.json')
+  const existingLedgerPath = runArtifactLayout(outputDirectory).mutationLedgerPath
   let state: CodexTestAgentState
   let resumeThreadId: string | undefined
   if (options.resume) {
@@ -924,9 +919,7 @@ export async function runAgentTest(
     }
     state = initialAgentTestState(options.manifest.workflowId, options.manifest.source.sha256)
   }
-  let mutationLedgerPath: string | undefined
-  let environmentRequirementsPath: string | undefined
-  let executionReceiptsPath: string | undefined
+  let runStore: RunArtifactStore | undefined
   let activeThread: AgentHostSession | undefined
   let runInterruption: CodexTestAgentState['runInterruption']
   const injectedHost = options.agentHost ?? dependencies.agentHost
@@ -1019,9 +1012,10 @@ export async function runAgentTest(
     const providerEnvironmentName = runtime.provider?.credentialEnvironmentVariable
     const providerCredential = providerEnvironmentName ? runtime.environment[providerEnvironmentName] : undefined
     if (providerCredential && !redactionSecrets.includes(providerCredential)) redactionSecrets.push(providerCredential)
-    mutationLedgerPath = workspace.mutationLedgerPath
-    environmentRequirementsPath = workspace.environmentRequirementsPath
-    executionReceiptsPath = workspace.executionReceiptsPath
+    // One store for the whole run: every journal read below it asks the same
+    // module where an artifact lives and whether a stored entry is this run's.
+    const store = openRunArtifactStore({ runRoot: outputDirectory, manifest: options.manifest })
+    runStore = store
     const checkpointDirectory = resolve(workspace.privateDirectory, 'checkpoints')
     const resultDirectory = caseResultDirectory(outputDirectory)
     const scrubGeneratedArtifacts = async (): Promise<void> => {
@@ -1037,9 +1031,9 @@ export async function runAgentTest(
       await redactAgentTextArtifacts(checkpointDirectory, redactionSecrets)
     }
     await scrubGeneratedArtifacts()
-    await reconcileEnvironmentRequirements(environmentRequirementsPath, options.profile.origins)
+    await store.reconcileEnvironmentRequirements(options.profile.origins)
     if (options.resume) {
-      const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+      const ledger = await journalEntries(store.readMutationLedger())
       if (!ledger.some((entry) => entry.status === 'pending')) {
         const recoveryStrategies = [
           () => recoverAgentEpochDeliveryResult({
@@ -1056,11 +1050,8 @@ export async function runAgentTest(
         for (const recover of recoveryStrategies) {
           const recovered = await recover()
           if (!recovered.result) continue
-          const environmentRequirements = await reconcileEnvironmentRequirementCaseLinks(
-            workspace.environmentRequirementsPath,
-            recovered.result.cases,
-          )
-          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+          const environmentRequirements = await reconciledEnvironmentRequirements(store, recovered.result.cases)
+          const executionReceipts = await journalEntries(store.readExecutionReceipts())
           const replayProblems = await replayProblemsForResult(eventsPath, recovered.result)
           const recoveryProblems = finalResultProblems(
             recovered.result,
@@ -1242,7 +1233,7 @@ export async function runAgentTest(
       })
       await writePrivateJson(statePath, state)
       progress.setContext({ threadGeneration: state.threadGeneration })
-      const receiptRecorder = await ExecutionReceiptRecorder.create(workspace.executionReceiptsPath, epoch.caseIds, epoch.id)
+      const receiptRecorder = await store.openExecutionReceiptRecorder({ caseIds: epoch.caseIds, namespace: epoch.id })
       const recordUsage = async (usage: CodexTurnUsage): Promise<void> => {
         epochUsage.inputTokens = usage.inputTokens
         epochUsage.cachedInputTokens = usage.cachedInputTokens
@@ -1444,9 +1435,9 @@ export async function runAgentTest(
             await writePrivateJson(statePath, state)
             await startReplacementSession('执行交付已落盘但原线程达到模型容量，正在换新线程完成确定性核对')
           } else {
-            const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+            const ledger = await journalEntries(store.readMutationLedger())
             const hasPendingMutation = ledger.some((entry) => entry.status === 'pending')
-            const receipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+            const receipts = await journalEntries(store.readExecutionReceipts())
             const hasInteractionReceipt = receipts.some((receipt) => epoch.caseIds.includes(receipt.caseId ?? '') && receipt.kind === 'interaction')
             if (isContextOrOutputCapacityError(error) && capabilityPreflightCompleted && ledger.length === 0 && !hasInteractionReceipt && epoch.caseIds.length > 1) {
               const replacements = splitAgentExecutionEpoch(options.manifest, epoch)
@@ -1497,7 +1488,7 @@ export async function runAgentTest(
         progress.report('stage', `正在恢复 epoch ${epoch.id} 的结构化交付，不重复业务执行`)
       }
 
-      const ledgerBeforeFinalization = await readMutationLedger(workspace.mutationLedgerPath)
+      const ledgerBeforeFinalization = await journalEntries(store.readMutationLedger())
       if (ledgerBeforeFinalization.some((entry) => entry.status === 'pending')) {
         progress.report('stage', `epoch ${epoch.id} 存在未核销业务写入，正在由同一线程恢复核对`)
         await runEpochTurn(
@@ -1517,12 +1508,9 @@ export async function runAgentTest(
           return undefined
         }
         lastRecoveredEpochCases = recovered.result.cases
-        const requirements = await reconcileEnvironmentRequirementCaseLinks(
-          workspace.environmentRequirementsPath,
-          recovered.result.cases,
-        )
+        const requirements = await reconciledEnvironmentRequirements(store, recovered.result.cases)
         const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
-        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+        const executionReceipts = await journalEntries(store.readExecutionReceipts())
         const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
         const replayProblems = await replayProblemsForResult(eventsPath, normalized)
         const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
@@ -1531,7 +1519,7 @@ export async function runAgentTest(
           : []
         deliveryProblems = [...problems, ...replayVerification]
         if (deliveryProblems.length > 0) return undefined
-        return enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+        return enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await journalEntries(store.readMutationLedger()))
       }
       // A complete epoch artifact is already an auditable delivery contract;
       // do not spend another model turn merely to re-serialize those facts.
@@ -1550,9 +1538,9 @@ export async function runAgentTest(
             true,
           )
           const candidate = parseAgentTestCandidate(finalResponse)
-          const requirements = await reconcileEnvironmentRequirementCaseLinks(workspace.environmentRequirementsPath, candidate.cases)
+          const requirements = await reconciledEnvironmentRequirements(store, candidate.cases)
           const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
-          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
+          const executionReceipts = await journalEntries(store.readExecutionReceipts())
           const normalized = {
             ...candidate,
             startedAt: state.startedAt,
@@ -1572,7 +1560,7 @@ export async function runAgentTest(
             profile: options.profile,
           })
           if (deliveryProblems.length > 0) continue
-          epochResult = enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+          epochResult = enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await journalEntries(store.readMutationLedger()))
           break
         } catch (error) {
           const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
@@ -1593,19 +1581,19 @@ export async function runAgentTest(
       }
 
       if (!epochResult) {
-        const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+        const ledger = await journalEntries(store.readMutationLedger())
         const recovered = await recoverExistingEpochDelivery()
         if (recovered) {
           epochResult = recovered
         } else {
-          const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+          const requirements = await journalEntries(store.readEnvironmentRequirements())
           epochResult = deliveryBlockedResult(scopedManifest, state, deliveryProblems.join('; ') || `epoch ${epoch.id} 没有可验证的结构化交付`, ledger, environmentRequirementsForCases(requirements, epoch.caseIds), lastRecoveredEpochCases)
         }
       }
 
       if (epochResult.mutations.some((mutation) => mutation.status === 'pending')) {
-        const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-        const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+        const requirements = await journalEntries(store.readEnvironmentRequirements())
+        const ledger = await journalEntries(store.readMutationLedger())
         const allRecords = await readCaseResultRecords(resultDirectory, options.manifest)
         const cases = [...allRecords.map((record) => record.result), ...epochResult.cases]
         const completed = new Set(cases.map((item) => item.caseId))
@@ -1686,8 +1674,8 @@ export async function runAgentTest(
       }
     }
 
-    const requirements = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
-    const ledger = await readMutationLedger(workspace.mutationLedgerPath)
+    const requirements = await journalEntries(store.readEnvironmentRequirements())
+    const ledger = await journalEntries(store.readMutationLedger())
     const records = await readCaseResultRecords(resultDirectory, options.manifest)
     let result: CodexTestAgentResult
     try {
@@ -1696,7 +1684,7 @@ export async function runAgentTest(
         result,
         options.manifest,
         requirements,
-        await readExecutionReceipts(workspace.executionReceiptsPath),
+        await journalEntries(store.readExecutionReceipts()),
         await replayProblemsForResult(eventsPath, result),
       )
       if (problems.length > 0) throw new Error(`Adaptive epoch aggregation failed deterministic validation: ${problems.join('; ')}`)
@@ -1732,19 +1720,23 @@ export async function runAgentTest(
       progress.report('warning', '模型、浏览器、MCP 或本地网络暂时不可用，正在保存可恢复的 blocked 结果')
       let ledger: CodexTestMutationLedgerEntry[] = []
       let ledgerError: string | undefined
-      if (mutationLedgerPath) {
+      let environmentRequirements: CodexTestEnvironmentRequirement[] = []
+      let requirementsError: string | undefined
+      let recordedCases: CodexTestCaseResult[] = []
+      let caseStoreError: string | undefined
+      if (runStore) {
+        // The same store read that settlement used, so an interrupted run reports
+        // the journal exactly as the run that produced it did.
         try {
-          ledger = await readMutationLedger(mutationLedgerPath)
+          ledger = await journalEntries(runStore.readMutationLedger())
         } catch (ledgerReadError) {
           ledgerError = redactAgentValue(ledgerReadError instanceof Error ? ledgerReadError.message : String(ledgerReadError), redactionSecrets)
         }
-      }
-      const environmentRequirements = environmentRequirementsPath
-        ? await readJsonOr<CodexTestEnvironmentRequirement[]>(environmentRequirementsPath, [])
-        : []
-      let recordedCases: CodexTestCaseResult[] = []
-      let caseStoreError: string | undefined
-      if (mutationLedgerPath) {
+        try {
+          environmentRequirements = await journalEntries(runStore.readEnvironmentRequirements())
+        } catch (requirementsReadError) {
+          requirementsError = redactAgentValue(requirementsReadError instanceof Error ? requirementsReadError.message : String(requirementsReadError), redactionSecrets)
+        }
         try {
           recordedCases = (await readCaseResultRecords(caseResultDirectory(outputDirectory), options.manifest)).map((record) => record.result)
         } catch (caseReadError) {
@@ -1752,8 +1744,8 @@ export async function runAgentTest(
         }
       }
       const result = redactAgentJsonArtifact(
-        ledgerError || caseStoreError || isMutationLedgerViolation(message)
-          ? deliveryBlockedResult(options.manifest, state, ledgerError ?? caseStoreError ?? message, ledger, environmentRequirements, recordedCases)
+        ledgerError || requirementsError || caseStoreError || isMutationLedgerViolation(message)
+          ? deliveryBlockedResult(options.manifest, state, ledgerError ?? requirementsError ?? caseStoreError ?? message, ledger, environmentRequirements, recordedCases)
           : blockedResult(options.manifest, state, message, ledger, environmentRequirements, recordedCases),
         redactionSecrets,
       )
