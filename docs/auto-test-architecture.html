@@ -5045,7 +5045,7 @@
         <path data-edge-from="intake" data-edge-to="envprofile" data-edge-label="profile ctx" data-edge-key="8" data-edge-id="intake-envprofile" data-composition-points="590,184;480,160;480,392;500,392;590,360" d="M 590 184 L 487.81612609127995 161.7053366017338 Q 480 160 480 168 L 480 384 Q 480 392 488 392 L 492 392 Q 500 392 507.53771752223315 389.3199226587616 L 590 360" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="intake" data-edge-to="workspace" data-edge-label="raw copies" data-edge-key="9" data-edge-id="intake-workspace" data-composition-points="590,184;590,152;1040,152;1040,532;680,532;590,500" d="M 590 184 L 590 160 Q 590 152 598 152 L 1032 152 Q 1040 152 1040 160 L 1040 524 Q 1040 532 1032 532 L 688 532 Q 680 532 672.4622824777668 529.3199226587616 L 590 500" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="envprofile" data-edge-to="workspace" data-edge-label="scope+secrets" data-edge-key="10" data-edge-id="envprofile-workspace" data-composition-points="590,424;590,424;590,500;590,500" d="M 590 424 L 590 424 L 590 500 L 590 500" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="readiness" data-edge-to="runner" data-edge-label="stable?" data-edge-key="11" data-edge-id="readiness-runner" data-composition-points="680,272;680,272;680,305;780,305;780,305" d="M 680 272 L 680 272 L 680 297 Q 680 305 688 305 L 780 305 L 780 305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="readiness" data-edge-to="runner" data-edge-label="放行/阻断" data-edge-key="11" data-edge-id="readiness-runner" data-composition-points="680,272;680,272;680,305;780,305;780,305" d="M 680 272 L 680 272 L 680 297 Q 680 305 688 305 L 780 305 L 780 305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="envprofile" data-edge-to="runner" data-edge-label="profile ctx" data-edge-key="12" data-edge-id="envprofile-runner" data-composition-points="680,392;730,392;730,305;780,305" d="M 680 392 L 722 392 Q 730 392 730 384 L 730 313 Q 730 305 738 305 L 780 305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="workspace" data-edge-to="runner" data-edge-label="isolated home" data-edge-key="13" data-edge-id="workspace-runner" data-composition-points="680,532;470,564;470,660;1040,660;1040,305;780,305;780,305" d="M 680 532 L 477.90870700463995 562.794863694531 Q 470 564 470 572 L 470 652 Q 470 660 478 660 L 1032 660 Q 1040 660 1040 652 L 1040 313 Q 1040 305 1032 305 L 780 305 L 780 305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="runner" data-edge-to="codexhost" data-edge-label="select+prepare" data-edge-key="14" data-edge-id="runner-host" data-composition-points="980,291;1020,291;1020,132;1060,132" d="M 980 291 L 1012 291 Q 1020 291 1020 283 L 1020 140 Q 1020 132 1028 132 L 1060 132" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
@@ -5055,7 +5055,7 @@
         <path data-edge-from="codexhost" data-edge-to="playwright" data-edge-label="tool call" data-edge-key="18" data-edge-id="host-pw" data-composition-points="1150,164;1157,132;1300,132;1300,352;1157,352;1150,320" d="M 1150 164 L 1155.2904249695566 139.8152001391701 Q 1157 132 1165 132 L 1292 132 Q 1300 132 1300 140 L 1300 344 Q 1300 352 1292 352 L 1165 352 Q 1157 352 1155.2904249695566 344.1847998608299 L 1150 320" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="codexhost" data-edge-to="delivery" data-edge-label="2nd turn" data-edge-key="19" data-edge-id="host-delivery" data-composition-points="1060,132;1060,132;1010,132;1010,472;980,472;980,472" d="M 1060 132 L 1060 132 L 1018 132 Q 1010 132 1010 140 L 1010 464 Q 1010 472 1002 472 L 980 472 L 980 472" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="delivery" data-edge-to="validation" data-edge-label="CodexTestAgentResult" data-edge-key="20" data-edge-id="delivery-validate" data-composition-points="980,472;1060,472" d="M 980 472 L 1060 472" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="validation" data-edge-to="workbook" data-edge-label="redacted" data-edge-key="21" data-edge-id="validate-workbook" data-composition-points="1240,472;1240,472;1300,472;1300,232;1320,232;1320,232" d="M 1240 472 L 1240 472 L 1292 472 Q 1300 472 1300 464 L 1300 240 Q 1300 232 1308 232 L 1320 232 L 1320 232" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="validation" data-edge-to="workbook" data-edge-label="按行回写结果" data-edge-key="21" data-edge-id="validate-workbook" data-composition-points="1240,472;1240,472;1300,472;1300,232;1320,232;1320,232" d="M 1240 472 L 1240 472 L 1292 472 Q 1300 472 1300 464 L 1300 240 Q 1300 232 1308 232 L 1320 232 L 1320 232" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="validation" data-edge-to="replaycompiler" data-edge-label="successful runs" data-edge-key="22" data-edge-id="validate-replay" data-composition-points="1240,472;1150,504;1320,504;1320,472" d="M 1240 472 L 1157.5377175222332 501.3199226587616 Q 1150 504 1158 504 L 1312 504 Q 1320 504 1320 496 L 1320 472" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
         <!-- Components -->
@@ -5140,8 +5140,8 @@
         <text data-detail="fine" x="590" y="176" class="t-backend" font-size="7" text-anchor="middle">manifest+secrets</text>
         </g>
 
-        <g id="node-readiness" data-node-id="readiness" data-node-label="intake-readiness" tabindex="0" role="button" aria-label="Focus intake-readiness, stable contract?, Codex-native 路径(默认)" aria-pressed="false" data-node-kind="security" data-node-sublabel="stable contract?" data-node-tag="pre-exec block" data-node-context="Codex-native 路径(默认)">
-          <title>intake-readiness · stable contract? · Codex-native 路径(默认) · pre-exec block</title>
+        <g id="node-readiness" data-node-id="readiness" data-node-label="intake-readiness" tabindex="0" role="button" aria-label="Focus intake-readiness, 唯一执行前阻断, Codex-native 路径(默认)" aria-pressed="false" data-node-kind="security" data-node-sublabel="唯一执行前阻断" data-node-tag="pre-exec block" data-node-context="Codex-native 路径(默认)">
+          <title>intake-readiness · 唯一执行前阻断 · Codex-native 路径(默认) · pre-exec block</title>
           <rect x="500" y="240" width="180" height="64" rx="6" class="c-mask"/>
           <rect x="500" y="240" width="180" height="64" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(506 246) scale(0.6875)">
@@ -5149,7 +5149,7 @@
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="590" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">intake-readiness</text>
-        <text data-detail="context" x="590" y="286" class="t-muted" font-size="9" text-anchor="middle">stable contract?</text>
+        <text data-detail="context" x="590" y="286" class="t-muted" font-size="9" text-anchor="middle">唯一执行前阻断</text>
         <text data-detail="fine" x="590" y="296" class="t-security" font-size="7" text-anchor="middle">pre-exec block</text>
         </g>
 
@@ -5255,8 +5255,8 @@
         <text data-detail="fine" x="1150" y="496" class="t-security" font-size="7" text-anchor="middle">mutation ledger</text>
         </g>
 
-        <g id="node-workbook" data-node-id="workbook" data-node-label="result workbook" tabindex="0" role="button" aria-label="Focus result workbook, artifact-redaction, Codex-native 路径(默认)" aria-pressed="false" data-node-kind="database" data-node-sublabel="artifact-redaction" data-node-tag="xlsx 输出" data-node-context="Codex-native 路径(默认)">
-          <title>result workbook · artifact-redaction · Codex-native 路径(默认) · xlsx 输出</title>
+        <g id="node-workbook" data-node-id="workbook" data-node-label="result workbook" tabindex="0" role="button" aria-label="Focus result workbook, 原件副本·未脱敏, Codex-native 路径(默认)" aria-pressed="false" data-node-kind="database" data-node-sublabel="原件副本·未脱敏" data-node-tag="xlsx 输出" data-node-context="Codex-native 路径(默认)">
+          <title>result workbook · 原件副本·未脱敏 · Codex-native 路径(默认) · xlsx 输出</title>
           <rect x="1320" y="200" width="180" height="64" rx="6" class="c-mask"/>
           <rect x="1320" y="200" width="180" height="64" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1326 206) scale(0.6875)">
@@ -5264,7 +5264,7 @@
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="1410" y="230" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">result workbook</text>
-        <text data-detail="context" x="1410" y="246" class="t-muted" font-size="9" text-anchor="middle">artifact-redaction</text>
+        <text data-detail="context" x="1410" y="246" class="t-muted" font-size="9" text-anchor="middle">原件副本·未脱敏</text>
         <text data-detail="fine" x="1410" y="256" class="t-database" font-size="7" text-anchor="middle">xlsx 输出</text>
         </g>
 
@@ -5325,9 +5325,9 @@
           <rect x="553.8" y="442" width="72.4" height="14" rx="3" class="c-mask"/>
           <text x="590" y="452" class="t-muted" font-size="8" text-anchor="middle">scope+secrets</text>
         </g>
-        <g data-detail="context" data-edge-from="readiness" data-edge-to="runner" data-edge-label="stable?" data-edge-key="11" data-edge-id="readiness-runner">
-          <rect x="658.2" y="308" width="43.6" height="14" rx="3" class="c-mask"/>
-          <text x="680" y="318" class="t-muted" font-size="8" text-anchor="middle">stable?</text>
+        <g data-detail="context" data-edge-from="readiness" data-edge-to="runner" data-edge-label="放行/阻断" data-edge-key="11" data-edge-id="readiness-runner">
+          <rect x="653.4" y="308" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
+          <text x="680" y="318" class="t-muted" font-size="8" text-anchor="middle">放行/阻断</text>
         </g>
         <g data-detail="context" data-edge-from="envprofile" data-edge-to="runner" data-edge-label="profile ctx" data-edge-key="12" data-edge-id="envprofile-runner">
           <rect x="648.6" y="320" width="62.8" height="14" rx="3" class="c-mask"/>
@@ -5365,9 +5365,9 @@
           <rect x="967" y="508" width="106" height="14" rx="3" class="c-mask"/>
           <text x="1020" y="518" class="t-muted" font-size="8" text-anchor="middle">CodexTestAgentResult</text>
         </g>
-        <g data-detail="context" data-edge-from="validation" data-edge-to="workbook" data-edge-label="redacted" data-edge-key="21" data-edge-id="validate-workbook">
-          <rect x="1215.8" y="388" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="1240" y="398" class="t-muted" font-size="8" text-anchor="middle">redacted</text>
+        <g data-detail="context" data-edge-from="validation" data-edge-to="workbook" data-edge-label="按行回写结果" data-edge-key="21" data-edge-id="validate-workbook">
+          <rect x="1206.2" y="388" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="1240" y="398" class="t-muted" font-size="8" text-anchor="middle">按行回写结果</text>
         </g>
         <g data-detail="context" data-edge-from="validation" data-edge-to="replaycompiler" data-edge-label="successful runs" data-edge-key="22" data-edge-id="validate-replay">
           <rect x="1194" y="508" width="82" height="14" rx="3" class="c-mask"/>
@@ -5617,7 +5617,7 @@
         </div>
         <ul>
           <li>&bull; turn 1:执行(无输出 schema,完整 agent 权限,无 tool call 不应失败)</li>
-          <li>&bull; turn 2:同一 thread 上交付(codexTestResultSchema / src/agent/result.ts)</li>
+          <li>&bull; turn 2:同一 Run 上交付(codexTestResultSchema / src/agent/result.ts);容量或限流时会轮换物理线程,之后 --resume 继续同一 Run</li>
           <li>&bull; 防止第一回合超大请求在调用前就爆</li>
         </ul>
       </div>
