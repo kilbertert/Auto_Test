@@ -1,4 +1,4 @@
-import { redactSensitiveContent } from '../input/text.js'
+import { redactCredentialValues, redactSensitiveContent } from '../input/text.js'
 
 export function secretValues(input: Record<string, string | string[]>): string[] {
   return [...new Set(Object.values(input).flatMap((value) => Array.isArray(value) ? value : [value]).filter(Boolean))]
@@ -43,49 +43,8 @@ const sensitiveArtifactKeys = new Set([
   '会话令牌',
 ])
 
-const sensitiveArtifactKeyPattern = [
-  'authorization',
-  'proxy-authorization',
-  'cookie',
-  'set-cookie',
-  'x-api-key',
-  'api[_-]?key',
-  'access[_-]?token',
-  'refresh[_-]?token',
-  'id[_-]?token',
-  'auth[_-]?token',
-  'jwt[_-]?token',
-  'jwt',
-  'password',
-  'passwd',
-  'pwd',
-  'secret',
-  'client[_-]?secret',
-  'session[_-]?token',
-  'token',
-  '用户名',
-  '账号',
-  '密码',
-  '验证码',
-  '口令',
-  '令牌',
-  '密钥',
-  '访问令牌',
-  '刷新令牌',
-  '会话令牌',
-].join('|')
-
 function isSensitiveArtifactKey(key: string): boolean {
   return sensitiveArtifactKeys.has(key.normalize('NFKC').replace(/[\s_.:/\\-]/g, '').toLowerCase())
-}
-
-function redactDynamicCredentials(value: string): string {
-  const keyedPrefix = `((?<![A-Za-z0-9_])(?:\\\\?["'])?(?:${sensitiveArtifactKeyPattern})(?:\\\\?["'])?\\s*[:：=]\\s*)`
-  return value
-    .replace(/\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{5,}){2,4}\b/g, '<redacted-jwt>')
-    .replace(new RegExp(`${keyedPrefix}"(?:\\\\.|[^"\\\\])*"`, 'gi'), '$1"<redacted>"')
-    .replace(new RegExp(`${keyedPrefix}'(?:\\\\.|[^'\\\\])*'`, 'gi'), "$1'<redacted>'")
-    .replace(new RegExp(`${keyedPrefix}[^\\s,;&}\\]]+`, 'gi'), '$1<redacted>')
 }
 
 function mapStringLeaves(
@@ -130,16 +89,12 @@ function mapStringLeaves(
 
 /** Redact runtime secrets and credential-shaped values without generic PII rewriting. */
 export function redactAgentJsonValue(value: unknown, secrets: string[]): unknown {
-  return mapStringLeaves(value, (text) => redactDynamicCredentials(redactAgentValue(text, secrets)))
+  return mapStringLeaves(value, (text) => redactCredentialValues(redactAgentValue(text, secrets)))
 }
 
+/** Redact runtime secrets and credential-shaped values without generic PII rewriting. */
 export function redactAgentArtifactText(value: string, secrets: string[]): string {
-  return redactDynamicCredentials(redactSensitiveContent(redactAgentValue(value, secrets)))
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
-    .replace(
-      /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)[^"',\r\n}]+/gi,
-      '$1<redacted>',
-    )
+  return redactCredentialValues(redactSensitiveContent(redactAgentValue(value, secrets)))
 }
 
 /** Redact only string leaves so JSON numbers, booleans, and structure remain valid. */

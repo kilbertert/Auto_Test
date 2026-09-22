@@ -1,11 +1,11 @@
-import { redactSensitiveContent } from '../input/text.js'
+import { redactCredentialValues, redactSensitiveContent } from '../input/text.js'
 
 function redactString(value: string, secretValues: string[]): string {
   const withoutKnownSecrets = secretValues.reduce(
-    (current, secret) => current.replaceAll(secret, '[REDACTED]'),
+    (current, secret) => current.replaceAll(secret, '<redacted>'),
     value,
   )
-  return redactSensitiveContent(withoutKnownSecrets)
+  return redactCredentialValues(redactSensitiveContent(withoutKnownSecrets))
 }
 
 export function redactReportValue<T>(value: T, environment: NodeJS.ProcessEnv = process.env): T {
