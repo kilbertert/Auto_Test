@@ -138,4 +138,20 @@ describe('workflow acceptance report', () => {
 
     expect(serialized).not.toContain('secret-tail-value')
   })
+
+  it('accepts over-redacting an unspaced separator rather than truncating a credential', () => {
+    // Pins the safe direction of the trade-off documented in redactCredentialValues: an unspaced
+    // separator loses the trailing evidence, which is recoverable; the opposite choice would leak.
+    const report = buildWorkflowAcceptanceReport(workflow, {
+      ...evidence,
+      phases: [{
+        ...evidence.phases[0]!,
+        assertions: [{ description: 'ended', passed: true, evidence: 'Authorization: Basic abc123|status=200' }],
+      }],
+    })
+    const serialized = JSON.stringify(redactReportValue(report, {}))
+
+    expect(serialized).not.toContain('abc123')
+    expect(serialized).not.toContain('status=200')
+  })
 })

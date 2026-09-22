@@ -129,10 +129,13 @@ export function redactCredentialValues(value: string): string {
     .replace(new RegExp(`${keyedCredentialPattern}[^\\s,;&}\\]]+`, 'gi'), '$1<redacted>')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer <redacted>')
     .replace(
-      // Stop only at the report's ` | ` evidence separator so following evidence survives, but keep
-      // consuming an unspaced `|` so a credential that contains one is not truncated and leaked.
-      // ponytail: a credential containing a spaced ` | ` still truncates; that shape is far rarer
-      // than the evidence separator, and tightening it would need a value grammar, not a regex.
+      // Deliberate asymmetry, chosen in the safe direction: stop only at the report's spaced ` | `
+      // evidence separator, and treat every other `|` as credential content. That over-redacts an
+      // *unspaced* `|` separator in the free-form artifacts this also serves (CSV/log/Markdown via
+      // redactAgentArtifactText), costing recall, but it never under-redacts a credential that
+      // contains a pipe — the leak direction this backstop exists to prevent. The two cases are
+      // indistinguishable without the caller's structure, so the real fix is a per-surface split
+      // policy in the RedactionPolicy module tracked by #165, not a wider regex here.
       /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b\s*["']?\s*[:=]\s*["']?)(?:(?!\s\|\s)[^"',\r\n}])+/gi,
       '$1<redacted>',
     )
