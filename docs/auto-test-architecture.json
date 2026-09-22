@@ -71,26 +71,26 @@
     { "id": "agenttest-intake", "from": "agenttest",  "to": "intake",    "label": "trigger" },
 
     { "id": "intake-readiness", "from": "intake",     "to": "readiness", "label": "manifest", "labelAt": [590, 198] },
-    { "id": "intake-envprofile","from": "intake",     "to": "envprofile","label": "profile ctx",  "labelAt": [480, 318], "via": [[480, 160], [480, 392], [500, 392]] },
-    { "id": "intake-workspace", "from": "intake",     "to": "workspace", "label": "raw copies",   "labelAt": [1040, 60], "via": [[590, 152], [1040, 152], [1040, 532], [680, 532]] },
+    { "id": "intake-envprofile","from": "intake",     "to": "envprofile","label": "profile ctx",  "labelAt": [480, 318], "via": [[590, 160], [480, 160], [480, 392], [500, 392], [590, 392]] },
+    { "id": "intake-workspace", "from": "intake",     "to": "workspace", "label": "raw copies",   "labelAt": [1040, 60], "via": [[590, 152], [1040, 152], [1040, 532], [680, 532], [590, 532]] },
     { "id": "envprofile-workspace","from": "envprofile","to": "workspace","label": "scope+secrets","via": [[590, 424], [590, 500]] },
 
     { "id": "readiness-runner", "from": "readiness",  "to": "runner",    "label": "放行/阻断",       "labelAt": [680, 318], "via": [[680, 272], [680, 305], [780, 305]] },
     { "id": "envprofile-runner","from": "envprofile", "to": "runner",    "label": "profile ctx", "labelAt": [680, 330] },
-    { "id": "workspace-runner", "from": "workspace",  "to": "runner",    "label": "isolated home", "labelAt": [600, 580], "via": [[470, 564], [470, 660], [1040, 660], [1040, 305], [780, 305]] },
+    { "id": "workspace-runner", "from": "workspace",  "to": "runner",    "label": "isolated home", "labelAt": [600, 580], "via": [[680, 564], [470, 564], [470, 660], [1040, 660], [1040, 305]] },
 
     { "id": "runner-host",      "from": "runner",     "to": "codexhost", "label": "select+prepare" },
     { "id": "runner-control",   "from": "runner",     "to": "controlmcp","label": "register" },
     { "id": "runner-pw",        "from": "runner",     "to": "playwright","label": "browser MCP" },
 
-    { "id": "host-control",     "from": "codexhost",  "to": "controlmcp","label": "tool call",     "labelAt": [1143, 178], "via": [[1157, 132], [1157, 200]] },
-    { "id": "host-pw",          "from": "codexhost",  "to": "playwright","label": "tool call",     "labelAt": [1154, 278], "via": [[1157, 132], [1300, 132], [1300, 352], [1157, 352]] },
+    { "id": "host-control",     "from": "codexhost",  "to": "controlmcp","label": "tool call",     "labelAt": [1143, 178], "via": [[1150, 132], [1157, 132], [1157, 200]] },
+    { "id": "host-pw",          "from": "codexhost",  "to": "playwright","label": "tool call",     "labelAt": [1154, 278], "via": [[1150, 132], [1157, 132], [1300, 132], [1300, 352], [1157, 352], [1150, 352]] },
 
     { "id": "host-delivery",    "from": "codexhost",  "to": "delivery",  "label": "2nd turn",  "via": [[1060, 132], [1010, 132], [1010, 472], [980, 472]], "labelAt": [1010, 380] },
     { "id": "delivery-validate","from": "delivery",   "to": "validation","label": "CodexTestAgentResult", "labelAt": [1020, 518] },
 
     { "id": "validate-workbook","from": "validation", "to": "workbook",  "label": "按行回写结果",  "labelAt": [1240, 398], "via": [[1240, 472], [1300, 472], [1300, 232], [1320, 232]] },
-    { "id": "validate-replay",  "from": "validation", "to": "replaycompiler","label": "successful runs", "labelAt": [1235, 518], "via": [[1150, 504], [1320, 504]] }
+    { "id": "validate-replay",  "from": "validation", "to": "replaycompiler","label": "successful runs", "labelAt": [1235, 518], "via": [[1240, 504], [1150, 504], [1320, 504]] }
   ],
   "cards": [
     {
