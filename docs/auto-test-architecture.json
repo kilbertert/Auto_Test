@@ -90,7 +90,7 @@
     { "id": "delivery-validate","from": "delivery",   "to": "validation","label": "CodexTestAgentResult", "labelAt": [1020, 518] },
 
     { "id": "validate-workbook","from": "validation", "to": "workbook",  "label": "按行回写结果",  "labelAt": [1240, 398], "via": [[1240, 472], [1300, 472], [1300, 232], [1320, 232]] },
-    { "id": "validate-replay",  "from": "validation", "to": "replaycompiler","label": "successful runs", "labelAt": [1235, 518], "via": [[1240, 504], [1150, 504], [1320, 504]] }
+    { "id": "validate-replay",  "from": "validation", "to": "replaycompiler","label": "successful runs", "labelAt": [1235, 518], "via": [[1240, 504], [1320, 504]] }
   ],
   "cards": [
     {
