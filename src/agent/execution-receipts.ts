@@ -115,6 +115,23 @@ export function summarizeExecutionReceipts(
   }
 }
 
+/**
+ * Where a recorder keeps its receipts. The RunArtifactStore supplies the
+ * canonical, identity-checked one; a caller that still holds a receipt path
+ * gets the plain file-bound one from `ExecutionReceiptRecorder.create`.
+ */
+export interface ExecutionReceiptJournal {
+  read(): Promise<CodexTestExecutionReceipt[]>
+  write(receipts: CodexTestExecutionReceipt[]): Promise<void>
+}
+
+function filesystemJournal(path: string): ExecutionReceiptJournal {
+  return {
+    read: () => readExecutionReceipts(path),
+    write: (receipts) => writePrivateJson(path, receipts),
+  }
+}
+
 export class ExecutionReceiptRecorder {
   private activeCaseId: string | undefined
   private turnOrdinal: number
@@ -122,7 +139,7 @@ export class ExecutionReceiptRecorder {
   private readonly receipts = new Map<string, CodexTestExecutionReceipt>()
 
   private constructor(
-    private readonly path: string,
+    private readonly journal: ExecutionReceiptJournal,
     caseIds: string[],
     private readonly namespace: string,
     existing: CodexTestExecutionReceipt[],
@@ -137,8 +154,13 @@ export class ExecutionReceiptRecorder {
     }, 0)
   }
 
-  static async create(path: string, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
-    return new ExecutionReceiptRecorder(path, caseIds, namespace, await readExecutionReceipts(path))
+  static async open(journal: ExecutionReceiptJournal, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
+    return new ExecutionReceiptRecorder(journal, caseIds, namespace, await journal.read())
+  }
+
+  /** Compatibility constructor for a caller that holds a receipt artifact path but no store yet. */
+  static create(path: string, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
+    return ExecutionReceiptRecorder.open(filesystemJournal(path), caseIds, namespace)
   }
 
   async observe(value: unknown): Promise<void> {
@@ -165,6 +187,6 @@ export class ExecutionReceiptRecorder {
     )
     if (!receipt || this.receipts.has(receipt.id)) return
     this.receipts.set(receipt.id, receipt)
-    await writePrivateJson(this.path, [...this.receipts.values()])
+    await this.journal.write([...this.receipts.values()])
   }
 }

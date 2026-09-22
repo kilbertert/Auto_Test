@@ -5,8 +5,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 import { prepareAgentWorkspace, type AgentWorkspace } from '../src/agent/workspace.js'
-import { caseResultPath } from '../src/agent/case-result-store.js'
-import { openRunArtifactStore, runArtifactLayout, type RunArtifactStore } from '../src/agent/run-artifact-store.js'
+import {
+  caseResultRecordFileName,
+  openRunArtifactStore,
+  runArtifactLayout,
+  type EnvironmentRequirementInput,
+  type RunArtifactStore,
+} from '../src/agent/run-artifact-store.js'
+import type { CodexTestCaseResult } from '../src/agent/types.js'
 
 const directories: string[] = []
 
@@ -133,7 +139,9 @@ describe('RunArtifactStore journal paths', () => {
     expect(store.layout.manifestPath).toBe(workspace.manifestPath)
     expect(store.layout.caseResultRecordsDirectory).toBe(resolve(runRoot, '.agent-private', 'case-results'))
     expect(runArtifactLayout(runRoot)).toEqual(store.layout)
-    expect(store.caseResultRecordPath('inspect-board')).toBe(caseResultPath(store.layout.caseResultRecordsDirectory, 'inspect-board'))
+    expect(store.caseResultRecordPath('inspect-board')).toBe(
+      resolve(store.layout.caseResultRecordsDirectory, caseResultRecordFileName('inspect-board')),
+    )
   })
 
   it('resolves a run root that is not already normalized', () => {
@@ -365,5 +373,282 @@ describe('RunArtifactStore read-back identity', () => {
     expect(ledger.problems).toHaveLength(2)
     expect(ledger.problems[0]).toBe('Mutation Ledger entry 0 does not match the run contract')
     expect(ledger.problems[1]).toBe('Mutation Ledger entry 1 does not match the run contract')
+  })
+})
+
+describe('RunArtifactStore case result records', () => {
+  function deliveredResult(caseId: string, summary: string): CodexTestCaseResult {
+    return {
+      caseId,
+      title: caseId,
+      outcome: 'passed',
+      summary,
+      evidence: [{ kind: 'observation', description: summary }],
+    }
+  }
+
+  it('appends one record per recorded case and re-records a case without duplicating it', async () => {
+    const { store } = await openPreparedStore()
+
+    const first = await store.recordCaseResults({ epochId: 'epoch-0001', cases: [deliveredResult('inspect-board', 'Board rendered')] })
+    expect(first).toHaveLength(1)
+    expect(first[0]).toMatchObject({
+      version: '1.0',
+      workflowId: manifest.workflowId,
+      sourceSha256: manifest.source.sha256,
+      epochId: 'epoch-0001',
+      result: { caseId: 'inspect-board' },
+    })
+
+    await store.recordCaseResults({ epochId: 'epoch-0002', cases: [deliveredResult('inspect-board', 'Board rendered again')] })
+    const records = await store.readCaseResultRecords()
+    expect(records.missing).toBe(false)
+    expect(records.problems).toEqual([])
+    expect(records.entries.map((record) => record.result.summary)).toEqual(['Board rendered again'])
+    expect(records.entries[0]?.epochId).toBe('epoch-0002')
+  })
+
+  it('rejects a result for a case outside the immutable run instead of storing it', async () => {
+    const { store } = await openPreparedStore()
+
+    await expect(store.recordCaseResults({ epochId: 'epoch-0001', cases: [deliveredResult('retired-case', 'Ignored')] }))
+      .rejects.toThrow(/unknown case retired-case/)
+    expect(await store.readCaseResultRecords()).toEqual({ missing: true, missingMeans: 'empty', entries: [], problems: [] })
+  })
+
+  it('rejects two results for one case in a single append', async () => {
+    const { store } = await openPreparedStore()
+
+    await expect(store.recordCaseResults({
+      epochId: 'epoch-0001',
+      cases: [deliveredResult('inspect-board', 'first'), deliveredResult('inspect-board', 'second')],
+    })).rejects.toThrow(/duplicate result for case inspect-board/)
+  })
+
+  it('rejects a stored record whose run identity does not match the current run', async () => {
+    const { store } = await openPreparedStore()
+    await writeJson(store.caseResultRecordPath('inspect-board'), { ...caseResult('inspect-board'), workflowId: 'another-run' })
+
+    const records = await store.readCaseResultRecords()
+    expect(records.entries).toEqual([])
+    expect(records.problems.join(' ')).toMatch(/identity does not match the current run/)
+  })
+
+  it('rejects a stored record whose storage identity does not match its case', async () => {
+    const { store } = await openPreparedStore()
+    await writeJson(resolve(store.layout.caseResultRecordsDirectory, 'plain-name.json'), caseResult('inspect-board'))
+
+    const records = await store.readCaseResultRecords()
+    expect(records.entries).toEqual([])
+    expect(records.problems.join(' ')).toMatch(/storage identity is invalid/)
+  })
+})
+
+describe('RunArtifactStore execution receipts', () => {
+  function event(item: Record<string, unknown>): unknown {
+    return { type: 'item.completed', item }
+  }
+
+  it('records receipts through the canonical receipt artifact of the run', async () => {
+    const { store, workspace } = await openPreparedStore()
+    const recorder = await store.openExecutionReceiptRecorder({ caseIds: ['place-order'] })
+
+    await recorder.observe({ type: 'turn.started' })
+    await recorder.observe(event({ id: 'begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'place-order' }, status: 'completed' }))
+    await recorder.observe(event({ id: 'click', type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click', arguments: {}, result: {}, status: 'completed' }))
+
+    const receipts = await store.readExecutionReceipts()
+    expect(receipts.missing).toBe(false)
+    expect(receipts.problems).toEqual([])
+    expect(receipts.entries.map((receipt) => receipt.id)).toEqual(['single-thread:turn-0001:click'])
+    expect(workspace.executionReceiptsPath).toBe(store.layout.executionReceiptsPath)
+    expect(JSON.parse(await readFile(store.layout.executionReceiptsPath, 'utf8'))).toHaveLength(1)
+  })
+
+  it('rejects a case episode outside the immutable run before recording anything', async () => {
+    const { store } = await openPreparedStore()
+    const recorder = await store.openExecutionReceiptRecorder({ caseIds: ['inspect-board'] })
+
+    await expect(recorder.observe(event({
+      id: 'begin', type: 'mcp_tool_call', server: 'auto-test-control', tool: 'case_execution_begin', arguments: { caseId: 'retired-case' }, status: 'completed',
+    }))).rejects.toThrow(/unknown case/i)
+    expect((await store.readExecutionReceipts()).entries).toEqual([])
+  })
+})
+
+describe('RunArtifactStore environment requirements', () => {
+  function requirementInput(caseIds: string[], condition: string): EnvironmentRequirementInput {
+    return { caseIds, kind: 'test_data', condition, evidence: ['evidence/fixture.md'] }
+  }
+
+  it('appends an observed prerequisite and merges a repeat observation into the same entry', async () => {
+    const { store } = await openPreparedStore()
+
+    const first = await store.recordEnvironmentRequirement(requirementInput(['place-order'], 'The fixture is unavailable.'))
+    expect(first).toMatchObject({ id: expect.stringMatching(/^environment-test_data-/), caseIds: ['place-order'], status: 'pending' })
+
+    const merged = await store.recordEnvironmentRequirement(requirementInput(['inspect-board'], 'The fixture is unavailable.'))
+    expect(merged.id).toBe(first.id)
+    expect(merged.caseIds).toEqual(['place-order', 'inspect-board'])
+    const read = await store.readEnvironmentRequirements()
+    expect(read.missing).toBe(false)
+    expect(read.problems).toEqual([])
+    expect(read.entries).toHaveLength(1)
+  })
+
+  it('transitions a pending prerequisite to satisfied and keeps the evidence of both observations', async () => {
+    const { store } = await openPreparedStore()
+    const recorded = await store.recordEnvironmentRequirement(requirementInput(['place-order'], 'The fixture is unavailable.'))
+
+    const satisfied = await store.satisfyEnvironmentRequirement({ id: recorded.id, evidence: ['evidence/resolved.md'] })
+    expect(satisfied).toMatchObject({
+      status: 'satisfied',
+      evidence: ['evidence/fixture.md', 'evidence/resolved.md'],
+    })
+    expect((await store.readEnvironmentRequirements()).entries[0]?.status).toBe('satisfied')
+    await expect(store.satisfyEnvironmentRequirement({ id: recorded.id, evidence: [] })).rejects.toThrow(/saved evidence/)
+  })
+
+  it('rejects an observation for a case outside the immutable run', async () => {
+    const { store } = await openPreparedStore()
+
+    await expect(store.recordEnvironmentRequirement(requirementInput(['retired-case'], 'The fixture is unavailable.')))
+      .rejects.toThrow(/unknown case retired-case/)
+  })
+
+  it('records an unregistered origin as a resumable requirement and reconciles it once the origin is registered', async () => {
+    const { store } = await openPreparedStore()
+
+    const blocked = await store.requestEnvironmentAccess({
+      allowedOrigins: ['https://journal.example.test'],
+      origin: 'https://pay.example.test/checkout',
+      reason: 'page evidence linked to a payment provider',
+      evidence: ['evidence/pay.png'],
+      caseIds: ['place-order'],
+    })
+    expect(blocked).toMatchObject({ status: 'blocked', origin: 'https://pay.example.test' })
+    expect(await readFile(store.layout.environmentRequirementsPath, 'utf8')).not.toContain('/checkout')
+
+    const allowed = await store.requestEnvironmentAccess({
+      allowedOrigins: ['https://pay.example.test'],
+      origin: 'https://pay.example.test/checkout',
+      reason: 'page evidence linked to a payment provider',
+      evidence: [],
+      caseIds: ['place-order'],
+    })
+    expect(allowed).toMatchObject({ status: 'allowed' })
+
+    const reconciled = await store.reconcileEnvironmentRequirements(['https://pay.example.test'])
+    expect(reconciled).toEqual([expect.objectContaining({ status: 'satisfied' })])
+    expect((await store.readEnvironmentRequirements()).entries[0]?.status).toBe('satisfied')
+  })
+
+  it('supersedes an orphaned prerequisite once none of its cases are environment-blocked', async () => {
+    const { store } = await openPreparedStore()
+    const recorded = await store.recordEnvironmentRequirement({
+      caseIds: ['place-order'],
+      kind: 'test_data',
+      condition: 'The fixture is unavailable.',
+      evidence: ['evidence/fixture.md'],
+    })
+
+    const reconciled = await store.reconcileEnvironmentRequirementCaseLinks([
+      { caseId: 'place-order', failureSource: 'product' },
+    ])
+    expect(reconciled).toEqual([{ ...recorded, status: 'superseded' }])
+  })
+})
+
+describe('RunArtifactStore mutation ledger transitions', () => {
+  it('registers a pending mutation and returns the same entry when the same id is registered again', async () => {
+    const { store } = await openPreparedStore()
+
+    const pending = await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+    expect(pending).toMatchObject({
+      id: 'mutation-create', caseId: 'place-order', risk: 'write', status: 'pending', evidence: [],
+    })
+
+    expect(await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })).toEqual(pending)
+    const ledger = await store.readMutationLedger()
+    expect(ledger.entries).toEqual([pending])
+    expect(ledger.problems).toEqual([])
+  })
+
+  it('transitions a pending mutation to compensated and merges the verification evidence', async () => {
+    const { store } = await openPreparedStore()
+    const pending = await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+
+    const compensated = await store.transitionMutationLedgerEntry({
+      id: 'mutation-create', status: 'compensated', evidence: ['evidence/compensated.md'],
+    })
+    expect(compensated).toMatchObject({ status: 'compensated', evidence: ['evidence/compensated.md'] })
+    expect(compensated.updatedAt >= pending.updatedAt).toBe(true)
+
+    const recompensated = await store.transitionMutationLedgerEntry({
+      id: 'mutation-create', status: 'compensated', evidence: ['evidence/compensated-again.md'],
+    })
+    expect(recompensated.evidence).toEqual(['evidence/compensated.md', 'evidence/compensated-again.md'])
+  })
+
+  it('transitions a pending mutation to an explicitly accepted retained state', async () => {
+    const { store } = await openPreparedStore()
+    await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+
+    const accepted = await store.transitionMutationLedgerEntry({
+      id: 'mutation-create', status: 'accepted', evidence: ['evidence/retained.png'],
+    })
+    expect(accepted).toMatchObject({ status: 'accepted', evidence: ['evidence/retained.png'] })
+    expect((await store.readMutationLedger()).entries[0]?.status).toBe('accepted')
+  })
+
+  it('merges a repeat resolution into the resolved entry but never reopens it for a new action', async () => {
+    const { store } = await openPreparedStore()
+    await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+    await store.transitionMutationLedgerEntry({ id: 'mutation-create', status: 'compensated', evidence: ['evidence/compensated.md'] })
+
+    const rerased = await store.transitionMutationLedgerEntry({
+      id: 'mutation-create', status: 'accepted', evidence: ['evidence/retained.png'],
+    })
+    expect(rerased).toMatchObject({
+      status: 'accepted',
+      evidence: ['evidence/compensated.md', 'evidence/retained.png'],
+    })
+    await expect(store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create another business record', risk: 'write',
+    })).rejects.toThrow(/terminal/)
+  })
+
+  it('rejects a mutation for an unknown mutation id or for a case outside the immutable run', async () => {
+    const { store } = await openPreparedStore()
+
+    await expect(store.transitionMutationLedgerEntry({ id: 'missing-mutation', status: 'compensated', evidence: ['evidence/compensated.md'] }))
+      .rejects.toThrow(/Unknown mutation id/)
+    await expect(store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'retired-case', description: 'Create one business record', risk: 'write',
+    })).rejects.toThrow(/unknown case retired-case/)
+    expect((await store.readMutationLedger()).entries).toEqual([])
+  })
+
+  it('keeps recorded mutations across a resume instead of starting an empty ledger', async () => {
+    const { store, runRoot } = await openPreparedStore()
+    await store.recordMutationLedgerEntry({
+      id: 'mutation-create', caseId: 'place-order', description: 'Create one business record', risk: 'write',
+    })
+
+    await openRunArtifactStore({ runRoot, manifest }).initialize({ resume: true })
+
+    const ledger = await store.readMutationLedger()
+    expect(ledger.entries.map((entry) => entry.id)).toEqual(['mutation-create'])
+    expect(ledger.problems).toEqual([])
   })
 })
