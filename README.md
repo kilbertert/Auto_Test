@@ -556,6 +556,7 @@ npx vitest run -t "test name"             # 单个用例
 |---|---|
 | 怎么跑起来？ | [快速操作指南](docs/quick-start.md) · [Windows 快速操作指南](docs/windows-quick-start.md) |
 | 架构为什么是这样？ | [架构实践复盘](docs/architecture-journey-ir-runtime-to-codex-native.md)（**改执行模型前必读**） |
+| 主路径长什么样（一张图）？ | [架构快照图](docs/auto-test-architecture.html)（静态 HTML）· 源规格 [docs/auto-test-architecture.json](docs/auto-test-architecture.json)。三个视图：Codex-native 主路径、控制与重放、合同；**不含** `eval`、`observe` 等 support 层模块，非穷举 |
 | 宿主契约与 Codex/OMP 比较？ | [AgentHost 宿主契约](docs/agent-hosts.md) |
 | 为什么这么决定？ | [docs/adr/](docs/adr/)：结果合同与 fail-closed 结算、执行与 Provider 边界、可信 PR 控制面 |
 | 某个术语到底指什么？ | [CONTEXT.md](CONTEXT.md)（词汇表，含应避免的同义词） |
