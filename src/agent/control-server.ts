@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
-import { writePrivateJson } from './state.js'
-import { readEnvironmentRequirements, recordEnvironmentRequirement, requestEnvironmentAccess, satisfyEnvironmentRequirement } from './environment-requirements.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { DEFAULT_AGENT_FANOUT_POLICY, fanoutPolicyProblems } from './fanout-policy.js'
 import { resolveEvidenceArtifact } from './evidence-artifact.js'
-import { readExecutionReceipts, summarizeExecutionReceipts } from './execution-receipts.js'
+import { summarizeExecutionReceipts } from './execution-receipts.js'
 import { validateFieldCompositionGate } from './field-composition.js'
 import { getRunScopedTestValue, parseAgentSecretValues } from './test-data-access.js'
-import type { CodexTestCaseDecision, CodexTestFailureKind, CodexTestFailureSource, CodexTestFieldCompositionGate, CodexTestMutationLedgerEntry, CodexTestRisk } from './types.js'
+import {
+  openRunArtifactStoreForRun,
+  runRootForJournalArtifact,
+  type RunArtifactRead,
+} from './run-artifact-store.js'
+import { writePrivateJson } from './state.js'
+import type { CodexTestCaseDecision, CodexTestFailureKind, CodexTestFailureSource, CodexTestRisk } from './types.js'
 
 interface AgentPlan {
   summary: string
@@ -44,6 +49,19 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+/**
+ * One journal read as a tool reports it. The store never hands back a subset of a
+ * journal it rejected, so a problem fails the read instead of letting a tool act
+ * on a partial view of the run's own record.
+ */
+async function readJournal<T>(label: string, read: () => Promise<RunArtifactRead<T>>): Promise<T> {
+  const journal = await read()
+  if (journal.problems.length > 0) {
+    throw new Error(`${label} could not be read: ${journal.problems.join('; ')}`)
+  }
+  return journal.entries
+}
+
 function allowedOrigins(config: CodexTestControlConfig): string[] {
   return config.allowedOrigins ?? config.targetUrls.map((url) => new URL(url).origin)
 }
@@ -57,22 +75,19 @@ async function readSecretValues(path?: string): Promise<Record<string, string>> 
   return parseAgentSecretValues(await readFile(path, 'utf8'))
 }
 
-async function main(): Promise<void> {
-  process.umask(0o077)
-  const configPath = process.argv[2]
-  if (!configPath) throw new Error('Control server requires a config path')
-  const config = JSON.parse(await readFile(configPath, 'utf8')) as CodexTestControlConfig
+/**
+ * Build the Control MCP server of one run. Every journal artifact is reached
+ * through that run's RunArtifactStore, so the tool handlers keep only their own
+ * validation and authorization: the store owns where each journal artifact
+ * lives, which stored entries may be read back, and how each entry transitions.
+ */
+export async function createControlMcpServer(config: CodexTestControlConfig): Promise<McpServer> {
   const fanoutPolicy = config.fanoutPolicy ?? DEFAULT_AGENT_FANOUT_POLICY
   const fanoutProblems = fanoutPolicyProblems(fanoutPolicy)
   if (fanoutProblems.length > 0) {
     throw new Error(`fanout policy is invalid: ${fanoutProblems.join('; ')}`)
   }
-  const environmentRequirementsPath = config.environmentRequirementsPath
-    ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'environment-requirements.json')
-  const fieldCompositionPath = config.fieldCompositionPath
-    ?? resolve(config.evidenceDirectory, '..', '..', '.agent-private', 'field-compositions.json')
-  const executionReceiptsPath = config.executionReceiptsPath
-    ?? resolve(config.evidenceDirectory, '..', 'execution-receipts.json')
+  const store = await openRunArtifactStoreForRun(runRootForJournalArtifact(config.mutationLedgerPath))
   const caseIds = new Set(config.activeCaseIds ?? config.caseIds)
   const server = new McpServer({ name: 'auto-test-control', version: '0.1.0' }, {
     instructions: [
@@ -115,7 +130,7 @@ async function main(): Promise<void> {
     title: 'List recorded environment requirements',
     description: 'Return the evidence-backed environment prerequisites recorded for this run.',
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, async () => text(await readEnvironmentRequirements(environmentRequirementsPath)))
+  }, async () => text(await readJournal('Environment requirements', () => store.readEnvironmentRequirements())))
 
   server.registerTool('request_environment_access', {
     title: 'Request access to an origin',
@@ -130,9 +145,8 @@ async function main(): Promise<void> {
   }, async ({ caseId, origin, reason, evidence }) => {
     if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
     const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
-    return text(await requestEnvironmentAccess({
+    return text(await store.requestEnvironmentAccess({
       allowedOrigins: allowedOrigins(config),
-      requirementsPath: environmentRequirementsPath,
       origin,
       reason,
       evidence: evidencePaths.filter((path): path is string => Boolean(path)),
@@ -156,15 +170,12 @@ async function main(): Promise<void> {
       if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
     }
     const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
-    return text(await recordEnvironmentRequirement({
-      requirementsPath: environmentRequirementsPath,
-      requirement: {
-        caseIds: requestedCaseIds,
-        kind,
-        ...(origin ? { origin } : {}),
-        condition,
-        evidence: evidencePaths.filter((path): path is string => Boolean(path)),
-      },
+    return text(await store.recordEnvironmentRequirement({
+      caseIds: requestedCaseIds,
+      kind,
+      ...(origin ? { origin } : {}),
+      condition,
+      evidence: evidencePaths.filter((path): path is string => Boolean(path)),
     }))
   })
 
@@ -178,8 +189,7 @@ async function main(): Promise<void> {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ id, evidence }) => {
     const evidencePaths = await Promise.all(evidence.map((path) => resolveEvidenceArtifact(config.evidenceDirectory, path)))
-    return text(await satisfyEnvironmentRequirement({
-      requirementsPath: environmentRequirementsPath,
+    return text(await store.satisfyEnvironmentRequirement({
       id,
       evidence: evidencePaths.filter((path): path is string => Boolean(path)),
     }))
@@ -215,7 +225,7 @@ async function main(): Promise<void> {
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async ({ caseId, detail }) => {
     if (caseId && !caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
-    const receipts = await readExecutionReceipts(executionReceiptsPath)
+    const receipts = await readJournal('Execution receipts', () => store.readExecutionReceipts())
     const scopedCaseIds = caseId ? [caseId] : [...caseIds]
     const scopedReceipts = receipts.filter((receipt) => receipt.caseId && scopedCaseIds.includes(receipt.caseId))
     if (detail === 'full') return text(scopedReceipts)
@@ -304,19 +314,14 @@ async function main(): Promise<void> {
       ...input,
       secretValues: await readSecretValues(config.secretValuesPath),
     })
-    const gates = await readJson<CodexTestFieldCompositionGate[]>(fieldCompositionPath, [])
-    const existing = gates.findIndex((item) => item.id === gate.id)
-    if (existing >= 0) gates[existing] = gate
-    else gates.push(gate)
-    await writePrivateJson(fieldCompositionPath, gates)
-    return text(gate)
+    return text(await store.recordFieldCompositionGate(gate))
   })
 
   server.registerTool('field_composition_list', {
     title: 'List composite field gates',
     description: 'Return recorded composite-field representation checks for this run.',
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, async () => text(await readJson<CodexTestFieldCompositionGate[]>(fieldCompositionPath, [])))
+  }, async () => text(await readJournal('Field compositions', () => store.readFieldCompositionGates())))
 
   server.registerTool('case_result_record', {
     title: 'Record final case result',
@@ -341,7 +346,6 @@ async function main(): Promise<void> {
     }
     if (outcome === 'blocked' && blockers.length === 0) throw new Error('Blocked case results require at least one blocker')
     if (outcome === 'product_failed' && productDefects.length === 0) throw new Error('Product-failed case results require at least one product defect')
-    const decisions = await readJson<CodexTestCaseDecision[]>(config.caseResultsPath, [])
     const decision: CodexTestCaseDecision = {
       caseId,
       outcome,
@@ -355,11 +359,7 @@ async function main(): Promise<void> {
       ...(fieldGateIds.length > 0 ? { fieldGateIds: [...new Set(fieldGateIds)] } : {}),
       recordedAt: new Date().toISOString(),
     }
-    const existing = decisions.findIndex((item) => item.caseId === caseId)
-    if (existing >= 0) decisions[existing] = decision
-    else decisions.push(decision)
-    await writePrivateJson(config.caseResultsPath, decisions)
-    return text(decision)
+    return text(await store.recordCaseResultDecision(decision))
   })
 
   server.registerTool('mutation_begin', {
@@ -375,24 +375,7 @@ async function main(): Promise<void> {
   }, async ({ id, caseId, description, risk }) => {
     if (!caseIds.has(caseId)) throw new Error(`Unknown caseId: ${caseId}`)
     if (riskRank[risk] > riskRank[config.allowedRisk]) throw new Error(`Environment policy does not authorize ${risk} mutations`)
-    const entries = await readJson<CodexTestMutationLedgerEntry[]>(config.mutationLedgerPath, [])
-    const existing = entries.find((entry) => entry.id === id)
-    if (existing && existing.status === 'pending') return text(existing)
-    if (existing) throw new Error(`Mutation id ${id} is already terminal; use a new id for a new business action`)
-    const now = new Date().toISOString()
-    const entry: CodexTestMutationLedgerEntry = {
-      id,
-      caseId,
-      description,
-      risk,
-      status: 'pending',
-      createdAt: now,
-      updatedAt: now,
-      evidence: [],
-    }
-    entries.push(entry)
-    await writePrivateJson(config.mutationLedgerPath, entries)
-    return text(entry)
+    return text(await store.recordMutationLedgerEntry({ id, caseId, description, risk }))
   })
 
   server.registerTool('mutation_resolve', {
@@ -405,26 +388,32 @@ async function main(): Promise<void> {
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ id, status, evidence }) => {
-    const entries = await readJson<CodexTestMutationLedgerEntry[]>(config.mutationLedgerPath, [])
-    const entry = entries.find((item) => item.id === id)
-    if (!entry) throw new Error(`Unknown mutation id: ${id}`)
-    entry.status = status
-    entry.evidence = [...new Set([...entry.evidence, ...evidence])]
-    entry.updatedAt = new Date().toISOString()
-    await writePrivateJson(config.mutationLedgerPath, entries)
-    return text(entry)
+    return text(await store.transitionMutationLedgerEntry({ id, status, evidence }))
   })
 
   server.registerTool('mutation_list', {
     title: 'List business mutations',
     description: 'Return the current Mutation Ledger, including unresolved entries.',
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, async () => text(await readJson<CodexTestMutationLedgerEntry[]>(config.mutationLedgerPath, [])))
+  }, async () => text(await readJournal('Mutation Ledger', () => store.readMutationLedger())))
 
+  return server
+}
+
+async function main(): Promise<void> {
+  process.umask(0o077)
+  const configPath = process.argv[2]
+  if (!configPath) throw new Error('Control server requires a config path')
+  const config = JSON.parse(await readFile(configPath, 'utf8')) as CodexTestControlConfig
+  const server = await createControlMcpServer(config)
   await server.connect(new StdioServerTransport())
 }
 
-void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+// Only the spawned entry point serves stdio; importing this module for its
+// toolset must never start a server or set a failing process exit code.
+if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  void main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}

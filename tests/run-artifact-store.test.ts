@@ -12,7 +12,7 @@ import {
   type EnvironmentRequirementInput,
   type RunArtifactStore,
 } from '../src/agent/run-artifact-store.js'
-import type { CodexTestCaseResult } from '../src/agent/types.js'
+import type { CodexTestCaseDecision, CodexTestCaseResult, CodexTestFieldCompositionGate } from '../src/agent/types.js'
 
 const directories: string[] = []
 
@@ -444,8 +444,92 @@ describe('RunArtifactStore case result records', () => {
   })
 })
 
-describe('RunArtifactStore execution receipts', () => {
-  function event(item: Record<string, unknown>): unknown {
+/**
+ * Composite-field gates and published case decisions are the optional
+ * diagnostic journal of a run: the store still owns where each one lives, that a
+ * Case keeps exactly one of each, and that a write never overwrites a journal it
+ * cannot attribute to this run.
+ */
+describe('RunArtifactStore field composition gates and case result decisions', () => {
+  function fieldGate(caseId: string, fieldId: string, status: 'passed' | 'blocked' = 'passed'): CodexTestFieldCompositionGate {
+    return {
+      id: `${caseId}:${fieldId}`,
+      caseId,
+      fieldId,
+      logicalValueRef: `workflow.${fieldId}`,
+      purpose: 'Represent one logical value across two controls',
+      components: [],
+      rendered: [],
+      evidence: ['evidence/live-note.md'],
+      status,
+      reasons: [],
+      checkedAt: '2026-09-01T00:00:00.000Z',
+    }
+  }
+
+  function decision(caseId: string, outcome: 'passed' | 'product_failed' | 'blocked'): CodexTestCaseDecision {
+    return {
+      caseId,
+      outcome,
+      summary: `${caseId} ${outcome}`,
+      blockers: outcome === 'blocked' ? ['The board needs one hardware key plugged in'] : [],
+      productDefects: outcome === 'product_failed' ? ['The expected total was not retained'] : [],
+      recordedAt: '2026-09-01T00:00:00.000Z',
+    }
+  }
+
+  it('records one gate per case and re-records the same gate without duplicating it', async () => {
+    const { store } = await openPreparedStore()
+
+    await store.recordFieldCompositionGate(fieldGate('inspect-board', 'budget-value'))
+    await store.recordFieldCompositionGate(fieldGate('place-order', 'budget-value', 'blocked'))
+    await store.recordFieldCompositionGate(fieldGate('inspect-board', 'budget-value', 'blocked'))
+
+    const gates = await store.readFieldCompositionGates()
+    expect(gates.problems).toEqual([])
+    expect(gates.entries.map((gate) => [gate.id, gate.status])).toEqual([
+      ['inspect-board:budget-value', 'blocked'],
+      ['place-order:budget-value', 'blocked'],
+    ])
+  })
+
+  it('publishes one decision per case and replaces that case earlier decision', async () => {
+    const { store } = await openPreparedStore()
+
+    await store.recordCaseResultDecision(decision('inspect-board', 'blocked'))
+    await store.recordCaseResultDecision(decision('place-order', 'passed'))
+    await store.recordCaseResultDecision(decision('inspect-board', 'passed'))
+
+    const decisions = await store.readCaseResultDecisions()
+    expect(decisions.problems).toEqual([])
+    expect(decisions.entries.map((item) => [item.caseId, item.outcome])).toEqual([
+      ['inspect-board', 'passed'],
+      ['place-order', 'passed'],
+    ])
+  })
+
+  it('rejects a diagnostic write for a case outside the immutable run instead of storing it', async () => {
+    const { store } = await openPreparedStore()
+
+    await expect(store.recordFieldCompositionGate(fieldGate('retired-case', 'budget-value')))
+      .rejects.toThrow(/unknown case retired-case/)
+    await expect(store.recordCaseResultDecision(decision('retired-case', 'passed')))
+      .rejects.toThrow(/unknown case retired-case/)
+    expect((await store.readFieldCompositionGates()).entries).toEqual([])
+    expect((await store.readCaseResultDecisions()).entries).toEqual([])
+  })
+
+  it('refuses to overwrite a diagnostic journal it cannot attribute to this run', async () => {
+    const { store } = await openPreparedStore()
+    await writeJson(store.layout.caseResultsPath, [decision('retired-case', 'passed')])
+
+    await expect(store.recordCaseResultDecision(decision('place-order', 'passed')))
+      .rejects.toThrow(/unknown case retired-case/)
+    expect(JSON.parse(await readFile(store.layout.caseResultsPath, 'utf8'))).toHaveLength(1)
+  })
+})
+
+describe('RunArtifactStore execution receipts', () => {  function event(item: Record<string, unknown>): unknown {
     return { type: 'item.completed', item }
   }
 

@@ -167,6 +167,10 @@ export interface RunArtifactStore {
   caseResultRecordPath(caseId: string): string
   /** Store one delivered Case result per Case, re-recording a Case without duplicating it. */
   recordCaseResults(input: { epochId: string; cases: CodexTestCaseResult[] }): Promise<CodexCaseResultRecord[]>
+  /** Record one composite-field gate per Case, re-recording the same gate without duplicating it. */
+  recordFieldCompositionGate(gate: CodexTestFieldCompositionGate): Promise<CodexTestFieldCompositionGate>
+  /** Publish one Case's outcome as an incremental delivery hint, replacing that Case's earlier hint. */
+  recordCaseResultDecision(decision: CodexTestCaseDecision): Promise<CodexTestCaseDecision>
   /** Open a receipt recorder that appends to this run's canonical receipt artifact. */
   openExecutionReceiptRecorder(input: { caseIds: string[]; namespace?: string }): Promise<ExecutionReceiptRecorder>
   /** Record one observed environment prerequisite, merging a repeat observation of it. */
@@ -655,6 +659,32 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     return records
   }
 
+  async recordFieldCompositionGate(gate: CodexTestFieldCompositionGate): Promise<CodexTestFieldCompositionGate> {
+    if (!this.identity.caseIds.includes(gate.caseId)) {
+      throw new Error(`Cannot record a field composition gate for unknown case ${gate.caseId}`)
+    }
+    const gates = await this.journalForWrite('Field compositions', this.layout.fieldCompositionsPath,
+      (raw) => fieldCompositionGates(raw, this.identity))
+    const index = gates.findIndex((item) => item.id === gate.id)
+    if (index < 0) gates.push(gate)
+    else gates[index] = gate
+    await writePrivateJson(this.layout.fieldCompositionsPath, gates)
+    return gate
+  }
+
+  async recordCaseResultDecision(decision: CodexTestCaseDecision): Promise<CodexTestCaseDecision> {
+    if (!this.identity.caseIds.includes(decision.caseId)) {
+      throw new Error(`Cannot record a case result decision for unknown case ${decision.caseId}`)
+    }
+    const decisions = await this.journalForWrite('Case results', this.layout.caseResultsPath,
+      (raw) => caseResultDecisions(raw, this.identity))
+    const index = decisions.findIndex((item) => item.caseId === decision.caseId)
+    if (index < 0) decisions.push(decision)
+    else decisions[index] = decision
+    await writePrivateJson(this.layout.caseResultsPath, decisions)
+    return decision
+  }
+
   async openExecutionReceiptRecorder(input: { caseIds: string[]; namespace?: string }): Promise<ExecutionReceiptRecorder> {
     const path = this.layout.executionReceiptsPath
     return ExecutionReceiptRecorder.open({
@@ -805,7 +835,8 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     if (!this.identity.caseIds.includes(input.caseId)) {
       throw new Error(`Cannot record a mutation for unknown case ${input.caseId}`)
     }
-    const entries = await this.mutationLedgerForWrite()
+    const entries = await this.journalForWrite('Mutation Ledger', this.layout.mutationLedgerPath,
+      (raw) => mutationLedgerEntries(raw, this.identity))
     const existing = entries.find((entry) => entry.id === input.id)
     // Re-registering an unresolved mutation is idempotent; a resolved one may
     // only be represented by a new id, or a different business action would
@@ -837,7 +868,8 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     if (evidence.length === 0) {
       throw new Error('Resolved mutations must include saved verification evidence')
     }
-    const entries = await this.mutationLedgerForWrite()
+    const entries = await this.journalForWrite('Mutation Ledger', this.layout.mutationLedgerPath,
+      (raw) => mutationLedgerEntries(raw, this.identity))
     const entry = entries.find((item) => item.id === input.id)
     if (!entry) throw new Error(`Unknown mutation id: ${input.id}`)
     const resolved: CodexTestMutationLedgerEntry = {
@@ -876,16 +908,20 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
   }
 
   /**
-   * The Ledger as it stands before a write. Appending to an absent ledger
-   * creates it, so a missing artifact is empty here; a ledger that fails
-   * read-back identity stops the write instead of being overwritten.
+   * One artifact as it stands before a write. Appending to an absent artifact
+   * creates it, so a missing one is empty here; an artifact that fails read-back
+   * identity stops the write instead of being overwritten.
    */
-  private async mutationLedgerForWrite(): Promise<CodexTestMutationLedgerEntry[]> {
-    const artifact = await readArrayArtifact('Mutation Ledger', this.layout.mutationLedgerPath)
-    const converted = mutationLedgerEntries(artifact.value, this.identity)
+  private async journalForWrite<E>(
+    label: string,
+    path: string,
+    convert: (raw: unknown[]) => JournalConversion<E>,
+  ): Promise<E[]> {
+    const artifact = await readArrayArtifact(label, path)
+    const converted = convert(artifact.value)
     const problems = [...artifact.problems, ...converted.problems]
     if (problems.length > 0) {
-      throw new Error(`Mutation Ledger could not be read: ${problems.join('; ')}`)
+      throw new Error(`${label} could not be read: ${problems.join('; ')}`)
     }
     return converted.entries
   }
