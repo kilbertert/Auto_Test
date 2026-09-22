@@ -30,4 +30,11 @@ did not push or publish a review. PR #151 and issue #152 were closed, the
 canary branch and worktree were removed, and `AFK_PROFILE` was restored to
 `aliyun-deepseek`. Re-run AFK-B12 after a healthy provider is configured.
 
+That provider is now retired: the 1.2.0 template replaced the four
+quota-exhausted profiles with `claude-stepfun`, whose endpoint is a host
+settings file mounted into the sandbox. The AFK-B12 retry should therefore run
+against `claude-stepfun` once the image is rebuilt from the upgraded
+Dockerfile and `AFK_PROFILE` is switched — in that order, since an image
+without the new dispatch arm makes the wrapper exit 2.
+
 Complexity and mutation tools are not applicable to workflow YAML. The template-owned shell state machine has focused stale-base, merge-preservation, and race-rejection coverage; this repository verifies the deployed policy and byte identity.
