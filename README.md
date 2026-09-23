@@ -96,7 +96,7 @@
 | 边界 | 载体 | 保证什么 |
 |---|---|---|
 | 输入身份不可漂移 | `agentTestPrompt` 中的 `workflowId` + `sourceSha256`（`src/agent/prompt.ts`） | 整轮 Run 的目标输入被冻结，模型改不了 |
-| 结果必须过合同 | `finalResultProblems`（`src/agent/runner.ts:172`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致 |
+| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复 |
 | 副作用必须可核销 | `enforceMutationLedger`（`src/agent/result.ts:218`） | Ledger 有 `pending` 时该 Run 不能被报成通过——**是账本，不是模型，决定终态** |
 | 环境阻断必须可恢复 | `enforceEnvironmentRequirements`（`src/agent/runner.ts:347`） | 环境类阻断必须关联同一 case 的已保存证据需求，不能用通用证据批量造结论 |
 | 权限只在 Profile | Environment Profile 的 `policy.allowWrite` / `allowDestructive` | 写权限不由推断的 case 风险替代，也不由提示词放宽 |
@@ -254,7 +254,7 @@ flowchart TB
 
 | 模块 | 职责 |
 |---|---|
-| `runner.ts` | **整个产品的心脏**（1787 行）：准备 → epoch 规划 → 轮次循环 → 校验 → 聚合 |
+| `runner.ts` | **整个产品的心脏**（1727 行）：准备 → epoch 规划 → 轮次循环 → 结算判定 → 聚合。最终结算只归一化 Case claim 并提交 `result-settlement.ts`，自身不再复制合同规则 |
 | `host.ts` | `AgentHost` 抽象：唯一执行接缝（`start` / `resume` / `probe` / `capabilities` / `modelProvider`） |
 | `codex-host.ts` / `omp-host.ts` | 两个内置宿主实现：Codex 走 SDK 进程内，OMP 走 stdio JSON-RPC |
 | `codex-provider.ts` / `omp-provider.ts` / `provider-runtime.ts` | Provider 适配器：把同一 descriptor 翻译成各宿主的隔离配置、模型目录与环境（**唯一允许接触宿主格式的地方**） |
@@ -263,7 +263,7 @@ flowchart TB
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
 | `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
-| `result-settlement.ts` | 结果合同唯一结算 seam：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表 |
+| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复都只经由它判定 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
@@ -348,7 +348,7 @@ Profile 的解析器是 [`src/workflow/model-profile.ts`](src/workflow/model-pro
 | 门 | 工具 | 为什么必须是门 |
 |---|---|---|
 | 副作用授权 | `mutation_begin` | 拒绝高于 `allowedRisk` 的写入；它写的 Ledger 就是 `enforceMutationLedger` 的判据 |
-| 环境阻断 | `environment_requirement_record` | 把一个 case 归为环境阻断的**前提**，`finalResultProblems` 会强制校验 |
+| 环境阻断 | `environment_requirement_record` | 把一个 case 归为环境阻断的**前提**，结果结算 seam（`result-settlement.ts`，Runner 入口 `finalResultProblems`）会强制校验 |
 | 回执归属 | `case_execution_begin` / `case_execution_end` | 只有它能把被动捕获的浏览器回执归属到具体 case |
 | 能力预检 | `test_contract` | 每个物理线程启动后的一次性预检；探针或旧包绕过 MCP 的页面结果不能替代该门 |
 
@@ -422,7 +422,7 @@ npm run easy（中文菜单，可选 register/doctor）
                     ├─ verifyControlMcpCapability   预检 test_contract
                     ├─ 执行回合   （无 output schema，完整 Agent 权限）
                     ├─ 交付回合   （同一线程，codexTestResultSchema）
-                    ├─ finalResultProblems          确定性校验
+                    ├─ finalResultProblems          确定性结算（委托 result-settlement.ts）
                     └─ checkpoint（轮换前写工作记忆）
 ```
 
@@ -473,11 +473,11 @@ qa-plan.md         仓库级 QA 用例与结果记录
 | 改执行流程 / 轮次 / epoch | `src/agent/runner.ts`、[架构复盘 §24](docs/architecture-journey-ir-runtime-to-codex-native.md) | `runAgentTest` 的状态机 | 先想清楚新逻辑属于推论三的六类不变量，还是属于"理解页面"——后者不该进来 |
 | 加一个新的执行宿主 | `src/agent/host.ts`、两个 `*-host.ts` | 实现 `AgentHost` 并在 `host-registry.ts` 注册 | Core 不得新增宿主 ID 分支；能力差异要在 `capabilities` 里声明而不是隐藏 |
 | 加一个模型供应商 | `src/workflow/model-profile.ts`、`src/core/model-provider.ts` | Profile schema + 对应 Provider 适配器 | 只存 `envKey` 名字，绝不存 Key；新协议要同时更新 `AGENT_MODEL_APIS` |
-| 加一条 Control MCP 工具 | `src/agent/control-server.ts`、`control-types.ts` | 工具实现 + config schema | 先判断它是不是"门"；若是，必须在 `finalResultProblems` 里同时加校验 |
+| 加一条 Control MCP 工具 | `src/agent/control-server.ts`、`control-types.ts` | 工具实现 + config schema | 先判断它是不是"门"；若是，必须在 `result-settlement.ts` 的结算 seam 里同时加校验 |
 | 改 Excel 解析 / 表头映射 | `src/input/xlsx.ts`、`src/input/headers.ts` | 表头别名与规范列 | 不按列号猜列；样式损坏的工作簿需 XML 直读；先补 `tests/fixtures/` 的 xlsx |
 | 改输入包约定（brief / images） | `src/workflow/input-bundle.ts` | sidecar 发现逻辑 | Excel 与 sidecar 是同一个不可分割输入包，打包/复制/改名必须一起走 |
 | 改环境注册或权限策略 | `src/workflow/environment-profile.ts`、`src/usability/environment-registration.ts` | Profile schema + 加载期不变量 | 写权限只由 Profile 决定；`allowDestructive` 不能在没有 `allowWrite` 时开启 |
-| 改结果合同 / Schema | `src/agent/result.ts`、`finalResultProblems` | Schema + 校验器**一起**改 | 合同变更必须同步所有读取方与回归测试（ADR-0001）；旧状态不兼容恢复 |
+| 改结果合同 / Schema | `src/agent/result.ts`、`src/agent/result-settlement.ts` | Schema + 结算判定**一起**改 | 合同变更必须同步所有读取方与回归测试（ADR-0001）；旧状态不兼容恢复 |
 | 改观测面板行为 | `src/observe/server.ts`、[CONTEXT.md](CONTEXT.md) | 路由 / 脱敏 / 路径隔离 | 只读是硬边界；新增路由必须同时补路径穿越与脱敏测试 |
 | 新增失败来源分类 | `src/agent/failure-mode.ts` | 分类表 | 五类必须保持互斥：product / agent_execution / input / environment / infrastructure |
 | 加能力 | `tests/fixtures/agent-site/` | 合成站点 + 测试 | **先在合成 fixture 验证，再进真实 canary**；不得把业务名称、固定列号、特定 DOM 写进通用代码 |

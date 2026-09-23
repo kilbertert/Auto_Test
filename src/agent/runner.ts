@@ -21,7 +21,7 @@ import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agent
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
 import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
-import { failureModeFor } from './failure-mode.js'
+import { settlementClaimsFromResult, settlementOutcomeForClaims, settlementProblems } from './result-settlement.js'
 import { initialAgentTestState, updateAgentTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
@@ -169,6 +169,22 @@ async function runTurn(
   }
 }
 
+/**
+ * The Runner's final settlement of a finished Result.
+ *
+ * An Adapter, not an implementation: it normalizes the Result's cases into the
+ * one Case-claim representation and submits them to the Result settlement seam,
+ * which owns every shared invariant — input identity, Case membership, Evidence
+ * completeness, failure classification, environment requirement reconciliation,
+ * and the top-level outcome. The Runner keeps only what is genuinely its own:
+ * composing the Result from the per-epoch case records, applying the Mutation
+ * Ledger and the recorded requirement rows, and reading execution receipts.
+ * Because it asks the same seam the per-Epoch delivery Adapter asks, final
+ * settlement can no longer accept a claim that delivery recovery rejects.
+ *
+ * The exported name is the historical entry point and stays until every caller
+ * has been migrated onto the seam; the verification itself now lives only there.
+ */
 export function finalResultProblems(
   result: CodexTestAgentResult,
   manifest: WorkflowIntakeManifest,
@@ -176,98 +192,23 @@ export function finalResultProblems(
   executionReceipts: CodexTestExecutionReceipt[] = [],
   replayProblems: string[] = [],
 ): string[] {
-  const problems: string[] = []
-  if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
-  if (result.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
-  const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
-  const returnedCases = result.cases.map((item) => item.caseId)
-  if (new Set(returnedCases).size !== returnedCases.length) problems.push('duplicate case results are not allowed')
-  for (const caseId of requiredCases) if (!returnedCases.includes(caseId)) problems.push(`missing final case result for ${caseId}`)
-  for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case result for ${caseId}`)
-  for (const item of result.cases) {
-    const phase = manifest.phases.find((candidate) => candidate.id === item.caseId)
-    if (item.evidence.length === 0) problems.push(`case ${item.caseId} has no execution evidence`)
-    if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`passed case ${item.caseId} contains a failure classification`)
-    if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
-    if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`product-failed case ${item.caseId} is not classified as product-sourced`)
-    if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`blocked case ${item.caseId} is incorrectly classified as product-sourced`)
-    const caseReceipts = item.executionReceiptIds?.map((id) => executionReceipts.find((receipt) => receipt.id === id)).filter((receipt): receipt is CodexTestExecutionReceipt => Boolean(receipt)) ?? []
-    if (item.executionReceiptIds?.some((id) => !executionReceipts.some((receipt) => receipt.id === id))) {
-      problems.push(`case ${item.caseId} references unknown execution receipts`)
-    }
-    if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
-      problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
-    }
-    if (item.outcome !== 'blocked' && phase?.outcome) {
-      if (phase.outcome.evidence.includes('observation') && !item.evidence.some((evidence) => evidence.kind === 'observation')) {
-        problems.push(`case ${item.caseId} does not satisfy its outcome observation evidence requirement`)
-      }
-      if (phase.outcome.evidence.includes('interaction') && !caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
-        problems.push(`case ${item.caseId} does not satisfy its outcome interaction receipt requirement`)
-      }
-    }
-    if (item.outcome !== 'passed' && phase?.outcome && (phase.outcome.failureModes?.length ?? 0) > 0) {
-      const mode = failureModeFor(item.failureSource, item.failureKind)
-      if (!phase.outcome.failureModes!.includes(mode)) {
-        problems.push(`case ${item.caseId} failure mode ${mode} is not allowed by its outcome contract`)
-      }
-    }
-    // Receipts are passively captured audit evidence. They are validated when
-    // the agent cites them, but missing optional case bookkeeping must not
-    // prevent the primary AgentHost thread from exploring or delivering facts.
-    if (item.failureSource === 'environment') {
-      if (!item.environmentRequirementIds?.length) {
-        problems.push(`environment-blocked case ${item.caseId} has no recorded environment requirement reference`)
-        continue
-      }
-      for (const requirementId of item.environmentRequirementIds) {
-        const requirement = recordedEnvironmentRequirements.find((candidate) => candidate.id === requirementId)
-        if (!requirement) {
-          problems.push(`environment-blocked case ${item.caseId} references unknown environment requirement ${requirementId}`)
-          continue
-        }
-        if (!requirement.caseIds.includes(item.caseId)) {
-          problems.push(`environment-blocked case ${item.caseId} is not linked to environment requirement ${requirementId}`)
-        }
-        if (requirement.status !== 'pending') {
-          problems.push(`environment-blocked case ${item.caseId} references non-pending environment requirement ${requirementId}`)
-        }
-        if (requirement.evidence.length === 0) {
-          problems.push(`environment requirement ${requirementId} has no saved evidence`)
-        }
-      }
-    } else if (item.environmentRequirementIds?.length) {
-      problems.push(`non-environment case ${item.caseId} contains environment requirement references`)
-    }
-  }
-  const recordedById = new Map(recordedEnvironmentRequirements.map((item) => [item.id, item]))
-  for (const requirement of result.environmentRequirements) {
-    const recorded = recordedById.get(requirement.id)
-    if (!recorded) {
-      problems.push(`final result includes unrecorded environment requirement ${requirement.id}`)
-      continue
-    }
-    if (!sameEnvironmentRequirement(requirement, recorded)) {
-      problems.push(`final result environment requirement ${requirement.id} does not match the recorded requirement`)
-    }
-  }
-  for (const requirement of recordedEnvironmentRequirements.filter((item) => item.status === 'pending')) {
-    for (const caseId of requirement.caseIds) {
-      const caseResult = result.cases.find((item) => item.caseId === caseId)
-      if (!caseResult || caseResult.failureSource !== 'environment' || !caseResult.environmentRequirementIds?.includes(requirement.id)) {
-        problems.push(`pending environment requirement ${requirement.id} is not represented by environment-blocked case ${caseId}`)
-      }
-    }
-  }
-  const expectedOutcome = result.cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : result.cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
-  if (result.outcome !== expectedOutcome) problems.push(`top-level outcome must be ${expectedOutcome}`)
-  if (result.outcome === 'passed' && (result.blockers.length > 0 || result.productDefects.length > 0)) problems.push('passed result contains blockers or product defects')
-  if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
-  if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
-  problems.push(...replayProblems)
-  return problems
+  return settlementProblems({
+    manifest,
+    claims: settlementClaimsFromResult(result.cases),
+    workflowId: result.workflowId,
+    sourceSha256: result.sourceSha256,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    outcome: result.outcome,
+    summary: result.summary,
+    blockers: result.blockers,
+    productDefects: result.productDefects,
+    nextActions: result.nextActions,
+    reportedEnvironmentRequirements: result.environmentRequirements,
+    environmentRequirements: recordedEnvironmentRequirements,
+    executionReceipts,
+    replayProblems,
+  })
 }
 
 async function replayProblemsForResult(eventsPath: string, result: CodexTestAgentResult): Promise<string[]> {
@@ -324,24 +265,6 @@ async function replayVerificationProblems(options: {
 
 function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
   return redactAgentJsonValue(value, secrets) as T
-}
-
-function sameStringSet(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value) => right.includes(value))
-}
-
-function sameEnvironmentRequirement(
-  left: CodexTestEnvironmentRequirement,
-  right: CodexTestEnvironmentRequirement,
-): boolean {
-  return left.id === right.id &&
-    left.kind === right.kind &&
-    left.origin === right.origin &&
-    left.condition === right.condition &&
-    left.status === right.status &&
-    left.requestedAt === right.requestedAt &&
-    sameStringSet(left.caseIds, right.caseIds) &&
-    sameStringSet(left.evidence, right.evidence)
 }
 
 function enforceEnvironmentRequirements(
@@ -770,9 +693,10 @@ function aggregateCaseResults(options: {
     if (!result) throw new Error(`Adaptive execution is missing ${phase.id}`)
     return result
   })
-  const outcome = cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+  // Deriving the top-level outcome is a settlement rule, so it is asked of the
+  // seam rather than re-implemented here; the seam settles this same aggregate
+  // immediately afterwards through finalResultProblems.
+  const outcome = settlementOutcomeForClaims(settlementClaimsFromResult(cases))
   const counts = {
     passed: cases.filter((item) => item.outcome === 'passed').length,
     productFailed: cases.filter((item) => item.outcome === 'product_failed').length,
