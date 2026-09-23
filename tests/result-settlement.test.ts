@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  settlementApplyAuthority,
   settlementClaimsFromDelivery,
   settlementClaimsFromResult,
   settlementProblems,
@@ -434,6 +435,104 @@ function claimFacts(result?: CodexTestAgentResult): unknown {
     })),
   }
 }
+
+describe('authority rows applied to a composed result', () => {
+  /** A Result an Adapter composed from its own case rows, before the authority rows. */
+  function composedResult(overrides: Partial<CodexTestAgentResult> = {}): CodexTestAgentResult {
+    return {
+      version: '1.0', workflowId: 'settlement-fixture', sourceSha256: SOURCE_SHA256, outcome: 'passed', summary: 'settled',
+      startedAt: '2026-08-13T00:00:00.000Z', finishedAt: '2026-08-13T00:00:01.000Z',
+      cases: [resultCase()], mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+      ...overrides,
+    }
+  }
+
+  it('forces a pending mutation into a blocked case with its own evidence', () => {
+    const applied = settlementApplyAuthority(composedResult(), { mutationLedger: [ledgerEntry({ status: 'pending' })] })
+
+    expect(applied.outcome).toBe('blocked')
+    expect(applied.summary).toBe('settled Unrecovered business mutations remain.')
+    expect(applied.blockers).toEqual(['Unrecovered mutations: mutation-1'])
+    expect(applied.mutations.map((entry) => entry.status)).toEqual(['pending'])
+    expect(applied.cases[0]).toMatchObject({
+      outcome: 'blocked',
+      failureSource: 'agent_execution',
+      failureKind: 'execution',
+      summary: 'verified Unrecovered business mutations remain for this case.',
+    })
+    expect(applied.cases[0]?.evidence[1]).toEqual({ kind: 'mutation', description: 'Pending mutation mutation-1: Created a row' })
+  })
+
+  it('preserves an existing blocked root cause when a pending mutation also requires recovery', () => {
+    const blocked = composedResult({
+      outcome: 'blocked',
+      blockers: ['The model provider is unavailable.'],
+      cases: [resultCase({
+        outcome: 'blocked', summary: 'The model provider is unavailable.',
+        failureSource: 'infrastructure', failureKind: 'execution',
+      })],
+    })
+    const applied = settlementApplyAuthority(blocked, { mutationLedger: [ledgerEntry({ status: 'pending' })] })
+
+    expect(applied.cases[0]).toMatchObject({
+      outcome: 'blocked', failureSource: 'infrastructure', failureKind: 'execution',
+    })
+    expect(applied.blockers.join(' ')).toContain('mutation-1')
+  })
+
+  it('projects a fully recovered ledger without changing the submitted outcome', () => {
+    const applied = settlementApplyAuthority(composedResult(), {
+      mutationLedger: [ledgerEntry(), ledgerEntry({ id: 'mutation-2', status: 'compensated' })],
+    })
+
+    expect(applied.outcome).toBe('passed')
+    expect(applied.summary).toBe('settled')
+    expect(applied.cases[0]).toEqual(resultCase())
+    expect(applied.mutations.map((entry) => entry.status)).toEqual(['accepted', 'compensated'])
+  })
+
+  it('blocks a run with an unmet prerequisite and adds its recovery action', () => {
+    const applied = settlementApplyAuthority(composedResult(), { environmentRequirements: [requirement()] })
+
+    expect(applied.outcome).toBe('blocked')
+    expect(applied.summary).toBe('settled Required environment prerequisites remain unavailable.')
+    expect(applied.blockers).toEqual(['Target write permission'])
+    expect(applied.nextActions).toEqual(['Provide the required permission prerequisite: Target write permission, then resume the same run.'])
+    expect(applied.environmentRequirements).toEqual([requirement()])
+  })
+
+  it('leaves the rows it was not handed exactly as the adapter wrote them', () => {
+    const withRequirements = composedResult({ environmentRequirements: [requirement({ status: 'satisfied' })] })
+
+    expect(settlementApplyAuthority(withRequirements, {})).toEqual(withRequirements)
+    expect(settlementApplyAuthority(composedResult(), { mutationLedger: [] })).toEqual(composedResult())
+  })
+
+  it('composes exactly what the canonical settlement composes for the same rows', () => {
+    const ledger = [ledgerEntry({ status: 'pending' })]
+    const requirements = [requirement()]
+    const environmentClaim = claim({
+      outcome: 'blocked', failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'],
+    })
+    const canonical = settleResult(input({
+      outcome: 'blocked', blockers: ['Target write permission'], claims: [environmentClaim],
+      environmentRequirements: requirements, mutationLedger: ledger,
+    }))
+
+    expect(canonical.problems).toEqual([])
+    // The Runner's fail-closed fallbacks compose through the same authority rows
+    // the canonical Result does, so a fallback can never word a pending row
+    // differently from a settled run.
+    const composed = settlementApplyAuthority(composedResult({
+      outcome: 'blocked',
+      blockers: ['Target write permission'],
+      cases: [resultCase({
+        outcome: 'blocked', failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'],
+      })],
+    }), { environmentRequirements: requirements, mutationLedger: ledger })
+    expect(composed).toEqual(canonical.result)
+  })
+})
 
 describe('case claim normalization parity', () => {
   const deliveryRow = {

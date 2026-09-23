@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { buildCodexExecutionEpochs } from '../src/agent/execution-epochs.js'
 import type { AgentTestProgress } from '../src/agent/progress.js'
-import { finalResultProblems, runAgentTest } from '../src/agent/runner.js'
-import { settlementClaimsFromResult, settlementProblems } from '../src/agent/result-settlement.js'
+import { runAgentTest } from '../src/agent/runner.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
 import type { CodexTestAgentResult, CodexTestExecutionReceipt } from '../src/agent/types.js'
 import type { ModelProfile } from '../src/workflow/model-profile.js'
 import type { WorkflowFailureMode, WorkflowIntakeManifest, WorkflowOutcomeContract } from '../src/workflow/types.js'
@@ -28,10 +28,12 @@ function promptText(input: unknown): string {
     .join('\n')
 }
 
-async function agentSourceFiles(): Promise<string[]> {
-  const directory = resolve(root, 'src', 'agent')
-  const entries = await readdir(directory, { withFileTypes: true })
-  return entries.filter((entry) => entry.isFile() && entry.name.endsWith('.ts')).map((entry) => resolve(directory, entry.name))
+/** Every product source file, so a second copy of a contract rule cannot hide in another layer. */
+async function productSourceFiles(): Promise<string[]> {
+  const files = await readdir(resolve(root, 'src'), { withFileTypes: true, recursive: true })
+  return files
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts'))
+    .map((entry) => resolve(entry.parentPath ?? resolve(root, 'src'), entry.name))
 }
 
 function manifest(): WorkflowIntakeManifest {
@@ -1603,28 +1605,11 @@ describe('final settlement on the ResultSettlement seam', () => {
 
   it('keeps final settlement fail-closed for every rule of the result contract', () => {
     for (const { name, workflow, result, receipts, problems } of decisionTable) {
-      expect(finalResultProblems(result, workflow, [], receipts), name).toEqual(problems)
-    }
-  })
-
-  it('judges the final result on the settlement seam instead of a second implementation', () => {
-    for (const { name, workflow, result, receipts, problems } of decisionTable) {
-      expect(settlementProblems({
+      expect(settlementProblems(settlementInputFromResult(result, {
         manifest: workflow,
-        claims: settlementClaimsFromResult(result.cases),
-        workflowId: result.workflowId,
-        sourceSha256: result.sourceSha256,
-        startedAt: result.startedAt,
-        finishedAt: result.finishedAt,
-        outcome: result.outcome,
-        summary: result.summary,
-        blockers: result.blockers,
-        productDefects: result.productDefects,
-        nextActions: result.nextActions,
-        reportedEnvironmentRequirements: result.environmentRequirements,
         environmentRequirements: [],
         executionReceipts: receipts,
-      }), name).toEqual(problems)
+      })), name).toEqual(problems)
     }
   })
 
@@ -1639,14 +1624,28 @@ describe('final settlement on the ResultSettlement seam', () => {
       'top-level outcome must be',
       'blocked result has no blocker',
       'product-failed result has no product defect',
+      'Unrecovered business mutations remain',
+      'Unrecovered mutations:',
+      'Required environment prerequisites remain unavailable.',
+      'Provide the required',
     ]
-    const agentSources = await Promise.all((await agentSourceFiles()).map(async (file) => (
+    const sources = await Promise.all((await productSourceFiles()).map(async (file) => (
       [relative(root, file), await readFile(file, 'utf8')] as const
     )))
     for (const invariant of invariants) {
-      expect(agentSources.filter(([, source]) => source.includes(invariant)).map(([file]) => file), invariant)
+      expect(sources.filter(([, source]) => source.includes(invariant)).map(([file]) => file), invariant)
         .toEqual(['src/agent/result-settlement.ts'])
     }
+  })
+
+  it('keeps no compatibility alias for the settlement entry points the callers migrated off', async () => {
+    const sources = await Promise.all((await productSourceFiles()).map(async (file) => (
+      [relative(root, file), await readFile(file, 'utf8')] as const
+    )))
+    // A declaration or a call of a migrated-off name: the forwarding exports the
+    // migration kept are gone, so every caller asks the seam itself.
+    const alias = /(?:function|const)\s+(?:finalResultProblems|enforceMutationLedger|enforceEnvironmentRequirements)\b|\b(?:finalResultProblems|enforceMutationLedger|enforceEnvironmentRequirements)\s*\(/
+    expect(sources.filter(([, source]) => alias.test(source)).map(([file]) => file)).toEqual([])
   })
 
   it('feeds the settlement problem back to the finalization turn instead of accepting a false pass', async () => {

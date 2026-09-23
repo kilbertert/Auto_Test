@@ -2,7 +2,7 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { finalResultProblems } from '../agent/runner.js'
+import { settlementInputFromResult, settlementProblems } from '../agent/result-settlement.js'
 import type { CodexTestAgentResult, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt } from '../agent/types.js'
 import { redactReportValue } from '../workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../workflow/acceptance-report.js'
@@ -50,7 +50,11 @@ export async function acceptanceRunContractProblems(runDirectory: string): Promi
   const executionReceipts = await readRunJsonIfPresent<CodexTestExecutionReceipt[]>(
     resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'),
   )
-  return finalResultProblems(result, manifest, environmentRequirements ?? [], executionReceipts ?? [])
+  return settlementProblems(settlementInputFromResult(result, {
+    manifest,
+    environmentRequirements: environmentRequirements ?? [],
+    executionReceipts: executionReceipts ?? [],
+  }))
 }
 
 async function main(): Promise<void> {

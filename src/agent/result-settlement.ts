@@ -8,6 +8,7 @@ import type {
   CodexTestFailureKind,
   CodexTestFailureSource,
   CodexTestMutationLedgerEntry,
+  CodexTestMutationResult,
   CodexTestOutcome,
 } from './types.js'
 import type { WorkflowIntakeManifest } from '../workflow/types.js'
@@ -21,8 +22,11 @@ import type { WorkflowIntakeManifest } from '../workflow/types.js'
  * (reading artifacts, resolving evidence paths, aggregating Epochs) and reports
  * its own path-specific problems; every shared invariant lives here so one rule
  * change reaches every path and two paths can never disagree about the same
- * Case claim. This module is that seam and its Case-claim vocabulary; the
- * Adapters are migrated onto it one by one behind the same interface.
+ * Case claim. The Adapters are all on this seam now, so it is also where the
+ * Runner-owned authority rows are applied to a Result: there is no second
+ * implementation of the ledger, requirement, or classification rules anywhere
+ * else, and deleting this module forces every one of them to reappear in the
+ * Runner, in delivery recovery, and in the comparator.
  */
 
 /**
@@ -232,6 +236,90 @@ export function settlementProblems(input: ResultSettlementInput): string[] {
 }
 
 /**
+ * Normalize a canonical Result into the submission settlement measures.
+ *
+ * Every entry point that already holds a written Result — the Runner's final
+ * settlement, the cross-host comparison tool, acceptance reporting — submits
+ * through this one Adapter instead of re-listing which Result field feeds which
+ * submission field, so the transport mapping is written once and cannot drift
+ * between two readers of the same artifact.
+ */
+export function settlementInputFromResult(
+  result: CodexTestAgentResult,
+  authority: {
+    /** The immutable test contract this Result is measured against. */
+    manifest: WorkflowIntakeManifest
+    /** Recorded environment requirement rows; the authority for reconciliation. */
+    environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+    /** Recorded execution receipts; the authority for receipt references. */
+    executionReceipts?: readonly CodexTestExecutionReceipt[]
+    /** Problems already raised by the replay projection; appended unchanged. */
+    replayProblems?: readonly string[]
+  },
+): ResultSettlementInput {
+  return {
+    manifest: authority.manifest,
+    claims: settlementClaimsFromResult(result.cases),
+    workflowId: result.workflowId,
+    sourceSha256: result.sourceSha256,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    outcome: result.outcome,
+    summary: result.summary,
+    blockers: result.blockers,
+    productDefects: result.productDefects,
+    nextActions: result.nextActions,
+    reportedEnvironmentRequirements: result.environmentRequirements,
+    ...(authority.environmentRequirements ? { environmentRequirements: authority.environmentRequirements } : {}),
+    ...(authority.executionReceipts ? { executionReceipts: authority.executionReceipts } : {}),
+    ...(authority.replayProblems ? { replayProblems: authority.replayProblems } : {}),
+  }
+}
+
+/** The Runner-owned authority rows applied to a Result an Adapter composed. */
+export interface ResultAuthorityRows {
+  /** Recorded environment requirement rows; a pending row blocks the cases it links. */
+  environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+  /** Runner-owned Mutation Ledger rows; a pending row blocks the case it belongs to. */
+  mutationLedger?: readonly CodexTestMutationLedgerEntry[]
+}
+
+/**
+ * Apply the Runner-owned authority rows to a Result an Adapter composed itself.
+ *
+ * A pending environment prerequisite and a pending business write are facts
+ * about the Run, not about the transport that reported it, so the rules that
+ * turn them into a blocked outcome, a blocked Case with its own evidence, a
+ * blocker, and a recovery action live here — and the canonical Result
+ * `settleResult` composes applies them through the same helpers. An Adapter that
+ * must write a Result the seam has not judged — the fail-closed blocked Result a
+ * Run falls back to when nothing of it can be settled — asks for the same
+ * composition, so a fallback can never disagree with a settled Run about what a
+ * pending row means. A row collection the caller leaves out is left exactly as
+ * the Adapter wrote it.
+ */
+export function settlementApplyAuthority(
+  result: CodexTestAgentResult,
+  authority: ResultAuthorityRows,
+): CodexTestAgentResult {
+  const pendingRequirements = (authority.environmentRequirements ?? []).filter((item) => item.status === 'pending')
+  const pendingMutations = (authority.mutationLedger ?? []).filter((item) => item.status === 'pending')
+  const narrative = authorityNarrative(result, pendingRequirements, pendingMutations)
+  return {
+    ...result,
+    summary: narrative.summary,
+    blockers: narrative.blockers,
+    nextActions: narrative.nextActions,
+    cases: blockCasesForPendingMutations(result.cases, pendingMutations),
+    ...(authority.environmentRequirements ? { environmentRequirements: [...authority.environmentRequirements] } : {}),
+    ...(authority.mutationLedger ? { mutations: mutationProjection(authority.mutationLedger) } : {}),
+    // A Run with an unmet prerequisite or an unrecovered write is never a
+    // success, whatever its cases claim.
+    ...(pendingRequirements.length > 0 || pendingMutations.length > 0 ? { outcome: 'blocked' as const } : {}),
+  }
+}
+
+/**
  * The top-level outcome a claim set settles to. An Adapter that has no
  * submitted outcome of its own — a per-epoch delivery artifact records only
  * per-case facts — reports this value, so the derivation stays in the seam
@@ -297,42 +385,52 @@ function canonicalResult(input: ResultSettlementInput): CodexTestAgentResult {
   const ledger = input.mutationLedger ?? []
   const environmentRequirements = input.environmentRequirements ?? []
   const pendingRequirements = environmentRequirements.filter((item) => item.status === 'pending')
-  const pendingMutations = ledger.filter((entry) => entry.status === 'pending')
-
-  let summary = input.summary
-  if (pendingRequirements.length > 0) summary = `${summary} Required environment prerequisites remain unavailable.`
-  if (pendingMutations.length > 0) summary = `${summary} Unrecovered business mutations remain.`
-  let blockers = pendingRequirements.length > 0
-    ? [...new Set([...input.blockers, ...pendingRequirements.map((item) => item.condition)])]
-    : [...input.blockers]
-  if (pendingMutations.length > 0) blockers = [...blockers, `Unrecovered mutations: ${pendingMutations.map((entry) => entry.id).join(', ')}`]
-  const nextActions = pendingRequirements.length > 0
-    ? [...new Set([...input.nextActions, ...pendingRequirements.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`)])]
-    : [...input.nextActions]
-
-  const claims = enforceMutationLedgerOnClaims(input.claims, pendingMutations)
+  const pendingMutations = ledger.filter((item) => item.status === 'pending')
+  const claims = blockCasesForPendingMutations(input.claims, pendingMutations)
+  const narrative = authorityNarrative(input, pendingRequirements, pendingMutations)
   return {
     version: '1.0',
     workflowId: input.workflowId,
     sourceSha256: input.sourceSha256,
     outcome: outcomeForClaims(claims),
-    summary,
+    summary: narrative.summary,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
     cases: claims.map((claim) => caseResultFromClaim(claim, input.manifest)),
-    mutations: ledger.map((entry) => ({
-      id: entry.id,
-      caseId: entry.caseId,
-      description: entry.description,
-      risk: entry.risk,
-      status: entry.status,
-      evidence: entry.evidence,
-    })),
+    mutations: mutationProjection(ledger),
     environmentRequirements: [...environmentRequirements],
-    blockers,
+    blockers: narrative.blockers,
     productDefects: [...input.productDefects],
-    nextActions,
+    nextActions: narrative.nextActions,
   }
+}
+
+/**
+ * The narrative half of the authority rows: what a pending prerequisite and a
+ * pending business write add to the summary, the blockers, and the recovery
+ * actions. Applied in that fixed order by both the canonical Result and a Result
+ * an Adapter composed itself, so the two can never word the same pending row
+ * differently.
+ */
+function authorityNarrative(
+  narrative: { summary: string; blockers: readonly string[]; nextActions: readonly string[] },
+  pendingRequirements: readonly CodexTestEnvironmentRequirement[],
+  pendingMutations: readonly CodexTestMutationLedgerEntry[],
+): { summary: string; blockers: string[]; nextActions: string[] } {
+  let summary = narrative.summary
+  if (pendingRequirements.length > 0) summary = `${summary} Required environment prerequisites remain unavailable.`
+  if (pendingMutations.length > 0) summary = `${summary} Unrecovered business mutations remain.`
+  let blockers = pendingRequirements.length > 0
+    ? [...new Set([...narrative.blockers, ...pendingRequirements.map((item) => item.condition)])]
+    : [...narrative.blockers]
+  if (pendingMutations.length > 0) blockers = [...blockers, `Unrecovered mutations: ${pendingMutations.map((entry) => entry.id).join(', ')}`]
+  const nextActions = pendingRequirements.length > 0
+    ? [...new Set([
+      ...narrative.nextActions,
+      ...pendingRequirements.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
+    ])]
+    : [...narrative.nextActions]
+  return { summary, blockers, nextActions }
 }
 
 /**
@@ -340,34 +438,55 @@ function canonicalResult(input: ResultSettlementInput): CodexTestAgentResult {
  * belongs to becomes blocked with an agent-execution classification and carries
  * the pending mutation as its own evidence. An explicit blocked classification
  * is preserved so an environment block is not rewritten into an execution
- * failure.
+ * failure. Written once over the case fields both the Case claim and a settled
+ * Result case carry, so the canonical Result and an Adapter-composed Result
+ * cannot force a pending mutation into a case differently.
  */
-function enforceMutationLedgerOnClaims(
-  claims: readonly SettlementCaseClaim[],
+function blockCasesForPendingMutations<T extends PendingMutationCaseFields>(
+  cases: readonly T[],
   pendingMutations: readonly CodexTestMutationLedgerEntry[],
-): SettlementCaseClaim[] {
-  if (pendingMutations.length === 0) return [...claims]
+): T[] {
+  if (pendingMutations.length === 0) return [...cases]
   const pendingByCase = new Map<string, CodexTestMutationLedgerEntry[]>()
   for (const entry of pendingMutations) pendingByCase.set(entry.caseId, [...(pendingByCase.get(entry.caseId) ?? []), entry])
-  return claims.map((claim) => {
-    const entries = pendingByCase.get(claim.caseId)
-    if (!entries) return claim
-    const preserveBlockedClassification = claim.outcome === 'blocked'
+  return cases.map((item) => {
+    const entries = pendingByCase.get(item.caseId)
+    if (!entries) return item
+    const preserveBlockedClassification = item.outcome === 'blocked'
     return {
-      ...claim,
-      outcome: 'blocked',
-      summary: `${claim.summary} Unrecovered business mutations remain for this case.`,
-      failureSource: preserveBlockedClassification ? (claim.failureSource ?? 'agent_execution') : 'agent_execution',
-      failureKind: preserveBlockedClassification ? (claim.failureKind ?? 'execution') : 'execution',
-      evidence: [
-        ...claim.evidence,
-        ...entries.map((entry) => ({
-          kind: 'mutation' as const,
-          description: `Pending mutation ${entry.id}: ${entry.description}`,
-        })),
-      ],
-    }
+      ...item,
+      outcome: 'blocked' as const,
+      summary: `${item.summary} Unrecovered business mutations remain for this case.`,
+      failureSource: preserveBlockedClassification ? (item.failureSource ?? 'agent_execution') : 'agent_execution',
+      failureKind: preserveBlockedClassification ? (item.failureKind ?? 'execution') : 'execution',
+      evidence: [...item.evidence, ...entries.map((entry) => ({
+        kind: 'mutation' as const,
+        description: `Pending mutation ${entry.id}: ${entry.description}`,
+      }))],
+    } as T
   })
+}
+
+/** The case fields a pending business write rewrites; every case shape carries them. */
+interface PendingMutationCaseFields {
+  caseId: string
+  outcome: CodexTestOutcome
+  summary: string
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  evidence: readonly CodexTestEvidence[]
+}
+
+/** The Mutation Ledger projection of the Result transport. */
+function mutationProjection(ledger: readonly CodexTestMutationLedgerEntry[]): CodexTestMutationResult[] {
+  return ledger.map((entry) => ({
+    id: entry.id,
+    caseId: entry.caseId,
+    description: entry.description,
+    risk: entry.risk,
+    status: entry.status,
+    evidence: entry.evidence,
+  }))
 }
 
 function caseResultFromClaim(claim: SettlementCaseClaim, manifest: WorkflowIntakeManifest): CodexTestCaseResult {

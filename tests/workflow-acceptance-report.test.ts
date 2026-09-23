@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { finalResultProblems } from '../src/agent/runner.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
 import { acceptanceRunContractProblems } from '../src/cli/workflow-acceptance-report.js'
 import { redactReportValue } from '../src/workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../src/workflow/acceptance-report.js'
@@ -230,11 +230,12 @@ describe('workflow acceptance report result contract', () => {
     const runDirectory = await makeRun(root, claim)
 
     const problems = await acceptanceRunContractProblems(runDirectory)
-    expect(problems).toEqual(finalResultProblems(claim, runManifest()))
+    const authority = settlementProblems(settlementInputFromResult(claim, { manifest: runManifest() }))
+    expect(problems).toEqual(authority)
     expect(problems).toContain('product-failed case phase-1 is not classified as product-sourced')
 
     const report = buildWorkflowAcceptanceReport(workflow, { ...evidence, runDirectory }, problems)
-    expect(report.contractProblems).toEqual(finalResultProblems(claim, runManifest()))
+    expect(report.contractProblems).toEqual(authority)
   })
 
   it('reports no contract problems for a run that settled clean', async () => {

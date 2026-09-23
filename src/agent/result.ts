@@ -1,5 +1,5 @@
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
-import type { CodexTestAgentResult, CodexTestMutationLedgerEntry } from './types.js'
+import type { CodexTestAgentResult } from './types.js'
 
 export const codexTestResultSchema = {
   type: 'object',
@@ -215,54 +215,6 @@ function normalizeParsedResult(
   }
 }
 
-export function enforceMutationLedger(
-  result: CodexTestAgentResult,
-  ledger: CodexTestMutationLedgerEntry[],
-): CodexTestAgentResult {
-  const pending = ledger.filter((entry) => entry.status === 'pending')
-  const mutations = ledger.map((entry) => ({
-    id: entry.id,
-    caseId: entry.caseId,
-    description: entry.description,
-    risk: entry.risk,
-    status: entry.status,
-    evidence: entry.evidence,
-  }))
-  if (pending.length === 0) return { ...result, mutations }
-  const pendingCases = new Set(pending.map((entry) => entry.caseId))
-  return {
-    ...result,
-    outcome: 'blocked',
-    summary: `${result.summary} Unrecovered business mutations remain.`,
-    mutations,
-    cases: result.cases.map((item) => {
-      if (!pendingCases.has(item.caseId)) return item
-      const preserveBlockedClassification = item.outcome === 'blocked'
-      return {
-        ...item,
-        outcome: 'blocked',
-        summary: `${item.summary} Unrecovered business mutations remain for this case.`,
-        failureSource: preserveBlockedClassification ? (item.failureSource ?? 'agent_execution') : 'agent_execution',
-        failureKind: preserveBlockedClassification ? (item.failureKind ?? 'execution') : 'execution',
-        evidence: [
-          ...item.evidence,
-          ...pending.filter((entry) => entry.caseId === item.caseId).map((entry) => ({
-            kind: 'mutation' as const,
-            description: `Pending mutation ${entry.id}: ${entry.description}`,
-          })),
-        ],
-      }
-    }),
-    blockers: [
-      ...result.blockers,
-      `Unrecovered mutations: ${pending.map((entry) => entry.id).join(', ')}`,
-    ],
-  }
-}
-
-/** Host-neutral result contract exports. */
-export const agentTestResultSchema = codexTestResultSchema
-
 function parseWrappedAgentResult(
   value: string,
   parser: (candidate: string) => CodexTestAgentResult,
@@ -286,6 +238,9 @@ function parseWrappedAgentResult(
     throw originalError
   }
 }
+
+/** Host-neutral result contract exports. */
+export const agentTestResultSchema = codexTestResultSchema
 
 /**
  * Some non-schema transports wrap an otherwise valid JSON delivery in a

@@ -15,7 +15,7 @@ import type {
   CodexTestMutationLedgerEntry,
 } from './types.js'
 import { parseAgentTestResult } from './result.js'
-import { settlementClaimsFromResult, settlementProblems } from './result-settlement.js'
+import { settlementInputFromResult, settlementProblems } from './result-settlement.js'
 import { failureModeCounts } from './failure-mode.js'
 import { usageFrom } from './host.js'
 import { writePrivateJson } from './state.js'
@@ -443,22 +443,11 @@ function duplicateValues(values: string[]): string[] {
  */
 function candidateContractProblems(candidate: LoadedCandidate, manifest: WorkflowIntakeManifest): string[] {
   const { result } = candidate
-  return settlementProblems({
+  return settlementProblems(settlementInputFromResult(result, {
     manifest,
-    claims: settlementClaimsFromResult(result.cases),
-    workflowId: result.workflowId,
-    sourceSha256: result.sourceSha256,
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
-    outcome: result.outcome,
-    summary: result.summary,
-    blockers: result.blockers,
-    productDefects: result.productDefects,
-    nextActions: result.nextActions,
-    reportedEnvironmentRequirements: result.environmentRequirements,
     environmentRequirements: candidate.recordedEnvironmentRequirements,
     executionReceipts: candidate.receipts,
-  }).map((problem) => `${candidate.summary.hostId}: ${problem}`)
+  })).map((problem) => `${candidate.summary.hostId}: ${problem}`)
 }
 
 async function evidencePathEscapesBase(baseDirectory: string, evidencePath: string, allowAbsolute: boolean): Promise<boolean> {

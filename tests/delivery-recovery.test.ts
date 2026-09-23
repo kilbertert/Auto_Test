@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { recoverAgentEpochDeliveryResult, recoverCodexDeliveryResult } from '../src/agent/delivery-recovery.js'
-import { finalResultProblems } from '../src/agent/runner.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
 import type { CodexTestAgentResult, CodexTestEnvironmentRequirement } from '../src/agent/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
@@ -357,10 +357,10 @@ describe('delivery recovery on the ResultSettlement seam', () => {
 
     expect(recovered.result).toBeUndefined()
     expect(recovered.problems).toEqual(['non-passed case case-2 has no failure classification'])
-    // The same claim read back from a canonical Result is rejected by the Runner's
-    // final settlement with the same problem, so neither path accepts what the
+    // The same claim read back from a canonical Result is judged by the one
+    // settlement seam with the same problem, so neither path accepts what the
     // other blocks.
-    expect(finalResultProblems(mirroredResult(), manifest())).toEqual(recovered.problems)
+    expect(settlementProblems(settlementInputFromResult(mirroredResult(), { manifest: manifest() }))).toEqual(recovered.problems)
   })
 
   it('accepts a delivery the final settlement also accepts, without repeating its checks', async () => {
@@ -374,7 +374,7 @@ describe('delivery recovery on the ResultSettlement seam', () => {
     const recovered = await recoverCodexDeliveryResult({ artifactPath, manifest: manifest(), startedAt: '2026-08-03T00:00:00.000Z' })
 
     expect(recovered.problems).toEqual([])
-    expect(finalResultProblems(recovered.result!, manifest())).toEqual([])
+    expect(settlementProblems(settlementInputFromResult(recovered.result!, { manifest: manifest() }))).toEqual([])
   })
 
   it('reconciles an environment-blocked claim against the recorded requirement rows', async () => {

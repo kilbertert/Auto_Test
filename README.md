@@ -96,10 +96,18 @@
 | 边界 | 载体 | 保证什么 |
 |---|---|---|
 | 输入身份不可漂移 | `agentTestPrompt` 中的 `workflowId` + `sourceSha256`（`src/agent/prompt.ts`） | 整轮 Run 的目标输入被冻结，模型改不了 |
-| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复、跨宿主比较与验收报告 |
-| 副作用必须可核销 | `enforceMutationLedger`（`src/agent/result.ts:218`） | Ledger 有 `pending` 时该 Run 不能被报成通过——**是账本，不是模型，决定终态** |
-| 环境阻断必须可恢复 | `enforceEnvironmentRequirements`（`src/agent/runner.ts:347`） | 环境类阻断必须关联同一 case 的已保存证据需求，不能用通用证据批量造结论 |
+| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems` | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复、跨宿主比较与验收报告 |
+| 副作用必须可核销 | `result-settlement.ts` 的 `settlementApplyAuthority` | Ledger 有 `pending` 时该 Run 不能被报成通过——**是账本，不是模型，决定终态** |
+| 环境阻断必须可恢复 | `result-settlement.ts` 的 `settlementApplyAuthority` | 环境类阻断必须关联同一 case 的已保存证据需求，不能用通用证据批量造结论 |
 | 权限只在 Profile | Environment Profile 的 `policy.allowWrite` / `allowDestructive` | 写权限不由推断的 case 风险替代，也不由提示词放宽 |
+
+这五道边界（以及逐 epoch 交付恢复、跨宿主比较、验收报告读到的同一批判定）只有**一处实现**：
+`src/agent/result-settlement.ts`。Runner 的最终结算与 fail-closed 兜底 Result、逐 epoch 交付恢复、
+比较器、验收报告都只向它提交或请它套用权威行，仓库里没有第二个地方重写身份、case 覆盖、证据、
+失败分类、回执与环境需求引用、终态推导、或"Ledger 有 pending 就不能算通过"这些规则；历史上为迁移
+保留的转发入口（`finalResultProblems` / `enforceMutationLedger` / `enforceEnvironmentRequirements`）
+已删除。删掉这个模块，上述每个调用方都得自己把这些不变量重写一遍——这正是它应该深的证据。
+见 [ADR-0001](docs/adr/0001-agenthost-result-contract.md)。
 
 副作用（事实 2）单独展开：harness 不阻止写入，而是要求写入**可核销**。
 一个需要中断恢复的外部业务写入登记为一条 Mutation，Run 结束前必须验证接受或补偿结果
@@ -250,20 +258,20 @@ flowchart TB
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
 | `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族。合同问题不在此处判定：证据用 `runDirectory` 指明本次验收覆盖的 Run，由 `cli/workflow-acceptance-report.ts` 读产物并向 `result-settlement.ts` 取同一列表（`workflow` 层不允许依赖 `agent` 层，见 `architecture.yml`） |
 
-#### L4 `src/agent` — 执行外壳（最大层，9865 行 / 40 文件）
+#### L4 `src/agent` — 执行外壳（最大层，10352 行 / 38 文件）
 
 | 模块 | 职责 |
 |---|---|
-| `runner.ts` | **整个产品的心脏**（1727 行）：准备 → epoch 规划 → 轮次循环 → 结算判定 → 聚合。最终结算只归一化 Case claim 并提交 `result-settlement.ts`，自身不再复制合同规则 |
+| `runner.ts` | **整个产品的心脏**（1691 行）：准备 → epoch 规划 → 轮次循环 → 结算判定 → 聚合。最终结算只把 Result 归一化并提交 `result-settlement.ts`，兜底 Result 只请 seam 套用权威行，自身不再复制合同规则 |
 | `host.ts` | `AgentHost` 抽象：唯一执行接缝（`start` / `resume` / `probe` / `capabilities` / `modelProvider`） |
 | `codex-host.ts` / `omp-host.ts` | 两个内置宿主实现：Codex 走 SDK 进程内，OMP 走 stdio JSON-RPC |
 | `codex-provider.ts` / `omp-provider.ts` / `provider-runtime.ts` | Provider 适配器：把同一 descriptor 翻译成各宿主的隔离配置、模型目录与环境（**唯一允许接触宿主格式的地方**） |
 | `workspace.ts` | 磁盘契约：`agent-workspace/` 与 `.agent-private/` 的划分、权限与**访问边界**（见 4.4） |
-| `result.ts` | 结果合同：JSON Schema 校验、容错解析、`enforceMutationLedger` |
+| `result.ts` | 结果合同的传输层：JSON Schema 校验与容错解析（业务不变量不在这里） |
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
 | `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
-| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复、跨宿主比较、验收报告都只经由它判定 |
+| `result-settlement.ts` | 结果合同唯一结算 seam（533 行）：纯同步模块，判定身份、case 覆盖、证据、失败分类、回执与环境需求引用、终态推导，并对 Runner 权威行（Mutation Ledger / 已记录环境需求）做同一套合成——返回规范 Result 或非空 problem 列表。Runner 最终结算、逐 epoch 交付恢复、跨宿主比较、验收报告，以及 Runner 的 fail-closed 兜底 Result 都只经由它，模块外没有第二处实现同一不变量 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
@@ -347,8 +355,8 @@ Profile 的解析器是 [`src/workflow/model-profile.ts`](src/workflow/model-pro
 
 | 门 | 工具 | 为什么必须是门 |
 |---|---|---|
-| 副作用授权 | `mutation_begin` | 拒绝高于 `allowedRisk` 的写入；它写的 Ledger 就是 `enforceMutationLedger` 的判据 |
-| 环境阻断 | `environment_requirement_record` | 把一个 case 归为环境阻断的**前提**，结果结算 seam（`result-settlement.ts`，Runner 入口 `finalResultProblems`）会强制校验 |
+| 副作用授权 | `mutation_begin` | 拒绝高于 `allowedRisk` 的写入；它写的 Ledger 就是 `settlementApplyAuthority` 的判据 |
+| 环境阻断 | `environment_requirement_record` | 把一个 case 归为环境阻断的**前提**，结果结算 seam（`result-settlement.ts`）会强制校验 |
 | 回执归属 | `case_execution_begin` / `case_execution_end` | 只有它能把被动捕获的浏览器回执归属到具体 case |
 | 能力预检 | `test_contract` | 每个物理线程启动后的一次性预检；探针或旧包绕过 MCP 的页面结果不能替代该门 |
 
@@ -422,7 +430,7 @@ npm run easy（中文菜单，可选 register/doctor）
                     ├─ verifyControlMcpCapability   预检 test_contract
                     ├─ 执行回合   （无 output schema，完整 Agent 权限）
                     ├─ 交付回合   （同一线程，codexTestResultSchema）
-                    ├─ finalResultProblems          确定性结算（委托 result-settlement.ts）
+                    ├─ settlementProblems           确定性结算（唯一实现在 result-settlement.ts）
                     └─ checkpoint（轮换前写工作记忆）
 ```
 

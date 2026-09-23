@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { finalResultProblems } from '../src/agent/runner.js'
-import type { CodexTestAgentResult, CodexTestExecutionReceipt } from '../src/agent/types.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
+import type { CodexTestAgentResult, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt } from '../src/agent/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 function manifest(): WorkflowIntakeManifest {
@@ -40,15 +40,31 @@ const receipt: CodexTestExecutionReceipt = {
   id: 'interaction-one', caseId: 'case-one', tool: 'browser_click', kind: 'interaction', status: 'completed', recordedAt: '2026-08-13T00:00:00.500Z',
 }
 
+/** The authority verdict for a finished Result, asked of the settlement seam. */
+function problems(
+  candidate: CodexTestAgentResult,
+  contract: WorkflowIntakeManifest,
+  requirements: CodexTestEnvironmentRequirement[] = [],
+  receipts: CodexTestExecutionReceipt[] = [],
+  replayProblems: string[] = [],
+): string[] {
+  return settlementProblems(settlementInputFromResult(candidate, {
+    manifest: contract,
+    environmentRequirements: requirements,
+    executionReceipts: receipts,
+    replayProblems,
+  }))
+}
+
 describe('Agent outcome contract validation', () => {
   it('accepts matching observation evidence and a same-case interaction receipt', () => {
-    expect(finalResultProblems(result(), manifest(), [], [receipt])).toEqual([])
+    expect(problems(result(), manifest(), [], [receipt])).toEqual([])
   })
 
   it('fails a false pass that has observation text but no required interaction receipt', () => {
     const candidate = result()
     candidate.cases[0]!.executionReceiptIds = []
-    expect(finalResultProblems(candidate, manifest(), [], [receipt]))
+    expect(problems(candidate, manifest(), [], [receipt]))
       .toContain('case case-one does not satisfy its outcome interaction receipt requirement')
   })
 
@@ -59,7 +75,7 @@ describe('Agent outcome contract validation', () => {
       ...candidate.cases[0]!, outcome: 'blocked', failureSource: 'input', failureKind: 'validation', executionReceiptIds: [],
     }
     candidate.blockers = ['Source expected result is incomplete']
-    expect(finalResultProblems(candidate, manifest(), [], [])).not.toContain(expect.stringContaining('outcome interaction'))
+    expect(problems(candidate, manifest(), [], [])).not.toContain(expect.stringContaining('outcome interaction'))
   })
 
   it('rejects a failure mode that the outcome contract does not allow', () => {
@@ -78,7 +94,7 @@ describe('Agent outcome contract validation', () => {
       failureKind: 'mutation',
       executionReceiptIds: ['interaction-one'],
     }
-    expect(finalResultProblems(candidate, constrained, [], [receipt]))
+    expect(problems(candidate, constrained, [], [receipt]))
       .toContain('case case-one failure mode mutation_cleanup is not allowed by its outcome contract')
   })
 
@@ -93,7 +109,7 @@ describe('Agent outcome contract validation', () => {
       failureKind: 'mutation',
       executionReceiptIds: ['interaction-one'],
     }
-    expect(finalResultProblems(candidate, manifest(), [], [receipt])).toEqual([])
+    expect(problems(candidate, manifest(), [], [receipt])).toEqual([])
   })
 
   it('keeps legacy outcome contracts without action/failureModes readable', () => {
@@ -103,13 +119,13 @@ describe('Agent outcome contract validation', () => {
       evidence: ['interaction', 'observation'],
       cleanup: ['Remove created row'],
     }
-    expect(finalResultProblems(result(), legacy, [], [receipt])).toEqual([])
+    expect(problems(result(), legacy, [], [receipt])).toEqual([])
   })
 
   it('requires an observation-kind evidence, not merely any non-mutation evidence', () => {
     const candidate = result()
     candidate.cases[0]!.evidence = [{ kind: 'screenshot', description: 'a screenshot is not a postcondition observation' }]
-    expect(finalResultProblems(candidate, manifest(), [], [receipt]))
+    expect(problems(candidate, manifest(), [], [receipt]))
       .toContain('case case-one does not satisfy its outcome observation evidence requirement')
   })
 
@@ -120,11 +136,11 @@ describe('Agent outcome contract validation', () => {
       evidence: ['interaction', 'observation'],
       cleanup: [],
     }
-    expect(finalResultProblems(result(), sparse, [], [receipt])).toEqual([])
+    expect(problems(result(), sparse, [], [receipt])).toEqual([])
   })
 
   it('rejects a passed case when its replay episode has no compiled assertion', () => {
-    expect(finalResultProblems(result(), manifest(), [], [receipt], [
+    expect(problems(result(), manifest(), [], [receipt], [
       'case case-one replay contract replayable_attempt_missing: Passed case has no complete replayable attempt with an assertion',
     ])).toEqual(expect.arrayContaining([expect.stringContaining('case case-one replay contract replayable_attempt_missing')]))
   })

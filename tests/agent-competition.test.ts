@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { compareAgentRuns } from '../src/agent/competition.js'
-import { finalResultProblems } from '../src/agent/runner.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
 import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement } from '../src/agent/types.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
@@ -237,7 +237,7 @@ describe('AgentHost competition contract', () => {
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
     expect(report.contractProblems).toEqual(['omp: case case-one references unknown execution receipts'])
-    expect(finalResultProblems(ompResult, await contractManifest(omp), [], []))
+    expect(settlementProblems(settlementInputFromResult(ompResult, { manifest: await contractManifest(omp) })))
       .toEqual(['case case-one references unknown execution receipts'])
   })
 
@@ -263,7 +263,7 @@ describe('AgentHost competition contract', () => {
     expect(report.verdict).toBe('invalid')
     // Every problem the comparator reports for that candidate is the authority's.
     expect(report.contractProblems).toEqual(['omp: product-failed case case-one is not classified as product-sourced'])
-    expect(finalResultProblems(claim, await contractManifest(omp), [], []))
+    expect(settlementProblems(settlementInputFromResult(claim, { manifest: await contractManifest(omp) })))
       .toEqual(report.contractProblems.map((problem) => problem.slice('omp: '.length)))
   })
 
@@ -306,7 +306,7 @@ describe('AgentHost competition contract', () => {
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
     expect(report.contractProblems).toEqual([`omp: environment-blocked case case-one references unknown environment requirement ${requirement.id}`])
-    expect(finalResultProblems(claim, await contractManifest(omp), [], []))
+    expect(settlementProblems(settlementInputFromResult(claim, { manifest: await contractManifest(omp) })))
       .toEqual(report.contractProblems.map((problem) => problem.slice('omp: '.length)))
   })
 

@@ -20,8 +20,14 @@ import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt, type AgentResumeWorkspacePaths } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
-import { settlementClaimsFromResult, settlementOutcomeForClaims, settlementProblems } from './result-settlement.js'
+import { parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
+import {
+  settlementApplyAuthority,
+  settlementClaimsFromResult,
+  settlementInputFromResult,
+  settlementOutcomeForClaims,
+  settlementProblems,
+} from './result-settlement.js'
 import { initialAgentTestState, updateAgentTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
@@ -169,48 +175,6 @@ async function runTurn(
   }
 }
 
-/**
- * The Runner's final settlement of a finished Result.
- *
- * An Adapter, not an implementation: it normalizes the Result's cases into the
- * one Case-claim representation and submits them to the Result settlement seam,
- * which owns every shared invariant — input identity, Case membership, Evidence
- * completeness, failure classification, environment requirement reconciliation,
- * and the top-level outcome. The Runner keeps only what is genuinely its own:
- * composing the Result from the per-epoch case records, applying the Mutation
- * Ledger and the recorded requirement rows, and reading execution receipts.
- * Because it asks the same seam the per-Epoch delivery Adapter asks, final
- * settlement can no longer accept a claim that delivery recovery rejects.
- *
- * The exported name is the historical entry point and stays until every caller
- * has been migrated onto the seam; the verification itself now lives only there.
- */
-export function finalResultProblems(
-  result: CodexTestAgentResult,
-  manifest: WorkflowIntakeManifest,
-  recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
-  executionReceipts: CodexTestExecutionReceipt[] = [],
-  replayProblems: string[] = [],
-): string[] {
-  return settlementProblems({
-    manifest,
-    claims: settlementClaimsFromResult(result.cases),
-    workflowId: result.workflowId,
-    sourceSha256: result.sourceSha256,
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
-    outcome: result.outcome,
-    summary: result.summary,
-    blockers: result.blockers,
-    productDefects: result.productDefects,
-    nextActions: result.nextActions,
-    reportedEnvironmentRequirements: result.environmentRequirements,
-    environmentRequirements: recordedEnvironmentRequirements,
-    executionReceipts,
-    replayProblems,
-  })
-}
-
 async function replayProblemsForResult(eventsPath: string, result: CodexTestAgentResult): Promise<string[]> {
   const passedCaseIds = new Set(result.cases.filter((item) => item.outcome === 'passed').map((item) => item.caseId))
   if (passedCaseIds.size === 0) return []
@@ -265,26 +229,6 @@ async function replayVerificationProblems(options: {
 
 function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
   return redactAgentJsonValue(value, secrets) as T
-}
-
-function enforceEnvironmentRequirements(
-  result: CodexTestAgentResult,
-  requirements: CodexTestEnvironmentRequirement[],
-): CodexTestAgentResult {
-  const environmentRequirements = requirements
-  const pending = environmentRequirements.filter((item) => item.status === 'pending')
-  if (pending.length === 0) return { ...result, environmentRequirements }
-  return {
-    ...result,
-    outcome: 'blocked',
-    summary: `${result.summary} Required environment prerequisites remain unavailable.`,
-    environmentRequirements,
-    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.condition)])],
-    nextActions: [...new Set([
-      ...result.nextActions,
-      ...pending.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
-    ])],
-  }
 }
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
@@ -559,7 +503,7 @@ function blockedResult(
       ? environmentRecoveryActions(environmentBlockers)
       : [details.nextAction],
   }
-  return enforceMutationLedger(result, ledger)
+  return settlementApplyAuthority(result, { mutationLedger: ledger })
 }
 
 function deliveryBlockedResult(
@@ -576,7 +520,7 @@ function deliveryBlockedResult(
     failureKind: 'execution',
     evidenceDescription: 'Structured delivery validation did not complete.',
   }, environmentRequirements, recordedCases)
-  return enforceMutationLedger({
+  return settlementApplyAuthority({
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
@@ -592,7 +536,7 @@ function deliveryBlockedResult(
     nextActions: environmentBlockers.length > 0
       ? environmentRecoveryActions(environmentBlockers)
       : ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
-  }, ledger)
+  }, { mutationLedger: ledger })
 }
 
 async function readMutationLedger(path: string): Promise<CodexTestMutationLedgerEntry[]> {
@@ -695,7 +639,7 @@ function aggregateCaseResults(options: {
   })
   // Deriving the top-level outcome is a settlement rule, so it is asked of the
   // seam rather than re-implemented here; the seam settles this same aggregate
-  // immediately afterwards through finalResultProblems.
+  // immediately afterwards through the settlement seam.
   const outcome = settlementOutcomeForClaims(settlementClaimsFromResult(cases))
   const counts = {
     passed: cases.filter((item) => item.outcome === 'passed').length,
@@ -995,20 +939,19 @@ export async function runAgentTest(
           )
           const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
           const replayProblems = await replayProblemsForResult(eventsPath, recovered.result)
-          const recoveryProblems = finalResultProblems(
-            recovered.result,
-            options.manifest,
+          const recoveryProblems = settlementProblems(settlementInputFromResult(recovered.result, {
+            manifest: options.manifest,
             environmentRequirements,
             executionReceipts,
             replayProblems,
-          )
+          }))
           const replayVerification = recoveryProblems.length === 0
             ? await replayVerificationProblems({ outputDirectory, eventsPath, result: recovered.result, manifest: options.manifest, workspace, profile: options.profile })
             : []
           if (recoveryProblems.length === 0 && replayVerification.length === 0) {
-            const result = redactAgentJsonArtifact(enforceMutationLedger(
-              enforceEnvironmentRequirements(recovered.result, environmentRequirements),
-              ledger,
+            const result = redactAgentJsonArtifact(settlementApplyAuthority(
+              recovered.result,
+              { environmentRequirements, mutationLedger: ledger },
             ), redactionSecrets)
             await writeCaseResultRecords(resultDirectory, options.manifest, 'recovered-delivery', result.cases)
             await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
@@ -1465,13 +1408,21 @@ export async function runAgentTest(
         const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
         const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
         const replayProblems = await replayProblemsForResult(eventsPath, normalized)
-        const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+        const problems = settlementProblems(settlementInputFromResult(normalized, {
+          manifest: scopedManifest,
+          environmentRequirements: scopedRequirements,
+          executionReceipts,
+          replayProblems,
+        }))
         const replayVerification = problems.length === 0
           ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
           : []
         deliveryProblems = [...problems, ...replayVerification]
         if (deliveryProblems.length > 0) return undefined
-        return enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+        return settlementApplyAuthority(normalized, {
+          environmentRequirements: scopedRequirements,
+          mutationLedger: await readMutationLedger(workspace.mutationLedgerPath),
+        })
       }
       // A complete epoch artifact is already an auditable delivery contract;
       // do not spend another model turn merely to re-serialize those facts.
@@ -1501,7 +1452,12 @@ export async function runAgentTest(
             environmentRequirements: scopedRequirements,
           }
           const replayProblems = await replayProblemsForResult(eventsPath, normalized)
-          deliveryProblems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+          deliveryProblems = settlementProblems(settlementInputFromResult(normalized, {
+            manifest: scopedManifest,
+            environmentRequirements: scopedRequirements,
+            executionReceipts,
+            replayProblems,
+          }))
           if (deliveryProblems.length > 0) continue
           deliveryProblems = await replayVerificationProblems({
             outputDirectory,
@@ -1512,7 +1468,10 @@ export async function runAgentTest(
             profile: options.profile,
           })
           if (deliveryProblems.length > 0) continue
-          epochResult = enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+          epochResult = settlementApplyAuthority(normalized, {
+            environmentRequirements: scopedRequirements,
+            mutationLedger: await readMutationLedger(workspace.mutationLedgerPath),
+          })
           break
         } catch (error) {
           const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
@@ -1562,7 +1521,10 @@ export async function runAgentTest(
             [],
           ).cases)
         }
-        const result = redactAgentJsonArtifact(enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger), redactionSecrets)
+        const result = redactAgentJsonArtifact(settlementApplyAuthority(
+          aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }),
+          { environmentRequirements: requirements, mutationLedger: ledger },
+        ), redactionSecrets)
         await writePrivateJson(resultPath, result)
         await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
         state = updateAgentTestState(state, {
@@ -1631,14 +1593,16 @@ export async function runAgentTest(
     const records = await readCaseResultRecords(resultDirectory, options.manifest)
     let result: CodexTestAgentResult
     try {
-      result = enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }), requirements), ledger)
-      const problems = finalResultProblems(
-        result,
-        options.manifest,
-        requirements,
-        await readExecutionReceipts(workspace.executionReceiptsPath),
-        await replayProblemsForResult(eventsPath, result),
+      result = settlementApplyAuthority(
+        aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }),
+        { environmentRequirements: requirements, mutationLedger: ledger },
       )
+      const problems = settlementProblems(settlementInputFromResult(result, {
+        manifest: options.manifest,
+        environmentRequirements: requirements,
+        executionReceipts: await readExecutionReceipts(workspace.executionReceiptsPath),
+        replayProblems: await replayProblemsForResult(eventsPath, result),
+      }))
       if (problems.length > 0) throw new Error(`Adaptive epoch aggregation failed deterministic validation: ${problems.join('; ')}`)
     } catch (error) {
       result = deliveryBlockedResult(

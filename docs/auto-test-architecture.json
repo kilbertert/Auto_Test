@@ -50,7 +50,7 @@
     { "id": "playwright", "type": "external",  "label": "Playwright MCP",  "sublabel": "browser automation",   "pos": [1060, 320], "size": [180, 64] },
 
     { "id": "delivery",   "type": "security",  "label": "delivery turn",   "sublabel": "codexTestResultSchema","pos": [780,  440], "size": [200, 64], "tag": "2nd turn" },
-    { "id": "validation", "type": "security",  "label": "finalResultProblems",  "sublabel": "确定性校验",       "pos": [1060, 440], "size": [180, 64], "tag": "mutation ledger" },
+    { "id": "validation", "type": "security",  "label": "settlementProblems",  "sublabel": "确定性校验",       "pos": [1060, 440], "size": [180, 64], "tag": "mutation ledger" },
     { "id": "workbook",   "type": "database",  "label": "result workbook",   "sublabel": "原件副本·未脱敏",   "pos": [1320, 200], "size": [180, 64], "tag": "xlsx 输出" },
     { "id": "replaycompiler","type": "cloud",  "label": "mcp-replay",      "sublabel": "compiler/mcp-replay", "pos": [1320, 440], "size": [180, 64], "tag": "→ Playwright 回归" }
   ],
