@@ -160,6 +160,8 @@ npm run easy -- run \
 
 需要比较两个宿主时，先用同一输入包执行两个独立 Run，再执行 `npm run agent:compare -- --run <codex-run> --run <omp-run>`。比较器只读取结构化结果、证据、Mutation Ledger 和已记录的环境需求行，不启动新的 Agent，也不重复业务写入。两个 Run 必须同时提供 immutable `test-manifest.json`、一致的 `workflowId`/`sourceSha256`、Excel 与同名 sidecar/image 的 `input-bundle.json`、Manifest hash、Environment selection hash、平台、架构、Auto-Test 包版本、commit 和 `agent-host-selection.json`。缺少或不一致的任一合同输入时，比较器会 fail closed，结果为 `invalid`，不会继续给出宿主等价性结论。逐 case 的合同判定（身份、case 覆盖、证据、失败分类、回执与环境需求引用、终态推导）由 `src/agent/result-settlement.ts` 这一唯一结算 seam 给出，与 Runner 最终结算同一实现，因此比较器不会接受 Runner 会拒绝的同一条 claim；比较器自身只保留 IO 与比较职责（证据路径是否存在/越界、候选间冻结输入是否一致）。
 
+验收报告（`npm run report:workflow`）也不自行判定合同问题：验收证据可用 `runDirectory` 指明本次验收覆盖的 AgentHost Run，报告 CLI 读取该 Run 的 immutable `test-manifest.json`、`codex-agent.result.json`、`.agent-private/environment-requirements.json` 与 `agent-workspace/execution-receipts.json`，经 Runner 侧入口取回同一个 settlement problem 列表，报告只原样引用它（`src/workflow` 不允许依赖 `src/agent`，因此读产物与问 seam 的 Adapter 职责留在 CLI）。没有 `runDirectory` 时合同问题为空；指明的 Run 读不到会 fail closed，而不是当成没有问题。报告序列化前仍走统一的 `report-redact` 规则链，新增列表不扩大泄漏面。
+
 把第一个 `--run` 固定为已验证 baseline，并提供绑定同一 immutable input 的 oracle，即可得到最小 eval scorecard：逐 case 命中率、八类失败模式分布、证据/回执/Mutation 数量、耗时、聚合 token（输入/缓存输入/输出）、线程代数/恢复次数/epoch 数，以及相对 baseline 的 delta。CI 或故障 probe 使用 `--require-oracle-match`；任何候选没有完整命中 oracle（包括“本应 blocked/product_failed 却返回 passed”）都会返回非零：
 
 ```bash

@@ -96,7 +96,7 @@
 | 边界 | 载体 | 保证什么 |
 |---|---|---|
 | 输入身份不可漂移 | `agentTestPrompt` 中的 `workflowId` + `sourceSha256`（`src/agent/prompt.ts`） | 整轮 Run 的目标输入被冻结，模型改不了 |
-| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复与跨宿主比较 |
+| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复、跨宿主比较与验收报告 |
 | 副作用必须可核销 | `enforceMutationLedger`（`src/agent/result.ts:218`） | Ledger 有 `pending` 时该 Run 不能被报成通过——**是账本，不是模型，决定终态** |
 | 环境阻断必须可恢复 | `enforceEnvironmentRequirements`（`src/agent/runner.ts:347`） | 环境类阻断必须关联同一 case 的已保存证据需求，不能用通用证据批量造结论 |
 | 权限只在 Profile | Environment Profile 的 `policy.allowWrite` / `allowDestructive` | 写权限不由推断的 case 风险替代，也不由提示词放宽 |
@@ -248,7 +248,7 @@ flowchart TB
 | `environment-profile.ts` | 环境注册表：origins、auth、`policy.allowWrite/allowDestructive`；加载期强制不变量 |
 | `model-profile.ts` | 模型注册表：宿主中立的供应商描述，Profile → `AgentModelProviderDescriptor` 的翻译（520 行） |
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
-| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族 |
+| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族。合同问题不在此处判定：证据用 `runDirectory` 指明本次验收覆盖的 Run，由 `cli/workflow-acceptance-report.ts` 读产物并向 `result-settlement.ts` 取同一列表（`workflow` 层不允许依赖 `agent` 层，见 `architecture.yml`） |
 
 #### L4 `src/agent` — 执行外壳（最大层，9865 行 / 40 文件）
 
@@ -263,7 +263,7 @@ flowchart TB
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
 | `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
-| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复、跨宿主比较都只经由它判定 |
+| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复、跨宿主比较、验收报告都只经由它判定 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
