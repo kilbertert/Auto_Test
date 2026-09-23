@@ -1,6 +1,6 @@
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { relative, resolve } from 'node:path'
+import { relative, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { EnvironmentProfile } from '../src/workflow/environment-profile.js'
 import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
@@ -24,6 +24,11 @@ async function readSourceFiles(directory: string): Promise<string[]> {
   return entries
     .filter((entry) => entry.endsWith('.ts'))
     .map((entry) => resolve(root, directory, entry))
+}
+
+/** Repo-relative path with forward slashes, so assertions hold on Windows too. */
+function repoRelative(file: string): string {
+  return relative(root, file).split(sep).join('/')
 }
 
 afterEach(async () => {
@@ -240,7 +245,7 @@ describe('RunArtifactStore journal layout ownership', () => {
       'execution-receipts.json',
     ]) {
       const owners = sources.filter(({ text }) => text.includes(`'${artifactName}'`) || text.includes(`"${artifactName}"`))
-      expect(owners.map(({ file }) => relative(root, file)).sort(), artifactName).toEqual(['src/agent/run-artifact-store.ts'])
+      expect(owners.map(({ file }) => repoRelative(file)).sort(), artifactName).toEqual(['src/agent/run-artifact-store.ts'])
     }
   })
 
@@ -253,7 +258,7 @@ describe('RunArtifactStore journal layout ownership', () => {
     )
     for (const module of ['case-result-store.js', 'environment-requirements.js']) {
       const importers = sources.filter(({ text }) => new RegExp(`from '(\\.\\.?/)+${module.replace('.', '\\.')}'`).test(text))
-      expect(importers.map(({ file }) => relative(root, file))).toEqual([])
+      expect(importers.map(({ file }) => repoRelative(file))).toEqual([])
     }
   })
 })
