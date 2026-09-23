@@ -2,6 +2,7 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseAgentTestResult } from '../agent/result.js'
 import { settlementInputFromResult, settlementProblems } from '../agent/result-settlement.js'
 import type { CodexTestAgentResult, CodexTestEnvironmentRequirement, CodexTestExecutionReceipt } from '../agent/types.js'
 import { redactReportValue } from '../workflow/report-redact.js'
@@ -28,32 +29,66 @@ async function readRunJsonIfPresent<T>(path: string): Promise<T | undefined> {
 }
 
 /**
+ * A private recorded-row artifact settlement reconciles claims against. A row
+ * file that is not an array of records is a broken run, not a run with no rows,
+ * so it fails closed with this Adapter's own diagnostic instead of reaching the
+ * seam as a value its rules cannot read.
+ */
+async function readRunRows<T>(path: string): Promise<T[]> {
+  const rows = await readRunJsonIfPresent<T[]>(path)
+  if (rows === undefined) return []
+  if (!Array.isArray(rows) || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
+    throw new Error(`验收运行产物结构无效 ${path}：期望记录 JSON 数组`)
+  }
+  return rows
+}
+
+/**
+ * The settled Result of the run: untrusted input, so it has to be a schema-valid
+ * Result before settlement can read its cases. A malformed one fails closed with
+ * this Adapter's own diagnostic instead of as a read of a transport field that
+ * was never there.
+ */
+async function readSettledResult(path: string): Promise<CodexTestAgentResult> {
+  const result = await readRunJson<CodexTestAgentResult>(path)
+  try {
+    return parseAgentTestResult(JSON.stringify(result))
+  } catch (error) {
+    throw new Error(`验收运行产物结构无效 ${path}：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/**
  * The Adapter half of acceptance reporting.
  *
  * `src/workflow` must not depend on `src/agent` (architecture.yml), so the
  * acceptance report stays a pure consumer: this CLI reads the run the
- * acceptance names — its immutable Manifest, its settled Result, and the
- * authority rows the Runner's own settlement reconciles claims against — and
- * asks the Runner's settlement entry point for the verdict. The report then
- * quotes that problem list instead of adjudicating contract problems itself, so
- * a report and the Runner's diagnostics can never disagree about a Case claim.
+ * acceptance names — its settled Result and the authority rows the Runner's own
+ * settlement reconciles claims against — and asks the Runner's settlement entry
+ * point for the verdict. The report then quotes that problem list instead of
+ * adjudicating contract problems itself, so a report and the Runner's
+ * diagnostics can never disagree about a Case claim.
+ *
+ * The run is measured against the accepted intake's own immutable manifest, so
+ * the seam's identity rules decide whether this run covered the accepted test
+ * material: a run of an earlier revision of the same workbook shares the
+ * workflowId and can only be told apart by its source hash.
  *
  * Reading these artifacts fails closed: a run the acceptance names but cannot
  * read is a broken input, not a run with no contract problems.
  */
-export async function acceptanceRunContractProblems(runDirectory: string): Promise<string[]> {
-  const manifest = await readRunJson<WorkflowIntakeManifest>(resolve(runDirectory, 'agent-workspace', 'test-manifest.json'))
-  const result = await readRunJson<CodexTestAgentResult>(resolve(runDirectory, 'codex-agent.result.json'))
-  const environmentRequirements = await readRunJsonIfPresent<CodexTestEnvironmentRequirement[]>(
+export async function acceptanceRunContractProblems(runDirectory: string, intake: WorkflowIntakeManifest): Promise<string[]> {
+  const settled = await readSettledResult(resolve(runDirectory, 'codex-agent.result.json'))
+  const environmentRequirements = await readRunRows<CodexTestEnvironmentRequirement>(
     resolve(runDirectory, '.agent-private', 'environment-requirements.json'),
   )
-  const executionReceipts = await readRunJsonIfPresent<CodexTestExecutionReceipt[]>(
+  const executionReceipts = await readRunRows<CodexTestExecutionReceipt>(
     resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'),
   )
-  return settlementProblems(settlementInputFromResult(result, {
-    manifest,
-    environmentRequirements: environmentRequirements ?? [],
-    executionReceipts: executionReceipts ?? [],
+  return settlementProblems(settlementInputFromResult(settled, {
+    manifest: intake,
+    environmentRequirements,
+    executionReceipts,
   }))
 }
 
@@ -71,7 +106,7 @@ async function main(): Promise<void> {
   const workflow = JSON.parse(await readFile(resolve(intakePath), 'utf8')) as WorkflowIntakeManifest
   const evidence = JSON.parse(await readFile(resolve(evidencePath), 'utf8')) as WorkflowAcceptanceEvidence
   const contractProblems = evidence.runDirectory
-    ? await acceptanceRunContractProblems(resolve(evidence.runDirectory))
+    ? await acceptanceRunContractProblems(resolve(evidence.runDirectory), workflow)
     : []
   const report = redactReportValue<WorkflowAcceptanceReport>(buildWorkflowAcceptanceReport(workflow, evidence, contractProblems))
   const outputJson = resolve(valueAfter(args, '--output-json') ?? `artifacts/acceptance/${workflow.workflowId}.acceptance.json`)

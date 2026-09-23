@@ -92,8 +92,6 @@ export interface ResultSettlementInput {
   nextActions: readonly string[]
   /** Environment requirement projection the submission reports, reconciled against the recorded rows. */
   reportedEnvironmentRequirements?: readonly CodexTestEnvironmentRequirement[]
-  /** Runner-owned Mutation Ledger rows; a pending row blocks the run it belongs to. */
-  mutationLedger?: readonly CodexTestMutationLedgerEntry[]
   /** Recorded environment requirements; the authority for requirement reconciliation. */
   environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
   /** Recorded execution receipts; the authority for receipt references. */
@@ -380,29 +378,35 @@ export function settlementClaimsFromDelivery(
   }))
 }
 
-/** Compose the canonical Result of a submission that passed every invariant. */
+/**
+ * Compose the canonical Result of a submission that passed every invariant.
+ *
+ * The Runner-owned authority rows are applied by the one composition an
+ * Adapter-composed Result also goes through, so a submission that carries
+ * recorded environment requirements is worded by the same rules as a fail-closed
+ * fallback Result. The Mutation Ledger is never part of a submission: it belongs
+ * to the Runner, which applies it through `settlementApplyAuthority` once the
+ * verdict has already weighed the claims.
+ */
 function canonicalResult(input: ResultSettlementInput): CodexTestAgentResult {
-  const ledger = input.mutationLedger ?? []
-  const environmentRequirements = input.environmentRequirements ?? []
-  const pendingRequirements = environmentRequirements.filter((item) => item.status === 'pending')
-  const pendingMutations = ledger.filter((item) => item.status === 'pending')
-  const claims = blockCasesForPendingMutations(input.claims, pendingMutations)
-  const narrative = authorityNarrative(input, pendingRequirements, pendingMutations)
-  return {
+  const composed: CodexTestAgentResult = {
     version: '1.0',
     workflowId: input.workflowId,
     sourceSha256: input.sourceSha256,
-    outcome: outcomeForClaims(claims),
-    summary: narrative.summary,
+    outcome: outcomeForClaims(input.claims),
+    summary: input.summary,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
-    cases: claims.map((claim) => caseResultFromClaim(claim, input.manifest)),
-    mutations: mutationProjection(ledger),
-    environmentRequirements: [...environmentRequirements],
-    blockers: narrative.blockers,
+    cases: input.claims.map((claim) => caseResultFromClaim(claim, input.manifest)),
+    mutations: [],
+    environmentRequirements: [],
+    blockers: [...input.blockers],
     productDefects: [...input.productDefects],
-    nextActions: narrative.nextActions,
+    nextActions: [...input.nextActions],
   }
+  return input.environmentRequirements
+    ? settlementApplyAuthority(composed, { environmentRequirements: input.environmentRequirements })
+    : composed
 }
 
 /**
@@ -514,20 +518,53 @@ function outcomeForClaims(claims: readonly SettlementCaseClaim[]): CodexTestOutc
   return 'passed'
 }
 
-function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value) => right.includes(value))
+function sameStringSet(reported: readonly string[], recorded: readonly string[]): boolean {
+  return reported.length === recorded.length && reported.every((value) => recorded.some((candidate) => sameRecordedValue(candidate, value)))
 }
 
+/**
+ * Reconcile what a settled Result reports against the authority rows recorded
+ * for the same run.
+ *
+ * Every entry point that re-reads a Result reads the Run's *redacted* artifact,
+ * while the recorded rows stay unredacted — a condition or an evidence path that
+ * carried a run secret therefore arrives here as a placeholder. Comparing such a
+ * value verbatim would make the cross-host comparison and the acceptance report
+ * reject a settlement the Runner itself accepted, so a redacted span is
+ * reconciled up to the placeholder: the literal text around it must still match
+ * the recorded row, and the span it hides must be non-empty. A value carrying no
+ * placeholder is compared exactly, which is what the Runner's own in-memory
+ * settlement always sees.
+ */
 function sameEnvironmentRequirement(
-  left: CodexTestEnvironmentRequirement,
-  right: CodexTestEnvironmentRequirement,
+  reported: CodexTestEnvironmentRequirement,
+  recorded: CodexTestEnvironmentRequirement,
 ): boolean {
-  return left.id === right.id &&
-    left.kind === right.kind &&
-    left.origin === right.origin &&
-    left.condition === right.condition &&
-    left.status === right.status &&
-    left.requestedAt === right.requestedAt &&
-    sameStringSet(left.caseIds, right.caseIds) &&
-    sameStringSet(left.evidence, right.evidence)
+  return reported.id === recorded.id &&
+    reported.kind === recorded.kind &&
+    reported.origin === recorded.origin &&
+    sameRecordedValue(recorded.condition, reported.condition) &&
+    reported.status === recorded.status &&
+    reported.requestedAt === recorded.requestedAt &&
+    sameStringSet(reported.caseIds, recorded.caseIds) &&
+    sameStringSet(reported.evidence, recorded.evidence)
+}
+
+/**
+ * Compare a recorded authority value against what the settled Result reports.
+ *
+ * The artifact a reader submits is redacted, so a value that carried a run secret
+ * arrives as the placeholder redaction wrote: `evidence/round-<redacted-secret>.png`
+ * for `evidence/round-13800000000.png`. Such a value is reconciled up to the
+ * placeholder — the literal text around it must still match, and the span it
+ * hides must be non-empty. Anything carrying no placeholder is compared exactly,
+ * which is what the Runner's own in-memory settlement always sees.
+ */
+function sameRecordedValue(recorded: string, reported: string): boolean {
+  if (recorded === reported) return true
+  const segments = reported.split(/<redacted[^>]*>/g)
+  // A value with no placeholder at all is either identical or a real drift.
+  if (segments.length === 1) return false
+  const pattern = segments.map((segment) => segment.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]+')
+  return new RegExp(`^${pattern}$`).test(recorded)
 }

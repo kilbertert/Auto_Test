@@ -246,7 +246,7 @@ flowchart TB
 | `input/headers.ts` / `input/text.ts` | 表头别名归一、文本归一，以及通用脱敏原语：`redactSensitiveContent`（PII/关键词）与 `redactCredentialValues`（JWT、keyed credential、Authorization/Bearer/cookie 头）。**两类 surface 共用这一份凭据规则**，所以报告不会漏掉 Evidence 已抑制的值 |
 | `compiler/mcp-replay.ts` | 把一段 MCP Playwright 调用轨迹编译为回归 spec，并**拒绝**任何不稳定片段（见推论六） |
 
-#### L3 `workflow` — 输入编制、Profile 与验收报告（2359 行）
+#### L3 `workflow` — 输入编制、Profile 与验收报告（2390 行）
 
 | 模块 | 职责 |
 |---|---|
@@ -256,13 +256,13 @@ flowchart TB
 | `environment-profile.ts` | 环境注册表：origins、auth、`policy.allowWrite/allowDestructive`；加载期强制不变量 |
 | `model-profile.ts` | 模型注册表：宿主中立的供应商描述，Profile → `AgentModelProviderDescriptor` 的翻译（520 行） |
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
-| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族。合同问题不在此处判定：证据用 `runDirectory` 指明本次验收覆盖的 Run，由 `cli/workflow-acceptance-report.ts` 读产物并向 `result-settlement.ts` 取同一列表（`workflow` 层不允许依赖 `agent` 层，见 `architecture.yml`） |
+| `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族。合同问题不在此处判定：证据用 `runDirectory` 指明本次验收覆盖的 Run，由 `cli/workflow-acceptance-report.ts` 读该 Run 的 `codex-agent.result.json` 与两类记录行，对照本次验收的 immutable manifest 向 `result-settlement.ts` 取同一列表——身份是否属于同一份测试材料也由 seam 的身份规则判定，早期修订版不会因为 `workflowId` 相同而被当成干净通过（`workflow` 层不允许依赖 `agent` 层，见 `architecture.yml`） |
 
-#### L4 `src/agent` — 执行外壳（最大层，10352 行 / 38 文件）
+#### L4 `src/agent` — 执行外壳（最大层，10416 行 / 38 文件）
 
 | 模块 | 职责 |
 |---|---|
-| `runner.ts` | **整个产品的心脏**（1691 行）：准备 → epoch 规划 → 轮次循环 → 结算判定 → 聚合。最终结算只把 Result 归一化并提交 `result-settlement.ts`，兜底 Result 只请 seam 套用权威行，自身不再复制合同规则 |
+| `runner.ts` | **整个产品的心脏**（1721 行）：准备 → epoch 规划 → 轮次循环 → 结算判定 → 聚合。最终结算只把 Result 归一化并提交 `result-settlement.ts`，兜底 Result 只请 seam 套用权威行，自身不再复制合同规则 |
 | `host.ts` | `AgentHost` 抽象：唯一执行接缝（`start` / `resume` / `probe` / `capabilities` / `modelProvider`） |
 | `codex-host.ts` / `omp-host.ts` | 两个内置宿主实现：Codex 走 SDK 进程内，OMP 走 stdio JSON-RPC |
 | `codex-provider.ts` / `omp-provider.ts` / `provider-runtime.ts` | Provider 适配器：把同一 descriptor 翻译成各宿主的隔离配置、模型目录与环境（**唯一允许接触宿主格式的地方**） |
@@ -271,7 +271,7 @@ flowchart TB
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
 | `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
-| `result-settlement.ts` | 结果合同唯一结算 seam（533 行）：纯同步模块，判定身份、case 覆盖、证据、失败分类、回执与环境需求引用、终态推导，并对 Runner 权威行（Mutation Ledger / 已记录环境需求）做同一套合成——返回规范 Result 或非空 problem 列表。Runner 最终结算、逐 epoch 交付恢复、跨宿主比较、验收报告，以及 Runner 的 fail-closed 兜底 Result 都只经由它，模块外没有第二处实现同一不变量 |
+| `result-settlement.ts` | 结果合同唯一结算 seam（570 行）：纯同步模块，判定身份、case 覆盖、证据、失败分类、回执与环境需求引用、终态推导，并对 Runner 权威行（Mutation Ledger / 已记录环境需求）做同一套合成——返回规范 Result 或非空 problem 列表。Result 的环境需求投影与已记录行的核对按脱敏占位符容差进行：Run 产物里的 `<redacted-secret>` 只豁免它遮住的跨度，占位符外的文字仍须一致，因此读脱敏产物的比较器与验收报告不会和 Runner 对同一次干净的 Run 得出相反结论。Runner 最终结算、逐 epoch 交付恢复、跨宿主比较、验收报告，以及 Runner 的 fail-closed 兜底 Result 都只经由它，模块外没有第二处实现同一不变量 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
@@ -295,7 +295,7 @@ flowchart TB
 | `usability/result-summary.ts` | 测试人员摘要：确定性投影同一份结果，不调用新模型 |
 | `eval/eval-suite.ts` | 评测套件（多宿主同输入对比） |
 
-#### L5 `src/cli` — 入口（1821 行）
+#### L5 `src/cli` — 入口（1911 行）
 
 | 模块 | 职责 |
 |---|---|

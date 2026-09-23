@@ -166,9 +166,6 @@ function submissionInput(options: {
     blockers: [...new Set(claims.filter((claim) => claim.outcome === 'blocked').map((claim) => claim.summary))].slice(0, 50),
     productDefects: [...new Set(claims.filter((claim) => claim.outcome === 'product_failed').map((claim) => claim.summary))].slice(0, 50),
     nextActions: outcome === 'passed' ? [] : [DELIVERY_NEXT_ACTION],
-    // The artifact's own ledger projection was checked above; the authoritative
-    // ledger belongs to the Runner and is settled with the final Result.
-    mutationLedger: [],
     ...(options.environmentRequirements ? { environmentRequirements: options.environmentRequirements } : {}),
     ...(options.executionReceipts ? { executionReceipts: options.executionReceipts } : {}),
   }

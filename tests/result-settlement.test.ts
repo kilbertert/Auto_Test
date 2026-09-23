@@ -324,56 +324,43 @@ describe('environment requirement reconciliation', () => {
       ...blockedByEnvironment, reportedEnvironmentRequirements: [requirement()], environmentRequirements: [requirement()],
     }))).toEqual([])
   })
-})
 
-describe('mutation ledger enforcement', () => {
-  it('forces a pending mutation into a blocked case with mutation evidence', () => {
-    const settlement = settleResult(input({
-      claims: [claim()],
-      mutationLedger: [ledgerEntry({ status: 'pending' })],
-    }))
-
-    expect(settlement.problems).toEqual([])
-    expect(settlement.result?.outcome).toBe('blocked')
-    expect(settlement.result?.mutations).toEqual([{
-      id: 'mutation-1', caseId: 'case-one', description: 'Created a row', risk: 'write', status: 'pending', evidence: ['evidence/mutation-1.png'],
-    }])
-    expect(settlement.result?.cases[0]).toMatchObject({
-      outcome: 'blocked',
-      failureSource: 'agent_execution',
-      failureKind: 'execution',
-      summary: 'verified Unrecovered business mutations remain for this case.',
+  it('reconciles the values a settled artifact had redacted against the recorded rows', () => {
+    const recorded = requirement({
+      condition: '填写测试账号 13800000000 需要目标权限',
+      evidence: ['evidence/round-13800000000.png'],
     })
-    expect(settlement.result?.cases[0]?.evidence[1]).toEqual({ kind: 'mutation', description: 'Pending mutation mutation-1: Created a row' })
-    expect(settlement.result?.summary).toBe('settled Unrecovered business mutations remain.')
-    expect(settlement.result?.blockers).toEqual(['Unrecovered mutations: mutation-1'])
-  })
-
-  it('keeps an already-blocked classification and reconciles pending requirements first', () => {
-    const settlement = settleResult(input({
-      outcome: 'blocked', blockers: ['Target write permission'], environmentRequirements: [requirement()],
+    const redacted = requirement({
+      condition: '填写测试账号 <redacted-secret> 需要目标权限',
+      evidence: ['evidence/round-<redacted-secret>.png'],
+    })
+    const settlement = {
+      outcome: 'blocked' as const,
+      blockers: ['Target write permission'],
       claims: [claim({ outcome: 'blocked', failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'] })],
-      mutationLedger: [ledgerEntry({ status: 'pending' })],
-    }))
+    }
 
-    expect(settlement.problems).toEqual([])
-    expect(settlement.result?.cases[0]).toMatchObject({ failureSource: 'environment', failureKind: 'environment' })
-    expect(settlement.result?.summary).toBe('settled Required environment prerequisites remain unavailable. Unrecovered business mutations remain.')
-    expect(settlement.result?.blockers).toEqual(['Target write permission', 'Unrecovered mutations: mutation-1'])
-    expect(settlement.result?.nextActions).toEqual(['Provide the required permission prerequisite: Target write permission, then resume the same run.'])
-  })
+    // A reader of the redacted codex-agent.result.json must reach the same clean
+    // verdict the Runner reached on the unredacted rows it settled against.
+    expect(settlementProblems(input({
+      ...settlement, reportedEnvironmentRequirements: [redacted], environmentRequirements: [recorded],
+    }))).toEqual([])
 
-  it('projects a fully recovered ledger without changing the submitted outcome', () => {
-    const settlement = settleResult(input({
-      claims: [claim()],
-      mutationLedger: [ledgerEntry(), ledgerEntry({ id: 'mutation-2', status: 'compensated' })],
-    }))
-
-    expect(settlement.problems).toEqual([])
-    expect(settlement.result?.outcome).toBe('passed')
-    expect(settlement.result?.summary).toBe('settled')
-    expect(settlement.result?.cases[0]).toEqual(resultCase())
-    expect(settlement.result?.mutations.map((item) => item.status)).toEqual(['accepted', 'compensated'])
+    // The placeholder only excuses the span it hides: the text around it still
+    // has to match, and a value with no placeholder still has to match exactly.
+    expect(settlementProblems(input({
+      ...settlement,
+      reportedEnvironmentRequirements: [{ ...redacted, condition: '填写测试账号 <redacted-secret> 需要其他权限' }],
+      environmentRequirements: [recorded],
+    }))).toContain('final result environment requirement env-1 does not match the recorded requirement')
+    expect(settlementProblems(input({
+      ...settlement,
+      reportedEnvironmentRequirements: [{ ...redacted, evidence: ['evidence/session-<redacted-secret>.png'] }],
+      environmentRequirements: [recorded],
+    }))).toContain('final result environment requirement env-1 does not match the recorded requirement')
+    expect(settlementProblems(input({
+      ...settlement, reportedEnvironmentRequirements: [redacted], environmentRequirements: [requirement()],
+    }))).toContain('final result environment requirement env-1 does not match the recorded requirement')
   })
 })
 
@@ -501,6 +488,26 @@ describe('authority rows applied to a composed result', () => {
     expect(applied.environmentRequirements).toEqual([requirement()])
   })
 
+  it('keeps an already-blocked classification and reconciles pending requirements first', () => {
+    const blocked = composedResult({
+      outcome: 'blocked',
+      blockers: ['Target write permission'],
+      cases: [resultCase({
+        outcome: 'blocked', summary: 'Target write permission',
+        failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'],
+      })],
+    })
+    const applied = settlementApplyAuthority(blocked, {
+      environmentRequirements: [requirement()],
+      mutationLedger: [ledgerEntry({ status: 'pending' })],
+    })
+
+    expect(applied.cases[0]).toMatchObject({ failureSource: 'environment', failureKind: 'environment' })
+    expect(applied.summary).toBe('settled Required environment prerequisites remain unavailable. Unrecovered business mutations remain.')
+    expect(applied.blockers).toEqual(['Target write permission', 'Unrecovered mutations: mutation-1'])
+    expect(applied.nextActions).toEqual(['Provide the required permission prerequisite: Target write permission, then resume the same run.'])
+  })
+
   it('leaves the rows it was not handed exactly as the adapter wrote them', () => {
     const withRequirements = composedResult({ environmentRequirements: [requirement({ status: 'satisfied' })] })
 
@@ -508,28 +515,28 @@ describe('authority rows applied to a composed result', () => {
     expect(settlementApplyAuthority(composedResult(), { mutationLedger: [] })).toEqual(composedResult())
   })
 
-  it('composes exactly what the canonical settlement composes for the same rows', () => {
-    const ledger = [ledgerEntry({ status: 'pending' })]
+  it('composes exactly what the canonical settlement composes for the same recorded rows', () => {
     const requirements = [requirement()]
     const environmentClaim = claim({
       outcome: 'blocked', failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'],
     })
     const canonical = settleResult(input({
       outcome: 'blocked', blockers: ['Target write permission'], claims: [environmentClaim],
-      environmentRequirements: requirements, mutationLedger: ledger,
+      environmentRequirements: requirements,
     }))
 
     expect(canonical.problems).toEqual([])
     // The Runner's fail-closed fallbacks compose through the same authority rows
     // the canonical Result does, so a fallback can never word a pending row
-    // differently from a settled run.
+    // differently from a settled run. The Mutation Ledger is not part of a
+    // submission: the Runner applies it after the verdict, once.
     const composed = settlementApplyAuthority(composedResult({
       outcome: 'blocked',
       blockers: ['Target write permission'],
       cases: [resultCase({
         outcome: 'blocked', failureSource: 'environment', failureKind: 'environment', environmentRequirementIds: ['env-1'],
       })],
-    }), { environmentRequirements: requirements, mutationLedger: ledger })
+    }), { environmentRequirements: requirements })
     expect(composed).toEqual(canonical.result)
   })
 })

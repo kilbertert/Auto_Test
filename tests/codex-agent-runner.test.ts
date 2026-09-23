@@ -410,6 +410,69 @@ describe('adaptive Codex epochs', () => {
     expect(run.result?.environmentRequirements).toEqual([expect.objectContaining({ id: requirementId, status: 'pending' })])
   })
 
+  it('still settles a blocked run when the recorded execution receipts cannot be read', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-unreadable-receipts-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    // A turn whose delivery carries no browser action, so nothing rewrites the
+    // corrupt receipt log this scenario depends on.
+    const quietTurn = (text: string): { events: AsyncGenerator<ThreadEvent> } => ({
+      events: (async function* () {
+        yield { type: 'thread.started', thread_id: 'thread-unreadable-receipts' } as ThreadEvent
+        yield { type: 'item.completed', item: { id: 'message-unreadable-receipts', type: 'agent_message', text } } as ThreadEvent
+        yield { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 8 } } as ThreadEvent
+      })(),
+    })
+
+    const run = await runAgentTest({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-unreadable-receipts',
+        runStreamed: async (_input, options) => {
+          if (!options?.outputSchema) {
+            // A corrupt private receipt log with no epoch artifact to recover: the
+            // recorded rows cannot be read at all, so the run has nothing to
+            // settle against and must still reach a fail-closed Result.
+            await writeFile(resolve(outputDirectory, 'agent-workspace', 'execution-receipts.json'), '{"corrupt":')
+            return quietTurn('execution complete')
+          }
+          return quietTurn(JSON.stringify({
+            version: '1.0', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256, outcome: 'passed', summary: '完成',
+            startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+            cases: [{
+              caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证',
+              failureSource: 'product', failureKind: 'assertion',
+              evidence: [{ kind: 'observation', description: '现场观察' }],
+            }],
+            mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+          }))
+        },
+      }),
+    })
+
+    // The unreadable row file is a recorded delivery problem, not a framework
+    // crash: the observation plane still gets a blocked Result it can report.
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases.map((item) => item.outcome)).toEqual(['blocked'])
+    const epochResult = JSON.parse(await readFile(
+      resolve(outputDirectory, '.agent-private', 'execution-epochs', 'epoch-0001.result.json'), 'utf8',
+    )) as { outcome: string; blockers: string[] }
+    expect(epochResult.outcome).toBe('blocked')
+    expect(epochResult.blockers.join('\n')).toContain('Recorded execution receipts could not be read')
+    expect(JSON.parse(await readFile(resolve(outputDirectory, 'codex-agent.result.json'), 'utf8')).outcome).toBe('blocked')
+    expect(JSON.parse(await readFile(resolve(outputDirectory, 'codex-agent.state.json'), 'utf8')).status).toBe('completed')
+  }, 60_000)
+
   it('rotates one incompatible physical session while preserving the logical run and pending Ledger', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rotation-'))
     directories.push(directory)

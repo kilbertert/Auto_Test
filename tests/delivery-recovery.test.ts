@@ -197,7 +197,8 @@ describe('Codex delivery recovery', () => {
     expect(recovered.result?.blockers).toEqual(['Test data unavailable', 'No writable test data'])
   })
 
-  it('fails closed when an epoch artifact claims a case the manifest does not define', async () => {    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-unexpected-'))
+  it('fails closed when an epoch artifact claims a case the manifest does not define', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-unexpected-'))
     directories.push(directory)
     const common = {
       version: '1.0', kind: 'case-results', workflowId: 'fixture-workflow', sourceSha256: 'a'.repeat(64),

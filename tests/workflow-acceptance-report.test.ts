@@ -7,7 +7,12 @@ import { acceptanceRunContractProblems } from '../src/cli/workflow-acceptance-re
 import { redactReportValue } from '../src/workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../src/workflow/acceptance-report.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
-import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest } from '../src/workflow/types.js'
+import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest, WorkflowPhaseDraft } from '../src/workflow/types.js'
+
+const acceptedPhase: WorkflowPhaseDraft = {
+  id: 'phase-1', sourceCaseId: 'phase-1', title: 'Charge', sourceRow: 2, risk: 'write',
+  steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
+}
 
 const workflow: WorkflowIntakeManifest = {
   version: '1.0',
@@ -16,7 +21,7 @@ const workflow: WorkflowIntakeManifest = {
   source: { format: 'xlsx', fileName: 'flow.xlsx', sheetName: 'Flow', sha256: 'a'.repeat(64) },
   targetUrls: ['https://example.test/'],
   requiredCapabilities: ['multiOrigin'],
-  phases: [],
+  phases: [acceptedPhase],
   embeddedImages: [],
   supplementalImages: [],
   review: { status: 'draft', reasons: [] },
@@ -164,31 +169,16 @@ describe('workflow acceptance report', () => {
   })
 })
 
-const runSha256 = 'c'.repeat(64)
-
+/** The immutable manifest a run copies into its own workspace, unchanged. */
 function runManifest(): WorkflowIntakeManifest {
-  return {
-    version: '1.0',
-    kind: 'workflow-intake',
-    workflowId: 'flow-1',
-    source: { format: 'xlsx', fileName: 'flow.xlsx', sheetName: 'Flow', sha256: runSha256 },
-    targetUrls: ['https://example.test/'],
-    requiredCapabilities: [],
-    phases: [{
-      id: 'phase-1', sourceCaseId: 'phase-1', title: 'Charge', sourceRow: 2, risk: 'write',
-      steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
-    }],
-    embeddedImages: [],
-    supplementalImages: [],
-    review: { status: 'draft', reasons: [] },
-  }
+  return { ...workflow }
 }
 
 function runResult(outcome: 'passed' | 'product_failed'): CodexTestAgentResult {
   return {
     version: '1.0',
     workflowId: 'flow-1',
-    sourceSha256: runSha256,
+    sourceSha256: workflow.source.sha256,
     outcome,
     summary: 'fixture',
     startedAt: '2026-07-28T00:00:00.000Z',
@@ -229,8 +219,8 @@ describe('workflow acceptance report result contract', () => {
     const claim = runResult('product_failed')
     const runDirectory = await makeRun(root, claim)
 
-    const problems = await acceptanceRunContractProblems(runDirectory)
-    const authority = settlementProblems(settlementInputFromResult(claim, { manifest: runManifest() }))
+    const problems = await acceptanceRunContractProblems(runDirectory, workflow)
+    const authority = settlementProblems(settlementInputFromResult(claim, { manifest: workflow }))
     expect(problems).toEqual(authority)
     expect(problems).toContain('product-failed case phase-1 is not classified as product-sourced')
 
@@ -244,16 +234,50 @@ describe('workflow acceptance report result contract', () => {
     const claim = runResult('passed')
     const runDirectory = await makeRun(root, claim)
 
-    expect(await acceptanceRunContractProblems(runDirectory)).toEqual([])
+    expect(await acceptanceRunContractProblems(runDirectory, workflow)).toEqual([])
     const report = buildWorkflowAcceptanceReport(workflow, { ...evidence, runDirectory }, [])
     expect(report.contractProblems).toEqual([])
     expect(renderWorkflowAcceptanceHtml(report)).not.toContain('结果合同问题')
   })
 
+  it('rejects a run that settled an earlier revision of the accepted workbook', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-revision-'))
+    directories.push(root)
+    // The same workflowId of an earlier revision: only the source hash separates
+    // it from the accepted intake, so the run must not be reported as a clean
+    // contract verdict for an execution it never covered.
+    const earlierRevision = { ...runResult('passed'), sourceSha256: 'd'.repeat(64) }
+    const runDirectory = await makeRun(root, earlierRevision)
+
+    expect(await acceptanceRunContractProblems(runDirectory, workflow))
+      .toEqual(['sourceSha256 does not match the original test material'])
+  })
+
+  it('fails closed on a settled artifact that is not a schema-valid result', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-malformed-'))
+    directories.push(root)
+    const directory = resolve(root, 'run')
+    await mkdir(resolve(directory, '.agent-private'), { recursive: true })
+    await mkdir(resolve(directory, 'agent-workspace'), { recursive: true })
+    await writeFile(resolve(directory, 'agent-workspace', 'test-manifest.json'), JSON.stringify(runManifest()))
+    await writeFile(resolve(directory, 'codex-agent.result.json'), JSON.stringify({ version: '1.0' }))
+
+    await expect(acceptanceRunContractProblems(directory, workflow)).rejects.toThrow(/结构无效/)
+  })
+
+  it('fails closed on a recorded row artifact that is not an array of records', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-rows-'))
+    directories.push(root)
+    const runDirectory = await makeRun(root, runResult('passed'))
+    await writeFile(resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'), JSON.stringify({ recorded: true }))
+
+    await expect(acceptanceRunContractProblems(runDirectory, workflow)).rejects.toThrow(/结构无效/)
+  })
+
   it('fails fast when the acceptance names a run whose settled artifacts cannot be read', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-missing-'))
     directories.push(root)
-    await expect(acceptanceRunContractProblems(resolve(root, 'absent-run'))).rejects.toThrow(/无法读取/)
+    await expect(acceptanceRunContractProblems(resolve(root, 'absent-run'), workflow)).rejects.toThrow(/无法读取/)
   })
 
   it('escapes settlement problems in the static HTML report', () => {

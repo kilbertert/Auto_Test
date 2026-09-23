@@ -614,14 +614,42 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-async function readRecordedDeliveryRows(workspace: AgentWorkspace, caseIds?: string[]): Promise<{
+/**
+ * The recorded rows the delivery Adapter judges a recovered artifact against,
+ * read once per recovery attempt.
+ *
+ * A row file this run cannot read is a recorded delivery problem, not a crash:
+ * recovery has to stay able to reach a fail-closed Result the observation plane
+ * can report on, and a claim that cites a row nobody can read already fails
+ * closed on it. The unreadable collection is therefore reported and treated as
+ * empty — never silently dropped, and never allowed to abort the run before it
+ * can settle.
+ */
+async function readRecordedDeliveryRows(workspace: AgentWorkspace, secrets: string[], caseIds?: string[]): Promise<{
   environmentRequirements: CodexTestEnvironmentRequirement[]
   executionReceipts: CodexTestExecutionReceipt[]
+  problems: string[]
 }> {
-  const recorded = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+  const problems: string[] = []
+  const readRows = async <T>(read: () => Promise<T[]>, label: string): Promise<T[]> => {
+    try {
+      return await read()
+    } catch (error) {
+      problems.push(`Recorded ${label} could not be read: ${redactAgentValue(error instanceof Error ? error.message : String(error), secrets)}`)
+      return []
+    }
+  }
+  const recorded = await readRows(
+    () => readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, []),
+    'environment requirements',
+  )
   return {
     environmentRequirements: caseIds ? environmentRequirementsForCases(recorded, caseIds) : recorded,
-    executionReceipts: await readExecutionReceipts(workspace.executionReceiptsPath),
+    executionReceipts: await readRows(
+      () => readExecutionReceipts(workspace.executionReceiptsPath),
+      'execution receipts',
+    ),
+    problems,
   }
 }
 
@@ -913,7 +941,8 @@ export async function runAgentTest(
         // The recorded rows are read before recovery so the delivery Adapter can
         // settle the claims it reads against the same authority the final
         // settlement uses, instead of guessing whether a reference is real.
-        const recordedRows = await readRecordedDeliveryRows(workspace)
+        const recordedRows = await readRecordedDeliveryRows(workspace, redactionSecrets)
+        const recordedRowProblems = recordedRows.problems
         const recoveryStrategies = [
           () => recoverAgentEpochDeliveryResult({
             workspaceDirectory: workspace.workspaceDirectory,
@@ -937,14 +966,13 @@ export async function runAgentTest(
             workspace.environmentRequirementsPath,
             recovered.result.cases,
           )
-          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
           const replayProblems = await replayProblemsForResult(eventsPath, recovered.result)
-          const recoveryProblems = settlementProblems(settlementInputFromResult(recovered.result, {
+          const recoveryProblems = [...recordedRowProblems, ...settlementProblems(settlementInputFromResult(recovered.result, {
             manifest: options.manifest,
             environmentRequirements,
-            executionReceipts,
+            executionReceipts: recordedRows.executionReceipts,
             replayProblems,
-          }))
+          }))]
           const replayVerification = recoveryProblems.length === 0
             ? await replayVerificationProblems({ outputDirectory, eventsPath, result: recovered.result, manifest: options.manifest, workspace, profile: options.profile })
             : []
@@ -1387,7 +1415,8 @@ export async function runAgentTest(
       let deliveryProblems: string[] = []
       let lastRecoveredEpochCases: CodexTestCaseResult[] = []
       const recoverExistingEpochDelivery = async (): Promise<CodexTestAgentResult | undefined> => {
-        const recordedRows = await readRecordedDeliveryRows(workspace, epoch.caseIds)
+        const recordedRows = await readRecordedDeliveryRows(workspace, redactionSecrets, epoch.caseIds)
+        const recordedRowProblems = recordedRows.problems
         const recovered = await recoverAgentDeliveryResult({
           artifactPath: deliveryPath,
           manifest: scopedManifest,
@@ -1396,7 +1425,7 @@ export async function runAgentTest(
           executionReceipts: recordedRows.executionReceipts,
         })
         if (!recovered.result) {
-          deliveryProblems = recovered.problems
+          deliveryProblems = [...recordedRowProblems, ...recovered.problems]
           return undefined
         }
         lastRecoveredEpochCases = recovered.result.cases
@@ -1405,19 +1434,18 @@ export async function runAgentTest(
           recovered.result.cases,
         )
         const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
-        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
         const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
         const replayProblems = await replayProblemsForResult(eventsPath, normalized)
         const problems = settlementProblems(settlementInputFromResult(normalized, {
           manifest: scopedManifest,
           environmentRequirements: scopedRequirements,
-          executionReceipts,
+          executionReceipts: recordedRows.executionReceipts,
           replayProblems,
         }))
         const replayVerification = problems.length === 0
           ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
           : []
-        deliveryProblems = [...problems, ...replayVerification]
+        deliveryProblems = [...recordedRowProblems, ...problems, ...replayVerification]
         if (deliveryProblems.length > 0) return undefined
         return settlementApplyAuthority(normalized, {
           environmentRequirements: scopedRequirements,
