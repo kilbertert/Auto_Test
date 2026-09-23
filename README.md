@@ -96,7 +96,7 @@
 | 边界 | 载体 | 保证什么 |
 |---|---|---|
 | 输入身份不可漂移 | `agentTestPrompt` 中的 `workflowId` + `sourceSha256`（`src/agent/prompt.ts`） | 整轮 Run 的目标输入被冻结，模型改不了 |
-| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复 |
+| 结果必须过合同 | `result-settlement.ts` 的 `settlementProblems`（Runner 侧入口 `finalResultProblems`，`src/agent/runner.ts`） | 拒绝身份漂移、用例缺失/重复、零证据、终态与失败分类不一致；同一套判定同时服务逐 epoch 交付恢复与跨宿主比较 |
 | 副作用必须可核销 | `enforceMutationLedger`（`src/agent/result.ts:218`） | Ledger 有 `pending` 时该 Run 不能被报成通过——**是账本，不是模型，决定终态** |
 | 环境阻断必须可恢复 | `enforceEnvironmentRequirements`（`src/agent/runner.ts:347`） | 环境类阻断必须关联同一 case 的已保存证据需求，不能用通用证据批量造结论 |
 | 权限只在 Profile | Environment Profile 的 `policy.allowWrite` / `allowDestructive` | 写权限不由推断的 case 风险替代，也不由提示词放宽 |
@@ -263,11 +263,11 @@ flowchart TB
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
 | `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
-| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复都只经由它判定 |
+| `result-settlement.ts` | 结果合同唯一结算 seam（414 行）：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表；Runner 最终结算、逐 epoch 交付恢复、跨宿主比较都只经由它判定 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
-| `competition.ts` / `fanout-policy.ts` / `failure-mode.ts` | 跨 Run 对比、并发上限、失败模式分类 |
+| `competition.ts` / `fanout-policy.ts` / `failure-mode.ts` | 跨 Run 对比、并发上限、失败模式分类。比较器只保留 IO 与比较职责，逐 case 合同判定向 `result-settlement.ts` 取权威结论 |
 
 **层内方向**：契约（`host.ts` / `types.ts` / `control-types.ts`）→ 原语（`state.ts` / `redact.ts`
 / `provider-runtime.ts`）→ 适配器（`*-host.ts` / `*-provider.ts`）→ 编排（`runner.ts`）。
