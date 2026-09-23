@@ -647,6 +647,49 @@ describe('RunArtifactStore environment requirements', () => {
       .rejects.toThrow(/unknown case retired-case/)
   })
 
+  it('refuses to append to a journal the read path rejects, instead of preserving a foreign entry', async () => {
+    const { store } = await openPreparedStore()
+    // A requirement naming a Case outside the immutable run is exactly what the read path rejects.
+    await writeFile(store.layout.environmentRequirementsPath, JSON.stringify([{
+      id: 'environment-origin-foreign',
+      caseIds: ['case-from-another-run'],
+      kind: 'origin',
+      origin: 'https://foreign.example.test',
+      condition: 'observed on another run',
+      evidence: ['evidence/foreign.md'],
+      status: 'pending',
+      requestedAt: new Date(0).toISOString(),
+    }]), 'utf8')
+    expect((await store.readEnvironmentRequirements()).problems).toHaveLength(1)
+
+    // The write path must answer identity the same way the read path does: a write that appends
+    // beside a rejected entry would leave the journal permanently unreadable, and the run would be
+    // blamed for a journal it did not corrupt.
+    await expect(store.recordEnvironmentRequirement(requirementInput(['place-order'], 'The fixture is unavailable.')))
+      .rejects.toThrow(/unknown case case-from-another-run/)
+  })
+
+  it('reports a malformed stored entry as a problem instead of throwing the whole read', async () => {
+    const { store } = await openPreparedStore()
+    await writeFile(store.layout.environmentRequirementsPath, JSON.stringify([{
+      id: 'environment-origin-schemaless',
+      caseIds: ['place-order'],
+      kind: 'origin',
+      origin: 'pay.example.test',
+      condition: 'stored without a URL scheme',
+      evidence: ['evidence/pay.md'],
+      status: 'pending',
+      requestedAt: new Date(0).toISOString(),
+    }]), 'utf8')
+
+    // Every other malformed journal reports a problem list; the prerequisite journal must not be the
+    // one that turns a bad row into a hard failure of the surrounding read.
+    const read = await store.readEnvironmentRequirements()
+    expect(read.entries).toEqual([])
+    expect(read.problems).toHaveLength(1)
+    expect(read.problems[0]).toMatch(/malformed/)
+  })
+
   it('records an unregistered origin as a resumable requirement and reconciles it once the origin is registered', async () => {
     const { store } = await openPreparedStore()
 

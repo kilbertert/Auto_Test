@@ -498,12 +498,30 @@ function normalizeRequirement(input: unknown): CodexTestEnvironmentRequirement {
   return normalized
 }
 
-/** Read the prerequisite journal as it stands on disk, defaulting an absent one to empty. */
-async function readRequirements(path: string): Promise<CodexTestEnvironmentRequirement[]> {
+/**
+ * Parse the prerequisite journal into at most one entry per stored row. A row that cannot be
+ * normalized (an origin without a scheme, say) is reported as a problem and skipped, so one bad row
+ * does not make every other requirement unreadable — the same row-level isolation the ledger,
+ * gates, receipts, and per-Case readers already apply.
+ */
+function requirementRows(raw: unknown[]): JournalConversion<CodexTestEnvironmentRequirement> {
+  const entries: CodexTestEnvironmentRequirement[] = []
+  const problems: string[] = []
+  for (const [index, value] of raw.entries()) {
+    try {
+      entries.push(normalizeRequirement(value))
+    } catch (error) {
+      problems.push(`Environment requirement entry ${index} is malformed: ${errorMessage(error)}`)
+    }
+  }
+  return { entries, problems }
+}
+
+async function readRequirementsRaw(path: string): Promise<unknown[]> {
   try {
     const raw = JSON.parse(await readFile(path, 'utf8')) as unknown
     if (!Array.isArray(raw)) throw new Error('Environment requirements must be an array')
-    return raw.map(normalizeRequirement)
+    return raw
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
@@ -567,10 +585,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
    */
   async readEnvironmentRequirements(): Promise<RunArtifactRead<CodexTestEnvironmentRequirement[]>> {
     return this.readJournal('Environment requirements', this.layout.environmentRequirementsPath, 'empty',
-      (raw) => {
-        const entries = raw.map(normalizeRequirement)
-        return { entries, problems: environmentRequirementProblems(entries, this.identity) }
-      })
+      (raw) => this.convertRequirements(raw))
   }
 
   async readExecutionReceipts(): Promise<RunArtifactRead<CodexTestExecutionReceipt[]>> {
@@ -714,7 +729,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     const origin = requirement.origin ? normalizeEnvironmentOrigin(requirement.origin) : undefined
     if (requirement.kind === 'origin' && !origin) throw new Error('Origin requirements must include an origin')
     const id = stableRequirementId({ kind: requirement.kind, ...(origin ? { origin } : {}), condition })
-    const requirements = await readRequirements(this.layout.environmentRequirementsPath)
+    const requirements = await this.requirementsForWrite()
     const existingIndex = requirements.findIndex((item) => item.id === id)
     const recorded: CodexTestEnvironmentRequirement = existingIndex >= 0
       ? {
@@ -743,7 +758,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
   async satisfyEnvironmentRequirement(input: { id: string; evidence: string[] }): Promise<CodexTestEnvironmentRequirement> {
     const evidence = uniqueEvidence(input.evidence)
     if (evidence.length === 0) throw new Error('Satisfied environment requirements must include saved evidence')
-    const requirements = await readRequirements(this.layout.environmentRequirementsPath)
+    const requirements = await this.requirementsForWrite()
     const index = requirements.findIndex((item) => item.id === input.id)
     if (index < 0) throw new Error(`Unknown environment requirement: ${input.id}`)
     const satisfied: CodexTestEnvironmentRequirement = {
@@ -767,7 +782,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
     if (input.allowedOrigins.includes(origin)) return { status: 'allowed', origin }
     if (input.caseIds.length === 0) throw new Error('Environment access requests must apply to at least one test case')
     if (input.evidence.length === 0) throw new Error('Environment access requests must include saved evidence')
-    const requirements = await readRequirements(this.layout.environmentRequirementsPath)
+    const requirements = await this.requirementsForWrite()
     const existing = requirements.find((item) => item.kind === 'origin' && item.origin === origin)
     const recorded = await this.recordEnvironmentRequirement({
       caseIds: input.caseIds,
@@ -788,7 +803,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
   }
 
   async reconcileEnvironmentRequirements(allowedOrigins: string[]): Promise<CodexTestEnvironmentRequirement[]> {
-    const requirements = await readRequirements(this.layout.environmentRequirementsPath)
+    const requirements = await this.requirementsForWrite()
     let changed = false
     const reconciled = requirements.map((item) => {
       if (item.kind === 'origin' && item.origin && item.status === 'pending' && allowedOrigins.includes(item.origin)) {
@@ -802,7 +817,7 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
   }
 
   async reconcileEnvironmentRequirementCaseLinks(cases: Array<Pick<CodexTestCaseResult, 'caseId' | 'failureSource' | 'environmentRequirementIds'>>): Promise<CodexTestEnvironmentRequirement[]> {
-    const requirements = await readRequirements(this.layout.environmentRequirementsPath)
+    const requirements = await this.requirementsForWrite()
     const resultByCaseId = new Map(cases.map((item) => [item.caseId, item]))
     let changed = false
     const reconciled = requirements.map((requirement) => {
@@ -926,6 +941,27 @@ class FilesystemRunArtifactStore implements RunArtifactStore {
       throw new Error(`${label} could not be read: ${problems.join('; ')}`)
     }
     return converted.entries
+  }
+
+  /**
+   * The one reading every prerequisite-journal write starts from: normalize each row, then reject
+   * the entries that name a Case outside this run. Read and write therefore answer identity the same
+   * way — an entry the read path rejects can no longer be preserved by the write path that appends
+   * beside it, which is the divergence `RunArtifactStore` exists to remove.
+   */
+  private convertRequirements(raw: unknown[]): JournalConversion<CodexTestEnvironmentRequirement> {
+    const { entries, problems } = requirementRows(raw)
+    return { entries, problems: [...problems, ...environmentRequirementProblems(entries, this.identity)] }
+  }
+
+  /** Prerequisite entries for a write: read back identity must hold, or the write stops. */
+  private async requirementsForWrite(): Promise<CodexTestEnvironmentRequirement[]> {
+    const raw = await readRequirementsRaw(this.layout.environmentRequirementsPath)
+    const { entries, problems } = this.convertRequirements(raw)
+    if (problems.length > 0) {
+      throw new Error(`Environment requirements could not be read: ${problems.join('; ')}`)
+    }
+    return entries
   }
 
   private async assertResumeIdentity(): Promise<void> {
