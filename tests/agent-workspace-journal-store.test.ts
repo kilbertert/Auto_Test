@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -133,6 +133,27 @@ describe('workspace run journal storage', () => {
     ])
     expect(JSON.parse(await readFile(resumed.mutationLedgerPath, 'utf8'))).toHaveLength(1)
     expect(JSON.parse(await readFile(resumed.executionReceiptsPath, 'utf8'))).toEqual([])
+  })
+
+  it('leaves the run root untouched when a resume is rejected', async () => {
+    const runRoot = await tempRunRoot()
+    const initial = await prepare(runRoot)
+    // A rejected resume must not have initialized the journal: an accepted resume creates only the
+    // artifacts it is missing, so an absent one must still be absent after the rejection.
+    await rm(initial.executionReceiptsPath, { force: true })
+    await rm(initial.fieldCompositionPath, { force: true })
+
+    await expect(prepareAgentWorkspace({
+      outputDirectory: runRoot,
+      manifest,
+      // Dropping a registered origin breaks append-only, so the resume contract check rejects it.
+      profile: { ...profile, origins: [] },
+      secrets: {}, headed: false, browserExecutablePath: '/verified/chromium',
+      environment: { PATH: '/usr/bin' }, resume: true,
+    })).rejects.toThrow(/Resume contract or environment policy/)
+
+    await expect(access(initial.executionReceiptsPath)).rejects.toThrow()
+    await expect(access(initial.fieldCompositionPath)).rejects.toThrow()
   })
 
   it('keeps the private permissions and atomic journal writes the store already guarantees', async () => {

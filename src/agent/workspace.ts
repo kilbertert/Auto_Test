@@ -269,8 +269,6 @@ export async function prepareAgentWorkspace(options: {
   const environment = agentProcessEnvironment(options.environment ?? process.env)
   const mcpEnvironment = agentProcessEnvironment(options.environment ?? process.env, undefined, false)
 
-  await store.initialize({ resume: options.resume ?? false })
-
   if (options.resume) {
     const existingControl = JSON.parse(await readFile(controlConfigPath, 'utf8')) as CodexTestControlConfig
     const existingOrigins = existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin)
@@ -300,8 +298,13 @@ export async function prepareAgentWorkspace(options: {
     if (!immutableControlMatches || !isOriginAppendOnly(existingOrigins, options.profile.origins)) {
       throw new Error('Resume contract or environment policy does not match the existing Auto-Test run')
     }
+    // Only an accepted resume may touch the run root: the store initializes the journal a resumed
+    // run is missing, which stamps empty artifacts onto the run. Running it after the contract check
+    // keeps a rejected resume from writing anything at all.
+    await store.initialize({ resume: true })
   } else {
     await writePrivateJson(manifestPath, options.manifest)
+    await store.initialize({ resume: false })
   }
   const fullAgentAccess = options.testDataAccess !== 'opaque'
   const inputIndexPath = resolve(inputDirectory, 'input-index.json')
