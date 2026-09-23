@@ -11,7 +11,7 @@ import { createLegacyCodexAgentHost } from './codex-host.js'
 import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, splitAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
-import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { environmentRequirementsForCases, reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { AgentHostError, agentHostErrorKindForMessage, agentHostErrorMessageForMatching, normalizeAgentEvent, normalizeAgentHostError } from './host.js'
@@ -747,14 +747,15 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-function environmentRequirementsForCases(
-  requirements: CodexTestEnvironmentRequirement[],
-  caseIds: string[],
-): CodexTestEnvironmentRequirement[] {
-  const active = new Set(caseIds)
-  return requirements
-    .map((requirement) => ({ ...requirement, caseIds: requirement.caseIds.filter((caseId) => active.has(caseId)) }))
-    .filter((requirement) => requirement.caseIds.length > 0)
+async function readRecordedDeliveryRows(workspace: AgentWorkspace, caseIds?: string[]): Promise<{
+  environmentRequirements: CodexTestEnvironmentRequirement[]
+  executionReceipts: CodexTestExecutionReceipt[]
+}> {
+  const recorded = await readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, [])
+  return {
+    environmentRequirements: caseIds ? environmentRequirementsForCases(recorded, caseIds) : recorded,
+    executionReceipts: await readExecutionReceipts(workspace.executionReceiptsPath),
+  }
 }
 
 function aggregateCaseResults(options: {
@@ -1041,16 +1042,24 @@ export async function runAgentTest(
     if (options.resume) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
       if (!ledger.some((entry) => entry.status === 'pending')) {
+        // The recorded rows are read before recovery so the delivery Adapter can
+        // settle the claims it reads against the same authority the final
+        // settlement uses, instead of guessing whether a reference is real.
+        const recordedRows = await readRecordedDeliveryRows(workspace)
         const recoveryStrategies = [
           () => recoverAgentEpochDeliveryResult({
             workspaceDirectory: workspace.workspaceDirectory,
             manifest: options.manifest,
             startedAt: state.startedAt,
+            environmentRequirements: recordedRows.environmentRequirements,
+            executionReceipts: recordedRows.executionReceipts,
           }),
           () => recoverAgentDeliveryResult({
             artifactPath: workspace.caseResultsPath,
             manifest: options.manifest,
             startedAt: state.startedAt,
+            environmentRequirements: recordedRows.environmentRequirements,
+            executionReceipts: recordedRows.executionReceipts,
           }),
         ]
         for (const recover of recoveryStrategies) {
@@ -1511,7 +1520,14 @@ export async function runAgentTest(
       let deliveryProblems: string[] = []
       let lastRecoveredEpochCases: CodexTestCaseResult[] = []
       const recoverExistingEpochDelivery = async (): Promise<CodexTestAgentResult | undefined> => {
-        const recovered = await recoverAgentDeliveryResult({ artifactPath: deliveryPath, manifest: scopedManifest, startedAt: state.startedAt })
+        const recordedRows = await readRecordedDeliveryRows(workspace, epoch.caseIds)
+        const recovered = await recoverAgentDeliveryResult({
+          artifactPath: deliveryPath,
+          manifest: scopedManifest,
+          startedAt: state.startedAt,
+          environmentRequirements: recordedRows.environmentRequirements,
+          executionReceipts: recordedRows.executionReceipts,
+        })
         if (!recovered.result) {
           deliveryProblems = recovered.problems
           return undefined

@@ -326,6 +326,71 @@ describe('adaptive Codex epochs', () => {
     expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited', stage: 'finalization' })
   })
 
+  it('recovers an environment-blocked epoch delivery against the recorded requirement rows', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-requirement-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const condition = '需要可控制测试设备状态'
+    const requirementId = 'environment-physical-case-one'
+    const run = await runAgentTest({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        let turn = 0
+        return {
+          id: 'thread-epoch-requirement',
+          runStreamed: async (_input, options) => {
+            turn += 1
+            if (turn === 1) {
+              const workspace = resolve(outputDirectory, 'agent-workspace')
+              await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+              await writeFile(resolve(workspace, 'evidence', 'device-state.png'), 'fixture')
+              await writeFile(resolve(outputDirectory, '.agent-private', 'environment-requirements.json'), JSON.stringify([{
+                id: requirementId, caseIds: ['case-one'], kind: 'physical',
+                origin: 'https://tasks.example.test', condition,
+                evidence: ['evidence/device-state.png'], status: 'pending', requestedAt: '2026-08-12T00:00:00.000Z',
+              }]))
+              await writeFile(resolve(workspace, 'case-results.epoch-0001.json'), JSON.stringify({
+                version: '1.0', kind: 'case-results', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+                generatedAt: '2026-08-12T00:00:30.000Z',
+                cases: [{
+                  caseId: 'case-one', title: '第一条', outcome: 'blocked', summary: '设备状态不可控，交付中断',
+                  failureSource: 'environment', failureKind: 'environment',
+                  environmentRequirementIds: [requirementId], evidencePaths: ['evidence/device-state.png'],
+                }],
+                mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+              }))
+              return eventStream('environment prerequisite recorded', 'thread-epoch-requirement')
+            }
+            if (options?.outputSchema) {
+              return failedEventStream('provider quota exceeded', 'thread-epoch-requirement')
+            }
+            return eventStream('unreachable', 'thread-epoch-requirement')
+          },
+        }
+      },
+    })
+
+    // The recovered delivery is authoritative for the case facts, and the
+    // settlement seam reconciled its requirement reference against the recorded
+    // row instead of rejecting the delivery for an unknown requirement.
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({
+      caseId: 'case-one', outcome: 'blocked', failureSource: 'environment', failureKind: 'environment',
+      environmentRequirementIds: [requirementId], summary: '设备状态不可控，交付中断',
+    })
+    expect(run.result?.blockers).toEqual(['设备状态不可控，交付中断', condition])
+    expect(run.result?.environmentRequirements).toEqual([expect.objectContaining({ id: requirementId, status: 'pending' })])
+  })
+
   it('rotates one incompatible physical session while preserving the logical run and pending Ledger', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rotation-'))
     directories.push(directory)

@@ -231,6 +231,16 @@ export function settlementProblems(input: ResultSettlementInput): string[] {
   return problems
 }
 
+/**
+ * The top-level outcome a claim set settles to. An Adapter that has no
+ * submitted outcome of its own — a per-epoch delivery artifact records only
+ * per-case facts — reports this value, so the derivation stays in the seam
+ * instead of being re-written per transport.
+ */
+export function settlementOutcomeForClaims(claims: readonly SettlementCaseClaim[]): CodexTestOutcome {
+  return outcomeForClaims(claims)
+}
+
 /** Normalize the cases of a canonical Result into the one Case-claim representation. */
 export function settlementClaimsFromResult(cases: readonly CodexTestCaseResult[]): SettlementCaseClaim[] {
   return cases.map((item) => ({

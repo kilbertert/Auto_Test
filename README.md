@@ -262,7 +262,8 @@ flowchart TB
 | `result.ts` | 结果合同：JSON Schema 校验、容错解析、`enforceMutationLedger` |
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
 | `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
-| `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（校验器与 `finalResultProblems` 的孪生） |
+| `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（保留 IO 职责：读文件、解析证据路径、聚合 epoch；共享不变量委托 `result-settlement.ts`） |
+| `result-settlement.ts` | 结果合同唯一结算 seam：纯同步模块，判定身份、case 覆盖、证据与失败分类，返回规范 Result 或非空 problem 列表 |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |

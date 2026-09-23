@@ -216,6 +216,22 @@ export async function reconcileEnvironmentRequirements(
   return reconciled
 }
 
+/**
+ * Scope recorded requirements to the cases a caller is about to settle. Both the
+ * Runner's final settlement and the per-epoch delivery Adapter need this view:
+ * a requirement that applies to a case outside the scope must not be judged
+ * against claims that never mentioned it.
+ */
+export function environmentRequirementsForCases(
+  requirements: readonly CodexTestEnvironmentRequirement[],
+  caseIds: readonly string[],
+): CodexTestEnvironmentRequirement[] {
+  const active = new Set(caseIds)
+  return requirements
+    .map((requirement) => ({ ...requirement, caseIds: requirement.caseIds.filter((caseId) => active.has(caseId)) }))
+    .filter((requirement) => requirement.caseIds.length > 0)
+}
+
 export async function reconcileEnvironmentRequirementCaseLinks(
   path: string,
   cases: Array<Pick<CodexTestCaseResult, 'caseId' | 'failureSource' | 'environmentRequirementIds'>>,
