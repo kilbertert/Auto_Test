@@ -3,7 +3,41 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { friendlyRunSummary } from '../src/usability/result-summary.js'
-import type { CodexTestAgentResult, CodexTestAgentState } from '../src/agent/types.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestMutationLedgerEntry } from '../src/agent/types.js'
+
+function ledgerEntry(id: string, status: CodexTestMutationLedgerEntry['status']): CodexTestMutationLedgerEntry {
+  return {
+    id, caseId: 'create', description: '未完成写入', risk: 'write', status,
+    createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:30.000Z', evidence: [],
+  }
+}
+
+/**
+ * A run directory whose AgentHost failed mid-run: state file, persisted
+ * manifest, and a Mutation Ledger a summary has to read back through the store.
+ */
+async function failedRunFixture(
+  directory: string,
+  ledger: CodexTestMutationLedgerEntry[] | undefined,
+): Promise<{ statePath: string }> {
+  const statePath = resolve(directory, 'codex-agent.state.json')
+  await mkdir(resolve(directory, '.agent-private'), { recursive: true })
+  if (ledger) {
+    await writeFile(resolve(directory, '.agent-private', 'mutation-ledger.json'), JSON.stringify(ledger))
+  }
+  await mkdir(resolve(directory, 'agent-workspace'), { recursive: true })
+  await writeFile(resolve(directory, 'agent-workspace', 'test-manifest.json'), JSON.stringify({
+    version: '1.0', kind: 'workflow-intake', workflowId: 'approval',
+    source: { format: 'xlsx', fileName: 'fixture.xlsx', sheetName: 'Cases', sha256: 'd'.repeat(64) },
+    phases: [{ id: 'create', title: '创建记录', sourceRow: 2 }],
+  }))
+  await writeFile(resolve(directory, 'codex-agent.events.jsonl'), '{}\n')
+  await writeFile(statePath, JSON.stringify({
+    version: '2.0', status: 'failed', stage: 'failed', workflowId: 'approval', sourceSha256: 'd'.repeat(64),
+    startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], error: 'browser process exited',
+  } satisfies CodexTestAgentState))
+  return { statePath }
+}
 
 describe('friendly AgentHost result summary', () => {
   it('summarizes a passed AgentHost run from the structured result', async () => {
@@ -236,21 +270,13 @@ describe('friendly AgentHost result summary', () => {
     }
   })
 
-  it('reports infrastructure failures and preserves unknown mutation risk', async () => {
+  it('reads the failure-run Mutation Ledger through the RunArtifactStore', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-failed-summary-'))
     try {
-      const statePath = resolve(directory, 'codex-agent.state.json')
-      const privateDirectory = resolve(directory, '.agent-private')
-      await mkdir(privateDirectory)
-      await writeFile(resolve(privateDirectory, 'mutation-ledger.json'), JSON.stringify([{
-        id: 'pending-write', caseId: 'create', description: '未完成写入', risk: 'write', status: 'pending',
-        createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:30.000Z', evidence: [],
-      }]))
-      await writeFile(resolve(directory, 'codex-agent.events.jsonl'), '{}\n')
-      await writeFile(statePath, JSON.stringify({
-        version: '2.0', status: 'failed', stage: 'failed', workflowId: 'approval', sourceSha256: 'd'.repeat(64),
-        startedAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:01:00.000Z', threadGeneration: 0, completedCaseIds: [], error: 'browser process exited',
-      } satisfies CodexTestAgentState))
+      const { statePath } = await failedRunFixture(directory, [
+        ledgerEntry('pending-write', 'pending'),
+        ledgerEntry('compensated-write', 'compensated'),
+      ])
 
       const summary = await friendlyRunSummary(statePath)
 
@@ -259,6 +285,40 @@ describe('friendly AgentHost result summary', () => {
       expect(summary.lines).toContain('直接原因：browser process exited')
       expect(summary.lines).toContain('业务残留：1 项 Mutation 仍为 pending，继续前必须先核对或恢复。')
       expect(summary.lines.some((line) => line.includes('codex-agent.events.jsonl'))).toBe(true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a failure-run Mutation Ledger that names a case outside the persisted manifest', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-failed-summary-'))
+    try {
+      const { statePath } = await failedRunFixture(directory, [
+        ledgerEntry('foreign-write', 'pending'),
+        { ...ledgerEntry('create-record', 'pending'), caseId: 'not-in-manifest' },
+      ])
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.outcome).toBe('failed')
+      // A journal this run cannot vouch for is not business residue: the summary
+      // says so instead of counting entries that belong to some other run.
+      expect(summary.lines.join(' ')).not.toContain('项 Mutation 仍为 pending')
+      expect(summary.lines).toContain('业务残留：无法从当前结果确认，请先查看运行诊断。')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('reports unconfirmed business residue when the failure-run ledger is absent', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-codex-failed-summary-'))
+    try {
+      const { statePath } = await failedRunFixture(directory, undefined)
+
+      const summary = await friendlyRunSummary(statePath)
+
+      expect(summary.outcome).toBe('failed')
+      expect(summary.lines).toContain('业务残留：无法从当前结果确认，请先查看运行诊断。')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

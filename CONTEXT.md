@@ -23,7 +23,10 @@ result verifiable rather than asserted.
 _Avoid_: Log, Output (ambiguous)
 
 **Mutation Ledger**:
-The append-only record of state mutations during a run.
+The append-only record of state mutations during a run. It is one of the run
+journal artifacts whose location, read-back identity, and status transitions
+are owned by a single storage module (`RunArtifactStore`); no other module
+derives where a journal artifact lives.
 _Avoid_: Audit trail, Journal
 
 **Result contract**:
@@ -33,7 +36,11 @@ _Avoid_: Report, Verdict
 
 **Run root / state file**:
 The run's artifact location and the state record that identifies its latest
-execution.
+execution. The journal artifacts under a run root (Mutation Ledger, environment
+requirements, execution receipts, field composition gates, per-Case results)
+are addressed through one storage module (`RunArtifactStore`), which also owns
+whether an absent artifact means "nothing recorded yet" or "not an initialized
+run".
 _Avoid_: Output dir (generic)
 
 **Observation plane**:

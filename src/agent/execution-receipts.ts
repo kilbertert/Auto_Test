@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises'
-import { writePrivateJson } from './state.js'
 import { normalizeAgentEvent } from './host.js'
 import type { CodexTestExecutionReceipt, CodexTestExecutionReceiptKind } from './types.js'
 
@@ -65,17 +63,6 @@ function browserReceipt(
   }
 }
 
-export async function readExecutionReceipts(path: string): Promise<CodexTestExecutionReceipt[]> {
-  try {
-    const value = JSON.parse(await readFile(path, 'utf8')) as unknown
-    if (!Array.isArray(value)) throw new Error('Execution receipts must be an array')
-    return value as CodexTestExecutionReceipt[]
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-}
-
 /**
  * Keep the full receipt log on disk, but give the agent only compact
  * same-case references when the run has explicit case attribution.
@@ -115,6 +102,16 @@ export function summarizeExecutionReceipts(
   }
 }
 
+/**
+ * Where a recorder keeps its receipts: the RunArtifactStore supplies the
+ * canonical, identity-checked journal, so a recorder only ever opens through
+ * the store rather than binding itself to a receipt file path.
+ */
+export interface ExecutionReceiptJournal {
+  read(): Promise<CodexTestExecutionReceipt[]>
+  write(receipts: CodexTestExecutionReceipt[]): Promise<void>
+}
+
 export class ExecutionReceiptRecorder {
   private activeCaseId: string | undefined
   private turnOrdinal: number
@@ -122,7 +119,7 @@ export class ExecutionReceiptRecorder {
   private readonly receipts = new Map<string, CodexTestExecutionReceipt>()
 
   private constructor(
-    private readonly path: string,
+    private readonly journal: ExecutionReceiptJournal,
     caseIds: string[],
     private readonly namespace: string,
     existing: CodexTestExecutionReceipt[],
@@ -137,8 +134,8 @@ export class ExecutionReceiptRecorder {
     }, 0)
   }
 
-  static async create(path: string, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
-    return new ExecutionReceiptRecorder(path, caseIds, namespace, await readExecutionReceipts(path))
+  static async open(journal: ExecutionReceiptJournal, caseIds: string[], namespace = 'single-thread'): Promise<ExecutionReceiptRecorder> {
+    return new ExecutionReceiptRecorder(journal, caseIds, namespace, await journal.read())
   }
 
   async observe(value: unknown): Promise<void> {
@@ -165,6 +162,6 @@ export class ExecutionReceiptRecorder {
     )
     if (!receipt || this.receipts.has(receipt.id)) return
     this.receipts.set(receipt.id, receipt)
-    await writePrivateJson(this.path, [...this.receipts.values()])
+    await this.journal.write([...this.receipts.values()])
   }
 }

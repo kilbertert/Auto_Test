@@ -7,12 +7,12 @@ import { runAgentTest } from '../agent/runner.js'
 import { limitManifestToCases } from '../agent/execution-epochs.js'
 import type { CodexTestAgentProgressKind } from '../agent/progress.js'
 import { assessAgentIntakeReadiness } from '../agent/intake-readiness.js'
-import { readEnvironmentRequirements } from '../agent/environment-requirements.js'
+import { openRunArtifactStoreForRun, runArtifactLayout } from '../agent/run-artifact-store.js'
 import { writeResultWorkbook } from '../agent/result-workbook.js'
 import { isBuiltInAgentHostId } from '../agent/host-registry.js'
 import type { AgentHostId } from '../agent/host.js'
 import { initialAgentTestState, updateAgentTestState, writePrivateJson } from '../agent/state.js'
-import type { CodexTestAgentResult, CodexTestFailureKind } from '../agent/types.js'
+import type { CodexTestAgentResult, CodexTestEnvironmentRequirement, CodexTestFailureKind } from '../agent/types.js'
 import { redactSensitiveContent, redactSensitiveText } from '../input/text.js'
 import {
   defaultEnvironmentProfileRegistryPath,
@@ -481,6 +481,18 @@ async function writePreExecutionBlock(
   return 3
 }
 
+/**
+ * The prerequisite journal of an earlier run in the same output directory. The
+ * store owns where it lives and which stored entries belong to this run, so a
+ * resumable origin recorded by the previous attempt is widened by the same
+ * module that wrote it.
+ */
+async function readPriorEnvironmentRequirements(outputDirectory: string): Promise<CodexTestEnvironmentRequirement[]> {
+  const journal = await (await openRunArtifactStoreForRun(outputDirectory)).readEnvironmentRequirements()
+  if (journal.problems.length > 0) throw new Error(journal.problems.join('; '))
+  return journal.entries
+}
+
 export async function runAgentTestCli(options: AgentTestCliOptions): Promise<number> {
   process.umask(0o027)
   if (!options.resume && options.urls.length === 0) {
@@ -492,7 +504,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
     console.log(`[${time}] [${label}] ${message}`)
   }
   const priorStatePath = resolve(options.outputDirectory, 'codex-agent.state.json')
-  const priorLedgerPath = resolve(options.outputDirectory, '.agent-private', 'mutation-ledger.json')
+  const priorLedgerPath = runArtifactLayout(options.outputDirectory).mutationLedgerPath
   let effectiveAgentHostId = options.agentHostId
   if (options.resume) {
     for (const path of [priorStatePath, priorLedgerPath]) {
@@ -600,7 +612,7 @@ export async function runAgentTestCli(options: AgentTestCliOptions): Promise<num
       ? JSON.parse(await readFile(environmentSelectionPath, 'utf8')) as AgentEnvironmentSelection
       : undefined
     const priorRequirements = options.resume
-      ? await readEnvironmentRequirements(resolve(options.outputDirectory, '.agent-private', 'environment-requirements.json'))
+      ? await readPriorEnvironmentRequirements(options.outputDirectory)
       : []
     const additionalOrigins = priorRequirements
       .flatMap((requirement) => requirement.kind === 'origin' && requirement.origin ? [requirement.origin] : [])

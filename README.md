@@ -203,7 +203,7 @@ flowchart TB
 - **`workflow` 不得依赖 `agent`**——这是防环的关键一条。
 
 **实测跨层边与方向**：`cli→agent 14`、`cli→workflow 13`、`agent→workflow 18`、
-`workflow→input 6`、`agent→core 4`、`observe→agent 3`、`usability→agent 1`。
+`workflow→input 6`、`agent→core 4`、`observe→agent 3`、`usability→agent 2`。
 
 > **两处需要解释的"反向"边，都是有意的，不要"修正"它们：**
 >
@@ -250,7 +250,7 @@ flowchart TB
 | `target-urls.ts` / `standard-table.ts` / `xlsx-media.ts` | 目标 URL 抽取与能力推断、标准表契约、`DISPIMG` 内嵌图片提取 |
 | `acceptance-report.ts` / `report-redact.ts` | 工作流验收报告生成与脱敏。`report-redact` 与证据产物走同一份 `input/text.ts` 规则链，替换标记统一为 `<redacted>` 家族 |
 
-#### L4 `src/agent` — 执行外壳（最大层，9865 行 / 40 文件）
+#### L4 `src/agent` — 执行外壳（最大层，10391 行 / 36 文件）
 
 | 模块 | 职责 |
 |---|---|
@@ -259,10 +259,11 @@ flowchart TB
 | `codex-host.ts` / `omp-host.ts` | 两个内置宿主实现：Codex 走 SDK 进程内，OMP 走 stdio JSON-RPC |
 | `codex-provider.ts` / `omp-provider.ts` / `provider-runtime.ts` | Provider 适配器：把同一 descriptor 翻译成各宿主的隔离配置、模型目录与环境（**唯一允许接触宿主格式的地方**） |
 | `workspace.ts` | 磁盘契约：`agent-workspace/` 与 `.agent-private/` 的划分、权限与**访问边界**（见 4.4） |
+| `run-artifact-store.ts` | **Run journal 存储的唯一权威**：所有 journal artifact 的规范路径、新 Run 与 resume 的初始化、逐 artifact 的 append/transition，以及回读时的运行身份 / case 成员 / 存储身份校验（见 4.4）。Runner、Control MCP、恢复、比较与观测面都经它读写，**不再有第二处推导 journal 路径** |
 | `result.ts` | 结果合同：JSON Schema 校验、容错解析、`enforceMutationLedger` |
 | `control-server.ts` / `control-types.ts` | Control MCP：可选运行日志 + 四道真正的门（见 4.3） |
-| `execution-epochs.ts` / `case-result-store.ts` / `execution-receipts.ts` | 分片规划、逐 case 幂等落盘、被动执行回执 |
-| `environment-requirements.ts` / `delivery-recovery.ts` | 环境需求契约与交付恢复（校验器与 `finalResultProblems` 的孪生） |
+| `execution-epochs.ts` / `execution-receipts.ts` | 分片规划、被动执行回执（逐 case 结果落盘已并入 `run-artifact-store.ts`） |
+| `delivery-recovery.ts` | 交付恢复：epoch 交付 artifact 的校验器（与 `finalResultProblems` 孪生） |
 | `prompt.ts` / `skill-brief.ts` / `progress.ts` | 提示词装配、工作区说明、进度外送 |
 | `redact.ts` / `artifact-redaction.ts` | 事件流与交付产物的脱敏 |
 | `result-workbook.ts` / `replay-assets.ts` | 结果回写 Excel、回归资产生成 |
@@ -385,6 +386,8 @@ artifacts/runs/<timestamp>-<stem>-<rand>/          ← Run root
 | `agent-home/`（隔离的 AgentHost home） | 否，但宿主进程必须读 | 这是 Agent 自己进程的配置目录，属于宿主所有权而非工具权限 |
 | **观测面板** | 一律不可达 | 与 Agent 权限无关：证据服务 root 钉死在 `agent-workspace/evidence`，且显式拒绝任何含 `.agent-private` 的路径 |
 
+**journal artifact 只有一个存储权威**：上表中每个 journal 文件的位置、新 Run 与 resume 的初始化规则、append 与状态迁移、以及回读时的运行身份校验，都由 `run-artifact-store.ts` 一个模块负责。Runner、Control MCP、交付恢复、跨 Run 比较与观测面（控制台摘要 / 只读面板）都向它打开同一个 store 读取或写入，而不再各自推导路径与校验规则；缺一个 journal 文件是"还没有记录"还是"这不是一个已初始化的 Run"，由该文件自身的语义在 store 内决定，且读与写给同一个答案——Mutation Ledger 缺失时 `mutation_list` 报错，`mutation_begin` / `mutation_resolve` 也拒绝落笔，不会把它当空账本重建而丢掉此前已记录的写入；Control MCP 的 config 因此只保留 `mutationLedgerPath` 这一个 run-root 键，不再持久化任何 per-artifact journal 路径，免得一个过期值把一次恢复中的写指到别处。
+
 所以推论五的凭据边界**不靠 `.agent-private/` 目录权限实现**，而是靠"哪些值被写进运行值"：
 Provider API Key、Codex auth、无关主机凭据从不进入 `run-values.json`；
 Excel 凭据以 `secretRef` 替换，别名与真实值的映射只存在于运行值与私有目录。
@@ -451,7 +454,7 @@ src/usability/     运行目录、结果摘要、环境注册向导
 src/eval/          评测套件
 src/compiler/      MCP 轨迹 → Playwright spec
 src/cli/           全部命令入口
-tests/             61 个测试文件，按关注点平铺（含 fixtures/agent-site 合成站点）
+tests/             66 个测试文件，按关注点平铺（含 fixtures/agent-site 合成站点）
 templates/         测试用例 Excel 模板，以及环境 / 模型 / 评测 Profile 的三份示例
 docs/              架构、契约、ADR、运行手册（见第十节路由表）
 .github/workflows/ 确定性 CI（verify / windows-verify）+ AFK 治理面
@@ -470,6 +473,7 @@ qa-plan.md         仓库级 QA 用例与结果记录
 | 我想… | 先读 | 主要改动点 | 注意 |
 |---|---|---|---|
 | 改执行流程 / 轮次 / epoch | `src/agent/runner.ts`、[架构复盘 §24](docs/architecture-journey-ir-runtime-to-codex-native.md) | `runAgentTest` 的状态机 | 先想清楚新逻辑属于推论三的六类不变量，还是属于"理解页面"——后者不该进来 |
+| 改 Run journal 存储 / 新增一个 journal artifact | `src/agent/run-artifact-store.ts` | 路径布局 + 初始化 + append/transition + 回读身份 | 单一存储权威：Runner、Control MCP、恢复、比较与观测面只能经它读写，不得再推一遍路径；新 artifact 要同时补决策表测试 |
 | 加一个新的执行宿主 | `src/agent/host.ts`、两个 `*-host.ts` | 实现 `AgentHost` 并在 `host-registry.ts` 注册 | Core 不得新增宿主 ID 分支；能力差异要在 `capabilities` 里声明而不是隐藏 |
 | 加一个模型供应商 | `src/workflow/model-profile.ts`、`src/core/model-provider.ts` | Profile schema + 对应 Provider 适配器 | 只存 `envKey` 名字，绝不存 Key；新协议要同时更新 `AGENT_MODEL_APIS` |
 | 加一条 Control MCP 工具 | `src/agent/control-server.ts`、`control-types.ts` | 工具实现 + config schema | 先判断它是不是"门"；若是，必须在 `finalResultProblems` 里同时加校验 |

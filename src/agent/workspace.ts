@@ -5,6 +5,7 @@ import type { EnvironmentProfile } from '../workflow/environment-profile.js'
 import type { WorkflowIntakeManifest, WorkflowSecretBinding } from '../workflow/types.js'
 import type { CodexTestControlConfig } from './control-types.js'
 import { DEFAULT_AGENT_FANOUT_POLICY } from './fanout-policy.js'
+import { openRunArtifactStore } from './run-artifact-store.js'
 import type { CodexTestRisk } from './types.js'
 import { writePrivateJson } from './state.js'
 import { agentProcessEnvironment, copyPrivateFile, writePrivateText } from './provider-runtime.js'
@@ -236,16 +237,21 @@ export async function prepareAgentWorkspace(options: {
     await access(legacyAgentHome).then(() => true, () => false)
     ? legacyAgentHome
     : preferredAgentHome
-  const manifestPath = resolve(workspaceDirectory, 'test-manifest.json')
+  // The store owns the run journal layout and initialization; the workspace only
+  // publishes the paths it received and re-reads its own recovery artifacts.
+  const store = openRunArtifactStore({ runRoot: outputDirectory, manifest: options.manifest })
+  const {
+    manifestPath,
+    mutationLedgerPath,
+    environmentRequirementsPath,
+    executionReceiptsPath,
+    fieldCompositionsPath: fieldCompositionPath,
+    caseResultsPath,
+  } = store.layout
   const playwrightConfigPath = resolve(privateDirectory, 'playwright-mcp.json')
   const playwrightSecretsPath = resolve(privateDirectory, 'playwright-secrets.env')
   const controlConfigPath = resolve(privateDirectory, 'control-config.json')
-  const mutationLedgerPath = resolve(privateDirectory, 'mutation-ledger.json')
-  const environmentRequirementsPath = resolve(privateDirectory, 'environment-requirements.json')
-  const executionReceiptsPath = resolve(workspaceDirectory, 'execution-receipts.json')
-  const fieldCompositionPath = resolve(privateDirectory, 'field-compositions.json')
   const evidenceIndexPath = resolve(workspaceDirectory, 'evidence-index.json')
-  const caseResultsPath = resolve(workspaceDirectory, 'case-results.json')
   const planPath = resolve(workspaceDirectory, 'execution-plan.json')
   const workspaceHashPath = resolve(workspaceDirectory, 'workspace.sha256')
   const workspaceIdentity = {
@@ -264,10 +270,6 @@ export async function prepareAgentWorkspace(options: {
   const mcpEnvironment = agentProcessEnvironment(options.environment ?? process.env, undefined, false)
 
   if (options.resume) {
-    const existingManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WorkflowIntakeManifest
-    if (existingManifest.workflowId !== options.manifest.workflowId || existingManifest.source.sha256 !== options.manifest.source.sha256) {
-      throw new Error('Resume input does not match the existing Auto-Test workflow identity')
-    }
     const existingControl = JSON.parse(await readFile(controlConfigPath, 'utf8')) as CodexTestControlConfig
     const existingOrigins = existingControl.allowedOrigins ?? existingControl.targetUrls.map((url) => new URL(url).origin)
     const existingHash = (await readFile(workspaceHashPath, 'utf8')).trim()
@@ -296,8 +298,13 @@ export async function prepareAgentWorkspace(options: {
     if (!immutableControlMatches || !isOriginAppendOnly(existingOrigins, options.profile.origins)) {
       throw new Error('Resume contract or environment policy does not match the existing Auto-Test run')
     }
+    // Only an accepted resume may touch the run root: the store initializes the journal a resumed
+    // run is missing, which stamps empty artifacts onto the run. Running it after the contract check
+    // keeps a rejected resume from writing anything at all.
+    await store.initialize({ resume: true })
   } else {
     await writePrivateJson(manifestPath, options.manifest)
+    await store.initialize({ resume: false })
   }
   const fullAgentAccess = options.testDataAccess !== 'opaque'
   const inputIndexPath = resolve(inputDirectory, 'input-index.json')
@@ -420,21 +427,7 @@ export async function prepareAgentWorkspace(options: {
     timeouts: { action: 15_000, navigation: 90_000, expect: 10_000 },
     codegen: fullAgentAccess ? 'typescript' : 'none',
   })
-  const requirementsMissing = await access(environmentRequirementsPath).then(() => false, () => true)
-  const executionReceiptsMissing = await access(executionReceiptsPath).then(() => false, () => true)
-  const fieldCompositionMissing = await access(fieldCompositionPath).then(() => false, () => true)
-  if (!options.resume) {
-    await writePrivateJson(mutationLedgerPath, [])
-    await writePrivateJson(environmentRequirementsPath, [])
-    await writePrivateJson(executionReceiptsPath, [])
-    await writePrivateJson(fieldCompositionPath, [])
-    await writePrivateJson(evidenceIndexPath, [])
-    await writePrivateJson(caseResultsPath, [])
-  } else if (requirementsMissing) {
-    await writePrivateJson(environmentRequirementsPath, [])
-  }
-  if (options.resume && executionReceiptsMissing) await writePrivateJson(executionReceiptsPath, [])
-  if (options.resume && fieldCompositionMissing) await writePrivateJson(fieldCompositionPath, [])
+  if (!options.resume) await writePrivateJson(evidenceIndexPath, [])
   const controlConfig: CodexTestControlConfig = {
     version: '1.0',
     workflowId: options.manifest.workflowId,
@@ -446,11 +439,7 @@ export async function prepareAgentWorkspace(options: {
     evidenceDirectory,
     planPath,
     evidencePath: evidenceIndexPath,
-    caseResultsPath,
     mutationLedgerPath,
-    environmentRequirementsPath,
-    executionReceiptsPath,
-    fieldCompositionPath,
     secretValuesPath: playwrightSecretsPath,
     testDataAccess: options.testDataAccess ?? 'direct',
     fanoutPolicy: DEFAULT_AGENT_FANOUT_POLICY,

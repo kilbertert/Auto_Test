@@ -15,11 +15,13 @@ export interface AgentTestControlConfig {
   evidenceDirectory: string
   planPath: string
   evidencePath: string
-  caseResultsPath: string
+  /**
+   * The one journal key the Control MCP server needs: the Mutation Ledger path
+   * names the run root the RunArtifactStore derives every other journal path
+   * from. The journal artifact paths are deliberately not persisted here, so no
+   * stale value can redirect where a run writes its own record.
+   */
   mutationLedgerPath: string
-  environmentRequirementsPath?: string
-  executionReceiptsPath?: string
-  fieldCompositionPath?: string
   secretValuesPath?: string
   testDataAccess?: 'direct' | 'opaque'
   /** Core-owned bounded fan-out limit; absent only in legacy control configs. */
