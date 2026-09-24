@@ -2,7 +2,7 @@ name: Architecture Review
 
 on:
   schedule:
-    # 09:00 UTC, Monday–Friday. GitHub may delay scheduled runs under load.
+    # 11:00 UTC, Monday–Friday. GitHub may delay scheduled runs under load.
     - cron: "0 11 * * 1-5"
   workflow_dispatch:
 
