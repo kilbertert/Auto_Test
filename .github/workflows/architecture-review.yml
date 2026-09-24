@@ -3,7 +3,7 @@ name: Architecture Review
 on:
   schedule:
     # 09:00 UTC, Monday–Friday. GitHub may delay scheduled runs under load.
-    - cron: "0 9 * * 1-5"
+    - cron: "0 11 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
     needs: check-backlog
     if: needs.check-backlog.outputs.proceed == 'true'
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 45
     concurrency:
       group: architecture-review
       cancel-in-progress: false
