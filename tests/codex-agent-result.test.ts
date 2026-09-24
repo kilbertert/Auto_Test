@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { agentTestStructuredOutputSchema, codexTestResultSchema, enforceMutationLedger, parseAgentTestCandidate, parseAgentTestResult, parseCodexTestResult } from '../src/agent/result.js'
+import {
+  agentTestStructuredOutputSchema,
+  codexTestResultSchema,
+  parseAgentTestCandidate,
+  parseAgentTestResult,
+  parseCodexTestResult,
+} from '../src/agent/result.js'
 import type { CodexTestAgentResult } from '../src/agent/types.js'
 
 function result(): CodexTestAgentResult {
@@ -89,26 +95,6 @@ describe('Codex test result contract', () => {
     expect(() => parseAgentTestCandidate(JSON.stringify(missingEvidence))).toThrow(/schema validation.*evidence/i)
   })
 
-  it('forces a blocked outcome when the authoritative ledger still contains a pending mutation', () => {
-    const enforced = enforceMutationLedger(result(), [{
-      id: 'archive-row',
-      caseId: 'filter-catalog',
-      description: 'Archive the row created by this test',
-      risk: 'write',
-      status: 'pending',
-      createdAt: '2026-08-01T00:00:10.000Z',
-      updatedAt: '2026-08-01T00:00:10.000Z',
-      evidence: [],
-    }])
-
-    expect(enforced.outcome).toBe('blocked')
-    expect(enforced.blockers.join(' ')).toContain('archive-row')
-    expect(enforced.mutations[0]?.status).toBe('pending')
-    expect(enforced.cases[0]?.outcome).toBe('blocked')
-    expect(enforced.cases[0]).toMatchObject({ failureSource: 'agent_execution', failureKind: 'execution' })
-    expect(enforced.cases[0]?.evidence.some((item) => item.kind === 'mutation')).toBe(true)
-  })
-
   it('validates optional failure classification and field gate references', () => {
     const classified = result()
     classified.outcome = 'blocked'
@@ -190,28 +176,5 @@ describe('Codex test result contract', () => {
     expect(parseCodexTestResult(JSON.stringify(classified)).cases[0]).toMatchObject({
       failureSource: 'infrastructure', failureKind: 'execution',
     })
-  })
-
-  it('preserves an existing blocked root cause when pending mutations also require recovery', () => {
-    const infrastructureFailure = result()
-    infrastructureFailure.outcome = 'blocked'
-    infrastructureFailure.cases[0] = {
-      ...infrastructureFailure.cases[0]!,
-      outcome: 'blocked',
-      summary: 'The model provider is unavailable.',
-      failureSource: 'infrastructure',
-      failureKind: 'execution',
-    }
-    infrastructureFailure.blockers = ['The model provider is unavailable.']
-
-    const enforced = enforceMutationLedger(infrastructureFailure, [{
-      id: 'pending-write', caseId: 'filter-catalog', description: 'Recover the interrupted write', risk: 'write', status: 'pending',
-      createdAt: '2026-08-01T00:00:10.000Z', updatedAt: '2026-08-01T00:00:10.000Z', evidence: [],
-    }])
-
-    expect(enforced.cases[0]).toMatchObject({
-      outcome: 'blocked', failureSource: 'infrastructure', failureKind: 'execution',
-    })
-    expect(enforced.blockers.join(' ')).toContain('pending-write')
   })
 })

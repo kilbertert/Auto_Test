@@ -69,7 +69,8 @@ src/cli/easy.ts | src/cli/agent-test.ts
 4. **Two-turn design**: an execution turn (no output schema, full agent access) then a delivery turn
    on the **same thread** with `codexTestResultSchema` (`src/agent/result.ts`). Splitting prevents an
    oversized first request from failing before any tool call.
-5. Harness validates the returned `CodexTestAgentResult` deterministically (`finalResultProblems`):
+5. Harness validates the returned `CodexTestAgentResult` deterministically through the one settlement
+   seam (`settlementProblems` in `src/agent/result-settlement.ts`):
    `workflowId` + `sourceSha256` match, every manifest case appears exactly once with evidence,
    outcome consistency, `product_failed` attributed to `product`, `blocked` has a blocker, and the
    Mutation Ledger has no `pending` entries. Up to `--max-finalization-turns` (default 2) correction

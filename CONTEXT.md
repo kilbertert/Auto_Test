@@ -28,7 +28,11 @@ _Avoid_: Audit trail, Journal
 
 **Result contract**:
 The machine-checkable settlement of a run, including per-case outcomes and a
-summary.
+summary. Its rules — identity, Case membership, evidence, failure
+classification, receipt and environment-requirement references, top-level
+outcome, and what a pending Mutation Ledger row or environment requirement does
+to the verdict — live in one module (`ResultSettlement`); no other module
+re-implements them.
 _Avoid_: Report, Verdict
 
 **Run root / state file**:

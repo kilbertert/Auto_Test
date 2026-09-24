@@ -5,7 +5,9 @@ import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { compareAgentRuns } from '../src/agent/competition.js'
-import type { CodexTestAgentResult, CodexTestAgentState } from '../src/agent/types.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
+import type { CodexTestAgentResult, CodexTestAgentState, CodexTestEnvironmentRequirement } from '../src/agent/types.js'
+import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
 
 const directories: string[] = []
 
@@ -62,6 +64,24 @@ async function makeRun(root: string, hostId: string, runResult: CodexTestAgentRe
   await writeFile(resolve(directory, 'agent-workspace', 'execution-receipts.json'), '[]')
   await writeFile(resolve(directory, 'agent-workspace', 'evidence', 'fixture.txt'), 'fixture evidence')
   return directory
+}
+
+/** The immutable test contract one run was executed against. */
+async function contractManifest(directory: string): Promise<WorkflowIntakeManifest> {
+  return JSON.parse(await readFile(resolve(directory, 'agent-workspace', 'test-manifest.json'), 'utf8')) as WorkflowIntakeManifest
+}
+
+/** Rewrite one run's settled Result and keep its state consistent, so only the mutated claim differs. */
+async function rewriteRun(directory: string, mutate: (claim: CodexTestAgentResult) => void): Promise<CodexTestAgentResult> {
+  const resultPath = resolve(directory, 'codex-agent.result.json')
+  const claim = JSON.parse(await readFile(resultPath, 'utf8')) as CodexTestAgentResult
+  mutate(claim)
+  await writeFile(resultPath, JSON.stringify(claim))
+  const statePath = resolve(directory, 'codex-agent.state.json')
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as CodexTestAgentState
+  state.outcome = claim.outcome
+  await writeFile(statePath, JSON.stringify(state))
+  return claim
 }
 
 describe('AgentHost competition contract', () => {
@@ -216,7 +236,90 @@ describe('AgentHost competition contract', () => {
     await writeFile(ompResultPath, JSON.stringify(ompResult))
     const report = await compareAgentRuns({ runDirectories: [codex, omp] })
     expect(report.contractStatus).toBe('invalid')
-    expect(report.contractProblems.some((problem) => problem.includes('未知执行回执'))).toBe(true)
+    expect(report.contractProblems).toEqual(['omp: case case-one references unknown execution receipts'])
+    expect(settlementProblems(settlementInputFromResult(ompResult, { manifest: await contractManifest(omp) })))
+      .toEqual(['case case-one references unknown execution receipts'])
+  })
+
+  it('judges a candidate on the settlement seam, with the same verdict the Runner gives the same claim', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-seam-'))
+    directories.push(root)
+    const codex = await makeRun(root, 'codex', result())
+    const omp = await makeRun(root, 'omp', result())
+    // A product-failed case that is not product-sourced is a claim the Result
+    // settlement seam rejects; the comparator must report the seam's problem
+    // rather than its own re-derivation of the classification rule.
+    const claim = await rewriteRun(omp, (item) => {
+      item.outcome = 'product_failed'
+      item.productDefects = ['Confirmation is missing']
+      item.cases[0]!.outcome = 'product_failed'
+      item.cases[0]!.failureSource = 'agent_execution'
+      item.cases[0]!.failureKind = 'assertion'
+    })
+
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+
+    expect(report.contractStatus).toBe('invalid')
+    expect(report.verdict).toBe('invalid')
+    // Every problem the comparator reports for that candidate is the authority's.
+    expect(report.contractProblems).toEqual(['omp: product-failed case case-one is not classified as product-sourced'])
+    expect(settlementProblems(settlementInputFromResult(claim, { manifest: await contractManifest(omp) })))
+      .toEqual(report.contractProblems.map((problem) => problem.slice('omp: '.length)))
+  })
+
+  it('reconciles an environment-blocked candidate against its recorded requirement rows', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-seam-environment-'))
+    directories.push(root)
+    const requirement: CodexTestEnvironmentRequirement = {
+      id: 'environment-origin-fixture',
+      caseIds: ['case-one'],
+      kind: 'origin',
+      origin: 'https://fixture.example.test',
+      condition: 'Target origin is unreachable',
+      evidence: ['evidence/requirement.md'],
+      status: 'pending',
+      requestedAt: '2026-08-23T00:00:00.000Z',
+    }
+    const codex = await makeRun(root, 'codex', result('blocked'))
+    const omp = await makeRun(root, 'omp', result('blocked'))
+    for (const directory of [codex, omp]) {
+      await rewriteRun(directory, (claim) => {
+        claim.blockers = ['Target origin is unreachable']
+        claim.environmentRequirements = [requirement]
+        claim.cases[0]!.failureSource = 'environment'
+        claim.cases[0]!.failureKind = 'environment'
+        claim.cases[0]!.environmentRequirementIds = [requirement.id]
+      })
+      await writeFile(resolve(directory, '.agent-private', 'environment-requirements.json'), JSON.stringify([requirement]))
+    }
+
+    const reconciled = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(reconciled.contractStatus).toBe('valid')
+    expect(reconciled.verdict).toBe('equivalent')
+
+    // With no recorded row the reference is unverifiable, and the comparator
+    // fails closed with the seam's problem — not with one of its own.
+    const claim = await rewriteRun(omp, (item) => {
+      item.environmentRequirements = []
+    })
+    await rm(resolve(omp, '.agent-private', 'environment-requirements.json'))
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('invalid')
+    expect(report.contractProblems).toEqual([`omp: environment-blocked case case-one references unknown environment requirement ${requirement.id}`])
+    expect(settlementProblems(settlementInputFromResult(claim, { manifest: await contractManifest(omp) })))
+      .toEqual(report.contractProblems.map((problem) => problem.slice('omp: '.length)))
+  })
+
+  it('reports a disagreement without declaring a winner when no independent oracle is supplied', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-competition-no-winner-'))
+    directories.push(root)
+    const codex = await makeRun(root, 'codex', result('passed'))
+    const omp = await makeRun(root, 'omp', result('product_failed'))
+    const report = await compareAgentRuns({ runDirectories: [codex, omp] })
+    expect(report.contractStatus).toBe('valid')
+    expect(report.verdict).toBe('different')
+    expect(report.winnerHostId).toBeUndefined()
+    expect(report.caseDifferences).toHaveLength(1)
   })
 
   it('returns an invalid contract instead of crashing on a malformed result artifact', async () => {

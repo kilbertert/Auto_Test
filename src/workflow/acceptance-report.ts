@@ -5,9 +5,21 @@ import type {
   WorkflowIntakeManifest,
 } from './types.js'
 
+/**
+ * Build the acceptance report of one workflow intake against its acceptance
+ * evidence.
+ *
+ * The Result contract of the run the acceptance names is settled elsewhere: the
+ * one settlement seam decides it, and `contractProblems` carries that seam's
+ * verdict verbatim so a report and the Runner's diagnostics quote one list.
+ * This builder never re-orders, re-words, extends, or re-adjudicates it — a
+ * report that judged contract problems itself could disagree with the Runner
+ * about the same Case claim.
+ */
 export function buildWorkflowAcceptanceReport(
   workflow: WorkflowIntakeManifest,
   evidence: WorkflowAcceptanceEvidence,
+  contractProblems: readonly string[] = [],
 ): WorkflowAcceptanceReport {
   if (workflow.workflowId !== evidence.workflowId) throw new Error('Acceptance evidence workflowId does not match intake manifest')
   if (workflow.source.sha256 !== evidence.sourceSha256) throw new Error('Acceptance evidence source hash does not match intake manifest')
@@ -25,6 +37,7 @@ export function buildWorkflowAcceptanceReport(
       imageCount: workflow.embeddedImages.length + workflow.supplementalImages.length,
     },
     acceptance: structuredClone(evidence),
+    contractProblems: [...contractProblems],
     summary: {
       phases: evidence.phases.length,
       passed: count('passed'),
@@ -67,6 +80,7 @@ export function renderWorkflowAcceptanceHtml(report: WorkflowAcceptanceReport): 
 <section class="gate"><div class="metric"><span>业务 canary</span><strong class="status status-${h(evidence.businessCanaryStatus)}">${statusLabel(evidence.businessCanaryStatus)}</strong></div><div class="metric"><span>产品验收门</span><strong class="status status-${h(evidence.productAcceptanceStatus)}">${statusLabel(evidence.productAcceptanceStatus)}</strong></div><div class="metric"><span>阶段</span><strong>${report.summary.passed}/${report.summary.phases}</strong></div><div class="metric"><span>断言</span><strong>${report.summary.assertionsPassed}/${report.summary.assertions}</strong></div></section>
 <main><section class="overview"><h2>输入与完整性</h2><p>Sheet：${h(report.workflow.source.sheetName)} · SHA-256：<code>${h(report.workflow.source.sha256)}</code></p><p>目标：${report.workflow.targetUrls.map((url) => `<code>${h(url)}</code>`).join(' · ')}</p><p>图片资产：${report.workflow.imageCount} · 所需能力：${report.workflow.requiredCapabilities.map(h).join(', ')}</p></section>${phaseSections}
 <section class="gaps"><h2>产品验收阻断项</h2><ul>${evidence.productGaps.map((gap) => `<li>${h(gap)}</li>`).join('')}</ul></section>
+${report.contractProblems.length > 0 ? `<section class="gaps"><h2>结果合同问题</h2><ul>${report.contractProblems.map((problem) => `<li>${h(problem)}</li>`).join('')}</ul></section>` : ''}
 <section class="overview"><h2>最终状态</h2><p>活跃充电订单：${evidence.finalState.activeChargingOrders} · 活跃占位费订单：${evidence.finalState.activeOccupancyOrders} · 新 Context 回到登录页：${evidence.finalState.freshContextReturnedToLogin ? '是' : '否'} · 模拟桩连接：${evidence.finalState.simulatorConnected ? '是' : '否'}</p><ul>${evidence.finalState.notes.map((note) => `<li>${h(note)}</li>`).join('')}</ul></section></main>
 <footer>Account: ${h(evidence.accountRef)} · ${h(evidence.startedAt)} — ${h(evidence.finishedAt)} · Source hash verified</footer></body></html>`
 }

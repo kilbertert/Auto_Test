@@ -183,6 +183,16 @@ export interface WorkflowAcceptanceEvidence {
   workflowId: string
   sourceSha256: string
   mode: 'canary' | 'full'
+  /**
+   * The AgentHost Run this acceptance covers. When present, the acceptance
+   * report submits that run's settled Result to the one Result settlement seam —
+   * the same settlement the Runner performs when it finalizes — so the report
+   * quotes the Runner's contract problem list instead of adjudicating contract
+   * problems itself. `src/workflow` must not depend on `src/agent`
+   * (architecture.yml), so the acceptance CLI stays the Adapter that reads
+   * these artifacts and asks the seam; only the verdict reaches the report.
+   */
+  runDirectory?: string
   startedAt: string
   finishedAt: string
   accountRef: string
@@ -211,6 +221,13 @@ export interface WorkflowAcceptanceReport {
     imageCount: number
   }
   acceptance: WorkflowAcceptanceEvidence
+  /**
+   * The one Result settlement seam's canonical contract problem list for the
+   * run this acceptance covers — the same list the Runner's final settlement
+   * produces for it. Empty when the acceptance names no run, and empty when
+   * that run settled clean; never a verdict this report reached on its own.
+   */
+  contractProblems: string[]
   summary: {
     phases: number
     passed: number

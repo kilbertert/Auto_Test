@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { resolve } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
+import { acceptanceRunContractProblems } from '../src/cli/workflow-acceptance-report.js'
 import { redactReportValue } from '../src/workflow/report-redact.js'
 import { buildWorkflowAcceptanceReport, renderWorkflowAcceptanceHtml } from '../src/workflow/acceptance-report.js'
-import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest } from '../src/workflow/types.js'
+import type { CodexTestAgentResult } from '../src/agent/types.js'
+import type { WorkflowAcceptanceEvidence, WorkflowIntakeManifest, WorkflowPhaseDraft } from '../src/workflow/types.js'
+
+const acceptedPhase: WorkflowPhaseDraft = {
+  id: 'phase-1', sourceCaseId: 'phase-1', title: 'Charge', sourceRow: 2, risk: 'write',
+  steps: [], resources: [], secretBindings: [], imageIds: [], review: { status: 'draft', ambiguities: [] },
+}
 
 const workflow: WorkflowIntakeManifest = {
   version: '1.0',
@@ -10,7 +21,7 @@ const workflow: WorkflowIntakeManifest = {
   source: { format: 'xlsx', fileName: 'flow.xlsx', sheetName: 'Flow', sha256: 'a'.repeat(64) },
   targetUrls: ['https://example.test/'],
   requiredCapabilities: ['multiOrigin'],
-  phases: [],
+  phases: [acceptedPhase],
   embeddedImages: [],
   supplementalImages: [],
   review: { status: 'draft', reasons: [] },
@@ -43,6 +54,12 @@ const evidence: WorkflowAcceptanceEvidence = {
   },
   productGaps: ['executor missing'],
 }
+
+const directories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
 
 describe('workflow acceptance report', () => {
   it('checks intake integrity and summarizes evidence', () => {
@@ -127,11 +144,7 @@ describe('workflow acceptance report', () => {
       ...evidence,
       phases: [{
         ...evidence.phases[0]!,
-        assertions: [{
-          description: 'ended',
-          passed: true,
-          evidence: 'cookie: session=abc|secret-tail-value',
-        }],
+        assertions: [{ description: 'ended', passed: true, evidence: 'cookie: session=abc|secret-tail-value' }],
       }],
     })
     const serialized = JSON.stringify(redactReportValue(report, {}))
@@ -153,5 +166,133 @@ describe('workflow acceptance report', () => {
 
     expect(serialized).not.toContain('abc123')
     expect(serialized).not.toContain('status=200')
+  })
+})
+
+/** The immutable manifest a run copies into its own workspace, unchanged. */
+function runManifest(): WorkflowIntakeManifest {
+  return { ...workflow }
+}
+
+function runResult(outcome: 'passed' | 'product_failed'): CodexTestAgentResult {
+  return {
+    version: '1.0',
+    workflowId: 'flow-1',
+    sourceSha256: workflow.source.sha256,
+    outcome,
+    summary: 'fixture',
+    startedAt: '2026-07-28T00:00:00.000Z',
+    finishedAt: '2026-07-28T00:01:00.000Z',
+    cases: [{
+      caseId: 'phase-1',
+      title: 'Charge',
+      outcome,
+      summary: 'fixture',
+      // A product-failed case claiming an environment source is the contract
+      // violation the settlement seam is expected to catch, not the report.
+      ...(outcome === 'product_failed' ? { failureSource: 'environment' as const, failureKind: 'environment' as const } : {}),
+      evidence: [{ kind: 'observation', description: 'fixture evidence', path: 'evidence/fixture.txt' }],
+    }],
+    mutations: [],
+    environmentRequirements: [],
+    blockers: [],
+    productDefects: outcome === 'product_failed' ? ['fixture defect'] : [],
+    nextActions: [],
+  }
+}
+
+async function makeRun(root: string, result: CodexTestAgentResult): Promise<string> {
+  const directory = resolve(root, 'run')
+  await mkdir(resolve(directory, '.agent-private'), { recursive: true })
+  await mkdir(resolve(directory, 'agent-workspace'), { recursive: true })
+  await writeFile(resolve(directory, 'agent-workspace', 'test-manifest.json'), JSON.stringify(runManifest()))
+  await writeFile(resolve(directory, 'codex-agent.result.json'), JSON.stringify(result))
+  await writeFile(resolve(directory, '.agent-private', 'environment-requirements.json'), '[]')
+  await writeFile(resolve(directory, 'agent-workspace', 'execution-receipts.json'), '[]')
+  return directory
+}
+
+describe('workflow acceptance report result contract', () => {
+  it("quotes the Result settlement seam's own problem list for the run the acceptance names", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-contract-'))
+    directories.push(root)
+    const claim = runResult('product_failed')
+    const runDirectory = await makeRun(root, claim)
+
+    const problems = await acceptanceRunContractProblems(runDirectory, workflow)
+    const authority = settlementProblems(settlementInputFromResult(claim, { manifest: workflow }))
+    expect(problems).toEqual(authority)
+    expect(problems).toContain('product-failed case phase-1 is not classified as product-sourced')
+
+    const report = buildWorkflowAcceptanceReport(workflow, { ...evidence, runDirectory }, problems)
+    expect(report.contractProblems).toEqual(authority)
+  })
+
+  it('reports no contract problems for a run that settled clean', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-clean-'))
+    directories.push(root)
+    const claim = runResult('passed')
+    const runDirectory = await makeRun(root, claim)
+
+    expect(await acceptanceRunContractProblems(runDirectory, workflow)).toEqual([])
+    const report = buildWorkflowAcceptanceReport(workflow, { ...evidence, runDirectory }, [])
+    expect(report.contractProblems).toEqual([])
+    expect(renderWorkflowAcceptanceHtml(report)).not.toContain('结果合同问题')
+  })
+
+  it('rejects a run that settled an earlier revision of the accepted workbook', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-revision-'))
+    directories.push(root)
+    // The same workflowId of an earlier revision: only the source hash separates
+    // it from the accepted intake, so the run must not be reported as a clean
+    // contract verdict for an execution it never covered.
+    const earlierRevision = { ...runResult('passed'), sourceSha256: 'd'.repeat(64) }
+    const runDirectory = await makeRun(root, earlierRevision)
+
+    expect(await acceptanceRunContractProblems(runDirectory, workflow))
+      .toEqual(['sourceSha256 does not match the original test material'])
+  })
+
+  it('fails closed on a settled artifact that is not a schema-valid result', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-malformed-'))
+    directories.push(root)
+    const directory = resolve(root, 'run')
+    await mkdir(resolve(directory, '.agent-private'), { recursive: true })
+    await mkdir(resolve(directory, 'agent-workspace'), { recursive: true })
+    await writeFile(resolve(directory, 'agent-workspace', 'test-manifest.json'), JSON.stringify(runManifest()))
+    await writeFile(resolve(directory, 'codex-agent.result.json'), JSON.stringify({ version: '1.0' }))
+
+    await expect(acceptanceRunContractProblems(directory, workflow)).rejects.toThrow(/结构无效/)
+  })
+
+  it('fails closed on a recorded row artifact that is not an array of records', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-rows-'))
+    directories.push(root)
+    const runDirectory = await makeRun(root, runResult('passed'))
+    await writeFile(resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'), JSON.stringify({ recorded: true }))
+
+    await expect(acceptanceRunContractProblems(runDirectory, workflow)).rejects.toThrow(/结构无效/)
+  })
+
+  it('fails fast when the acceptance names a run whose settled artifacts cannot be read', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'auto-test-acceptance-missing-'))
+    directories.push(root)
+    await expect(acceptanceRunContractProblems(resolve(root, 'absent-run'), workflow)).rejects.toThrow(/无法读取/)
+  })
+
+  it('escapes settlement problems in the static HTML report', () => {
+    const report = buildWorkflowAcceptanceReport(workflow, evidence, ['case <script>phase</script> has no execution evidence'])
+    const html = renderWorkflowAcceptanceHtml(report)
+    expect(html).toContain('结果合同问题')
+    expect(html).toContain('&lt;script&gt;phase&lt;/script&gt;')
+    expect(html).not.toContain('<script>phase</script>')
+  })
+
+  it('keeps settlement problems under the report redaction policy', () => {
+    const report = buildWorkflowAcceptanceReport(workflow, evidence, ['case phase-1 blocked: private-token unavailable'])
+    const serialized = JSON.stringify(redactReportValue(report, { AUTO_TEST_SECRET_TOKEN: 'private-token' }))
+
+    expect(serialized).not.toContain('private-token')
+    expect(serialized).toContain('<redacted>')
   })
 })

@@ -10,13 +10,31 @@ import type {
   AgentTestOutcome,
   AgentTestResult,
   CodexTestAgentState,
+  CodexTestEnvironmentRequirement,
   CodexTestExecutionReceipt,
   CodexTestMutationLedgerEntry,
 } from './types.js'
 import { parseAgentTestResult } from './result.js'
+import { settlementInputFromResult, settlementProblems } from './result-settlement.js'
 import { failureModeCounts } from './failure-mode.js'
 import { usageFrom } from './host.js'
 import { writePrivateJson } from './state.js'
+
+/**
+ * The cross-host comparison Adapter.
+ *
+ * Comparison re-reads Runs that some other path already settled, so it asks the
+ * Result settlement seam whether each candidate is a valid settlement of the one
+ * immutable test contract, and `contractStatus` / `verdict` are that authority
+ * verdict. What stays here is what is genuinely comparison-specific: reading the
+ * run's artifacts, run identity and terminal state, cross-candidate equality of
+ * the frozen inputs, the existence and workspace containment of the evidence
+ * paths a claim cites, the checks on artifacts the seam never reads — receipt
+ * records, Result mutation projection, evidence presentation — and the
+ * comparison vocabulary itself: `equivalent` / `different` / `undetermined` /
+ * `oracle_winner`, which never declares a winner from one host's own `passed`
+ * outcome.
+ */
 
 export interface AgentCompetitionOracleCase {
   caseId: string
@@ -113,6 +131,8 @@ interface LoadedCandidate {
   state: CodexTestAgentState
   ledger: CodexTestMutationLedgerEntry[]
   receipts: CodexTestExecutionReceipt[]
+  /** Recorded environment-requirement rows; the authority settlement reconciles against. */
+  recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[]
   selection: AgentHostSelectionArtifact
   validationProblems?: string[]
   manifest?: WorkflowIntakeManifest
@@ -408,10 +428,26 @@ function duplicateValues(values: string[]): string[] {
   return [...duplicates]
 }
 
-function outcomeForCases(cases: AgentTestCaseResult[]): AgentTestOutcome {
-  return cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+/**
+ * The authority verdict for one candidate's settled Result.
+ *
+ * The comparator normalizes the Result's cases into the one Case-claim
+ * representation and submits them to the same seam the Runner's final
+ * settlement uses — same immutable manifest, same recorded environment
+ * requirement rows, same receipts — so a run that the Runner would block can
+ * never compare as valid here. Each problem carries the host label because a
+ * report has to stay attributable; the verdict text itself is the seam's. The
+ * Runner's live replay projection is not reproduced: the comparator never reads
+ * the event log, so a candidate is judged on the invariants that need no browser
+ * or model, and anything the seam cannot see stays in this Adapter's own checks.
+ */
+function candidateContractProblems(candidate: LoadedCandidate, manifest: WorkflowIntakeManifest): string[] {
+  const { result } = candidate
+  return settlementProblems(settlementInputFromResult(result, {
+    manifest,
+    environmentRequirements: candidate.recordedEnvironmentRequirements,
+    executionReceipts: candidate.receipts,
+  })).map((problem) => `${candidate.summary.hostId}: ${problem}`)
 }
 
 async function evidencePathEscapesBase(baseDirectory: string, evidencePath: string, allowAbsolute: boolean): Promise<boolean> {
@@ -436,6 +472,16 @@ async function evidencePathEscapesWorkspace(runDirectory: string, evidencePath: 
   return evidencePathEscapesBase(resolve(runDirectory, 'agent-workspace'), evidencePath, false)
 }
 
+/**
+ * The artifact-local half of a candidate's validation: the transport shape of
+ * the files this Adapter read, the Run's own identity and terminal state, and
+ * the existence and workspace containment of the paths a claim cites. Everything
+ * that judges whether a Case claim is a valid settlement — identity against the
+ * immutable contract, Case membership, Evidence completeness, failure
+ * classification, receipt and environment-requirement references, and the
+ * top-level outcome — is asked of the settlement seam instead, so this Adapter
+ * can no longer accept a claim the Runner's final settlement blocks.
+ */
 async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCaseIds: Set<string>): Promise<string[]> {
   const problems: string[] = []
   const { summary, result, state, ledger, receipts, selection } = candidate
@@ -478,20 +524,13 @@ async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCa
   }
   if (summary.pendingMutationCount > 0) problems.push(`${summary.hostId} 存在 pending Mutation Ledger`)
 
-  const caseIds = cases.map((item) => item.caseId)
-  for (const duplicate of duplicateValues(caseIds)) problems.push(`${summary.hostId} 存在重复 case 结果 ${duplicate}`)
-  const actualCaseIds = new Set(caseIds)
-  for (const caseId of expectedCaseIds) if (!actualCaseIds.has(caseId)) problems.push(`${summary.hostId} 缺少 case ${caseId}`)
-  for (const caseId of actualCaseIds) if (!expectedCaseIds.has(caseId)) problems.push(`${summary.hostId} 产生了未在比较合同中的 case ${caseId}`)
-  if (result.outcome !== outcomeForCases(cases)) problems.push(`${summary.hostId} 的 top-level outcome 与逐 case outcome 不一致`)
-
-  const receiptById = new Map<string, CodexTestExecutionReceipt>()
+  const receiptIds = new Set<string>()
   for (const receipt of receiptEntries) {
-    if (!receipt.id || receiptById.has(receipt.id)) {
+    if (!receipt.id || receiptIds.has(receipt.id)) {
       problems.push(`${summary.hostId} 的执行回执 id 缺失或重复`)
       continue
     }
-    receiptById.set(receipt.id, receipt)
+    receiptIds.add(receipt.id)
     if (receipt.status !== 'completed') problems.push(`${summary.hostId} 存在非 completed 执行回执 ${receipt.id}`)
     if (receipt.caseId && !expectedCaseIds.has(receipt.caseId)) problems.push(`${summary.hostId} 的回执 ${receipt.id} 引用了未知 case ${receipt.caseId}`)
   }
@@ -500,7 +539,6 @@ async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCa
       problems.push(`${summary.hostId} 的 case ${item.caseId} 证据不是数组`)
       continue
     }
-    if (item.evidence.length === 0) problems.push(`${summary.hostId} 的 case ${item.caseId} 没有证据`)
     for (const evidence of item.evidence) {
       if (!evidence || typeof evidence !== 'object' || typeof evidence.description !== 'string' || !evidence.description.trim()) {
         problems.push(`${summary.hostId} 的 case ${item.caseId} 存在空证据说明`)
@@ -516,18 +554,6 @@ async function validateCandidateArtifacts(candidate: LoadedCandidate, expectedCa
     const cited = Array.isArray(item.executionReceiptIds) ? item.executionReceiptIds : []
     if (item.executionReceiptIds !== undefined && !Array.isArray(item.executionReceiptIds)) problems.push(`${summary.hostId} 的 case ${item.caseId} 执行回执引用不是数组`)
     for (const duplicate of duplicateValues(cited)) problems.push(`${summary.hostId} 的 case ${item.caseId} 重复引用回执 ${duplicate}`)
-    for (const receiptId of cited) {
-      const receipt = receiptById.get(receiptId)
-      if (!receipt) {
-        problems.push(`${summary.hostId} 的 case ${item.caseId} 引用了未知执行回执 ${receiptId}`)
-      } else if (receipt.caseId && receipt.caseId !== item.caseId) {
-        problems.push(`${summary.hostId} 的 case ${item.caseId} 引用了另一 case 的执行回执 ${receiptId}`)
-      }
-    }
-    if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`${summary.hostId} 的 passed case ${item.caseId} 带有失败分类`)
-    if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`${summary.hostId} 的非 passed case ${item.caseId} 缺少失败分类`)
-    if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`${summary.hostId} 的 product_failed case ${item.caseId} 不是 product 来源`)
-    if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`${summary.hostId} 的 blocked case ${item.caseId} 不能是 product 来源`)
   }
 
   const ledgerById = new Map<string, CodexTestMutationLedgerEntry>()
@@ -649,6 +675,19 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
   else if (!Array.isArray(ledgerArtifact.value)) validationProblems.push(`${candidateLabel} 的 Mutation Ledger 不是数组`)
   else if (ledgerArtifact.value.some((entry) => !recordValue(entry))) validationProblems.push(`${candidateLabel} 的 Mutation Ledger 包含无效条目`)
 
+  // The recorded requirement rows are the authority a claim's environment
+  // references are reconciled against, so the settlement seam receives the same
+  // rows the Runner's final settlement receives. A run that never requested an
+  // environment prerequisite has no such artifact and is settled against none.
+  const requirementsArtifact = await readArtifact<CodexTestEnvironmentRequirement[]>(resolve(runDirectory, '.agent-private', 'environment-requirements.json'))
+  let recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = []
+  if (Array.isArray(requirementsArtifact.value) && requirementsArtifact.value.every((entry) => Boolean(recordValue(entry)))) {
+    recordedEnvironmentRequirements = requirementsArtifact.value
+  }
+  if (requirementsArtifact.error) validationProblems.push(`${candidateLabel} 的环境需求无法读取：${requirementsArtifact.error}`)
+  else if (requirementsArtifact.value !== undefined && !Array.isArray(requirementsArtifact.value)) validationProblems.push(`${candidateLabel} 的环境需求不是数组`)
+  else if (Array.isArray(requirementsArtifact.value) && requirementsArtifact.value.some((entry) => !recordValue(entry))) validationProblems.push(`${candidateLabel} 的环境需求包含无效条目`)
+
   const receiptsArtifact = await readArtifact<CodexTestExecutionReceipt[]>(resolve(runDirectory, 'agent-workspace', 'execution-receipts.json'))
   let receipts: CodexTestExecutionReceipt[] = []
   if (Array.isArray(receiptsArtifact.value) && receiptsArtifact.value.every((receipt) => Boolean(recordValue(receipt)))) {
@@ -732,6 +771,7 @@ async function loadCandidate(runDirectoryInput: string, oracle?: AgentCompetitio
     state,
     ledger,
     receipts,
+    recordedEnvironmentRequirements,
     selection,
     ...(manifest ? { manifest } : {}),
     ...(inputBundle ? { inputBundle } : {}),
@@ -760,8 +800,8 @@ async function contractProblems(candidates: LoadedCandidate[], manifest: Workflo
   const expectedCaseIds = manifestCaseIds(contractManifest)
   if (expectedCaseIds.size === 0) problems.push('比较合同没有 case')
   if (contractManifest && contractManifest.phases.length !== expectedCaseIds.size) problems.push('Manifest 存在重复 case ID')
-  if (contractManifest && contractManifest.workflowId !== workflowId) problems.push('Manifest workflowId 与候选结果不一致')
-  if (contractManifest && contractManifest.source.sha256 !== sourceSha256) problems.push('Manifest sourceSha256 与候选结果不一致')
+  // Identity between the contract and each candidate's Result is judged by the
+  // settlement seam against the same manifest, so it is not repeated here.
   const inputBundleSha256 = candidates[0]?.summary.inputBundleSha256
   if (!inputBundleSha256) problems.push('比较合同缺少 immutable input bundle')
   const manifestSha256Value = candidates[0]?.summary.manifestSha256
@@ -790,6 +830,7 @@ async function contractProblems(candidates: LoadedCandidate[], manifest: Workflo
       }
     }
     problems.push(...(candidate.validationProblems ?? []), ...await validateCandidateArtifacts(candidate, expectedCaseIds))
+    if (contractManifest) problems.push(...candidateContractProblems(candidate, contractManifest))
   }
   if (oracle && !recordValue(oracle)) problems.push('oracle 必须是 JSON 对象')
   else if (oracle && workflowId && isSha256(sourceSha256)) problems.push(...validateOracle(oracle, workflowId, sourceSha256, expectedCaseIds))

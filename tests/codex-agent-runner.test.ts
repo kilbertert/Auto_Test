@@ -1,21 +1,40 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { buildCodexExecutionEpochs } from '../src/agent/execution-epochs.js'
 import type { AgentTestProgress } from '../src/agent/progress.js'
 import { runAgentTest } from '../src/agent/runner.js'
-import type { CodexTestAgentResult } from '../src/agent/types.js'
+import { settlementInputFromResult, settlementProblems } from '../src/agent/result-settlement.js'
+import type { CodexTestAgentResult, CodexTestExecutionReceipt } from '../src/agent/types.js'
 import type { ModelProfile } from '../src/workflow/model-profile.js'
-import type { WorkflowIntakeManifest } from '../src/workflow/types.js'
+import type { WorkflowFailureMode, WorkflowIntakeManifest, WorkflowOutcomeContract } from '../src/workflow/types.js'
 
+const root = resolve(import.meta.dirname, '..')
 const directories: string[] = []
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
+
+/** Flatten one AgentHost turn input into the prompt text it carried. */
+function promptText(input: unknown): string {
+  if (typeof input === 'string') return input
+  return (input as Array<{ type: string; text?: string }>)
+    .filter((item) => item.type === 'text')
+    .map((item) => item.text ?? '')
+    .join('\n')
+}
+
+/** Every product source file, so a second copy of a contract rule cannot hide in another layer. */
+async function productSourceFiles(): Promise<string[]> {
+  const files = await readdir(resolve(root, 'src'), { withFileTypes: true, recursive: true })
+  return files
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts'))
+    .map((entry) => resolve(entry.parentPath ?? resolve(root, 'src'), entry.name))
+}
 
 function manifest(): WorkflowIntakeManifest {
   return {
@@ -325,6 +344,134 @@ describe('adaptive Codex epochs', () => {
     expect(run.result?.nextActions).toEqual([`补充环境前置条件：${condition}，然后使用原结果目录继续上次测试。`])
     expect(run.state.runInterruption).toMatchObject({ code: 'provider_rate_limited', stage: 'finalization' })
   })
+
+  it('recovers an environment-blocked epoch delivery against the recorded requirement rows', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-delivery-requirement-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    const condition = '需要可控制测试设备状态'
+    const requirementId = 'environment-physical-case-one'
+    const run = await runAgentTest({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' },
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        let turn = 0
+        return {
+          id: 'thread-epoch-requirement',
+          runStreamed: async (_input, options) => {
+            turn += 1
+            if (turn === 1) {
+              const workspace = resolve(outputDirectory, 'agent-workspace')
+              await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+              await writeFile(resolve(workspace, 'evidence', 'device-state.png'), 'fixture')
+              await writeFile(resolve(outputDirectory, '.agent-private', 'environment-requirements.json'), JSON.stringify([{
+                id: requirementId, caseIds: ['case-one'], kind: 'physical',
+                origin: 'https://tasks.example.test', condition,
+                evidence: ['evidence/device-state.png'], status: 'pending', requestedAt: '2026-08-12T00:00:00.000Z',
+              }]))
+              await writeFile(resolve(workspace, 'case-results.epoch-0001.json'), JSON.stringify({
+                version: '1.0', kind: 'case-results', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+                generatedAt: '2026-08-12T00:00:30.000Z',
+                cases: [{
+                  caseId: 'case-one', title: '第一条', outcome: 'blocked', summary: '设备状态不可控，交付中断',
+                  failureSource: 'environment', failureKind: 'environment',
+                  environmentRequirementIds: [requirementId], evidencePaths: ['evidence/device-state.png'],
+                }],
+                mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+              }))
+              return eventStream('environment prerequisite recorded', 'thread-epoch-requirement')
+            }
+            if (options?.outputSchema) {
+              return failedEventStream('provider quota exceeded', 'thread-epoch-requirement')
+            }
+            return eventStream('unreachable', 'thread-epoch-requirement')
+          },
+        }
+      },
+    })
+
+    // The recovered delivery is authoritative for the case facts, and the
+    // settlement seam reconciled its requirement reference against the recorded
+    // row instead of rejecting the delivery for an unknown requirement.
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({
+      caseId: 'case-one', outcome: 'blocked', failureSource: 'environment', failureKind: 'environment',
+      environmentRequirementIds: [requirementId], summary: '设备状态不可控，交付中断',
+    })
+    expect(run.result?.blockers).toEqual(['设备状态不可控，交付中断', condition])
+    expect(run.result?.environmentRequirements).toEqual([expect.objectContaining({ id: requirementId, status: 'pending' })])
+  })
+
+  it('still settles a blocked run when the recorded execution receipts cannot be read', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-epoch-unreadable-receipts-'))
+    directories.push(directory)
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+    // A turn whose delivery carries no browser action, so nothing rewrites the
+    // corrupt receipt log this scenario depends on.
+    const quietTurn = (text: string): { events: AsyncGenerator<ThreadEvent> } => ({
+      events: (async function* () {
+        yield { type: 'thread.started', thread_id: 'thread-unreadable-receipts' } as ThreadEvent
+        yield { type: 'item.completed', item: { id: 'message-unreadable-receipts', type: 'agent_message', text } } as ThreadEvent
+        yield { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 8 } } as ThreadEvent
+      })(),
+    })
+
+    const run = await runAgentTest({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-unreadable-receipts',
+        runStreamed: async (_input, options) => {
+          if (!options?.outputSchema) {
+            // A corrupt private receipt log with no epoch artifact to recover: the
+            // recorded rows cannot be read at all, so the run has nothing to
+            // settle against and must still reach a fail-closed Result.
+            await writeFile(resolve(outputDirectory, 'agent-workspace', 'execution-receipts.json'), '{"corrupt":')
+            return quietTurn('execution complete')
+          }
+          return quietTurn(JSON.stringify({
+            version: '1.0', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256, outcome: 'passed', summary: '完成',
+            startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+            cases: [{
+              caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证',
+              failureSource: 'product', failureKind: 'assertion',
+              evidence: [{ kind: 'observation', description: '现场观察' }],
+            }],
+            mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+          }))
+        },
+      }),
+    })
+
+    // The unreadable row file is a recorded delivery problem, not a framework
+    // crash: the observation plane still gets a blocked Result it can report.
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases.map((item) => item.outcome)).toEqual(['blocked'])
+    const epochResult = JSON.parse(await readFile(
+      resolve(outputDirectory, '.agent-private', 'execution-epochs', 'epoch-0001.result.json'), 'utf8',
+    )) as { outcome: string; blockers: string[] }
+    expect(epochResult.outcome).toBe('blocked')
+    expect(epochResult.blockers.join('\n')).toContain('Recorded execution receipts could not be read')
+    expect(JSON.parse(await readFile(resolve(outputDirectory, 'codex-agent.result.json'), 'utf8')).outcome).toBe('blocked')
+    expect(JSON.parse(await readFile(resolve(outputDirectory, 'codex-agent.state.json'), 'utf8')).status).toBe('completed')
+  }, 60_000)
 
   it('rotates one incompatible physical session while preserving the logical run and pending Ledger', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-session-rotation-'))
@@ -1356,4 +1503,333 @@ describe('adaptive Codex epochs', () => {
       secrets: {}, environmentContext: '', imagePaths: [], headed: false, agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable, resume: true,
     }, { browserExecutablePath: files.browserPath })).rejects.toThrow(/旧版 Codex 测试状态不再支持恢复/)
   })
+})
+
+interface FinalSettlementScenario {
+  name: string
+  workflow: WorkflowIntakeManifest
+  result: CodexTestAgentResult
+  receipts: CodexTestExecutionReceipt[]
+  problems: string[]
+}
+
+/** The Runner's final settlement, judged by the ResultSettlement seam. */
+describe('final settlement on the ResultSettlement seam', () => {
+  /** An outcome contract, so the Case-level evidence and classification rules are live. */
+  function contractManifest(failureModes: WorkflowFailureMode[], evidence: WorkflowOutcomeContract['evidence']): WorkflowIntakeManifest {
+    const workflow = manifest()
+    workflow.phases = workflow.phases.slice(0, 1)
+    workflow.phases[0]!.outcome = {
+      action: ['Observe the first case'],
+      observable: ['Confirmation is visible'],
+      evidence,
+      cleanup: [],
+      failureModes,
+    }
+    return workflow
+  }
+
+  const allFailureModes: NonNullable<WorkflowOutcomeContract['failureModes']> = ['input', 'authentication', 'environment', 'locator_navigation', 'business_assertion', 'mutation_cleanup', 'agent_execution', 'infrastructure']
+  const acceptedWorkflow = contractManifest(allFailureModes, ['interaction', 'observation'])
+  const observationOnlyWorkflow = contractManifest(allFailureModes, ['observation'])
+
+  function settledCase(overrides: Partial<CodexTestAgentResult['cases'][number]> = {}): CodexTestAgentResult['cases'][number] {
+    return {
+      caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证',
+      executionReceiptIds: ['interaction-one'],
+      evidence: [{ kind: 'observation', description: '现场观察' }],
+      ...overrides,
+    }
+  }
+
+  function settledResult(overrides: Partial<CodexTestAgentResult> = {}): CodexTestAgentResult {
+    return {
+      version: '1.0', workflowId: acceptedWorkflow.workflowId, sourceSha256: acceptedWorkflow.source.sha256, outcome: 'passed',
+      summary: '完成', startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+      cases: [settledCase()], mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+      ...overrides,
+    }
+  }
+
+  const interactionReceipt: CodexTestExecutionReceipt = {
+    id: 'interaction-one', caseId: 'case-one', tool: 'browser_click', kind: 'interaction', status: 'completed', recordedAt: '2026-08-05T00:00:30.000Z',
+  }
+
+  /** A structured AgentHost delivery that claims a pass but asserts a failure classification. */
+  function falsePass(workflow: WorkflowIntakeManifest): CodexTestAgentResult {
+    return {
+      version: '1.0', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256, outcome: 'passed',
+      summary: '完成', startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+      cases: [{
+        caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证',
+        failureSource: 'product', failureKind: 'assertion',
+        evidence: [{ kind: 'observation', description: '现场观察' }],
+      }],
+      mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+    }
+  }
+
+  /** A structured AgentHost delivery the contract accepts: a blocked case with its own evidence. */
+  function blockedDelivery(workflow: WorkflowIntakeManifest): CodexTestAgentResult {
+    return {
+      version: '1.0', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256, outcome: 'blocked',
+      summary: '执行被阻断', startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+      cases: [{
+        caseId: 'case-one', title: '第一条', outcome: 'blocked', summary: '目标权限不可用',
+        failureSource: 'agent_execution', failureKind: 'execution',
+        evidence: [{ kind: 'observation', description: '现场观察' }],
+      }],
+      mutations: [], environmentRequirements: [], blockers: ['目标权限不可用'], productDefects: [],
+      nextActions: ['Resolve the blocked case before declaring the suite complete.'],
+    }
+  }
+
+  /** Every fail-closed rule the Runner's final settlement still has to enforce. */
+  const decisionTable: FinalSettlementScenario[] = [
+    { name: 'a matching claim', workflow: acceptedWorkflow, result: settledResult(), receipts: [interactionReceipt], problems: [] },
+    {
+      name: 'a case with no execution evidence',
+      workflow: acceptedWorkflow,
+      result: settledResult({ cases: [settledCase({ evidence: [] })] }), receipts: [interactionReceipt],
+      problems: [
+        'case case-one has no execution evidence',
+        'case case-one does not satisfy its outcome observation evidence requirement',
+      ],
+    },
+    {
+      name: 'a false pass carrying a failure classification',
+      workflow: acceptedWorkflow,
+      result: settledResult({ cases: [settledCase({ failureSource: 'product', failureKind: 'assertion' })] }), receipts: [interactionReceipt],
+      problems: ['passed case case-one contains a failure classification'],
+    },
+    {
+      name: 'a non-passed case without a failure classification',
+      workflow: acceptedWorkflow,
+      result: settledResult({
+        outcome: 'blocked', blockers: ['Cleanup could not be verified'],
+        cases: [settledCase({ outcome: 'blocked' })],
+      }), receipts: [interactionReceipt],
+      problems: ['non-passed case case-one has no failure classification'],
+    },
+    {
+      name: 'a product-failed case that is not product-sourced',
+      workflow: acceptedWorkflow,
+      result: settledResult({
+        outcome: 'product_failed', productDefects: ['Confirmation is missing'],
+        cases: [settledCase({ outcome: 'product_failed', failureSource: 'agent_execution', failureKind: 'assertion' })],
+      }), receipts: [interactionReceipt],
+      problems: ['product-failed case case-one is not classified as product-sourced'],
+    },
+    {
+      name: 'an unknown execution receipt',
+      workflow: acceptedWorkflow,
+      result: settledResult({ cases: [settledCase({ executionReceiptIds: ['receipt-one'] })] }), receipts: [interactionReceipt],
+      problems: [
+        'case case-one references unknown execution receipts',
+        'case case-one does not satisfy its outcome interaction receipt requirement',
+      ],
+    },
+    {
+      name: 'an execution receipt belonging to another case',
+      workflow: acceptedWorkflow,
+      result: settledResult(), receipts: [{ ...interactionReceipt, caseId: 'case-other' }],
+      problems: ['case case-one references an execution receipt belonging to another case'],
+    },
+    {
+      name: 'a failure mode the outcome contract does not allow',
+      workflow: contractManifest(['business_assertion'], ['observation']),
+      result: settledResult({
+        outcome: 'blocked', blockers: ['Cleanup could not be verified'],
+        cases: [settledCase({
+          outcome: 'blocked', failureSource: 'agent_execution', failureKind: 'mutation', executionReceiptIds: [],
+        })],
+      }), receipts: [interactionReceipt],
+      problems: ['case case-one failure mode mutation_cleanup is not allowed by its outcome contract'],
+    },
+    {
+      name: 'a top-level outcome that contradicts its cases',
+      workflow: acceptedWorkflow,
+      result: settledResult({
+        outcome: 'product_failed', productDefects: ['Confirmation is missing'],
+        cases: [settledCase({ outcome: 'blocked', failureSource: 'input', failureKind: 'validation' })],
+      }), receipts: [interactionReceipt],
+      problems: ['top-level outcome must be blocked'],
+    },
+    {
+      name: 'a blocked run without a blocker',
+      workflow: acceptedWorkflow,
+      result: settledResult({
+        outcome: 'blocked', blockers: [],
+        cases: [settledCase({ outcome: 'blocked', failureSource: 'input', failureKind: 'validation' })],
+      }), receipts: [interactionReceipt],
+      problems: ['blocked result has no blocker'],
+    },
+  ]
+
+  it('keeps final settlement fail-closed for every rule of the result contract', () => {
+    for (const { name, workflow, result, receipts, problems } of decisionTable) {
+      expect(settlementProblems(settlementInputFromResult(result, {
+        manifest: workflow,
+        environmentRequirements: [],
+        executionReceipts: receipts,
+      })), name).toEqual(problems)
+    }
+  })
+
+  it('keeps one copy of the result contract invariants in the settlement module', async () => {
+    const invariants = [
+      'workflowId does not match the immutable test contract',
+      'has no execution evidence',
+      'references unknown execution receipts',
+      'does not satisfy its outcome observation evidence requirement',
+      'is not allowed by its outcome contract',
+      'is not linked to environment requirement',
+      'top-level outcome must be',
+      'blocked result has no blocker',
+      'product-failed result has no product defect',
+      'Unrecovered business mutations remain',
+      'Unrecovered mutations:',
+      'Required environment prerequisites remain unavailable.',
+      'Provide the required',
+    ]
+    const sources = await Promise.all((await productSourceFiles()).map(async (file) => (
+      [relative(root, file), await readFile(file, 'utf8')] as const
+    )))
+    for (const invariant of invariants) {
+      expect(sources.filter(([, source]) => source.includes(invariant)).map(([file]) => file), invariant)
+        .toEqual(['src/agent/result-settlement.ts'])
+    }
+  })
+
+  it('keeps no compatibility alias for the settlement entry points the callers migrated off', async () => {
+    const sources = await Promise.all((await productSourceFiles()).map(async (file) => (
+      [relative(root, file), await readFile(file, 'utf8')] as const
+    )))
+    // A declaration or a call of a migrated-off name: the forwarding exports the
+    // migration kept are gone, so every caller asks the seam itself.
+    const alias = /(?:function|const)\s+(?:finalResultProblems|enforceMutationLedger|enforceEnvironmentRequirements)\b|\b(?:finalResultProblems|enforceMutationLedger|enforceEnvironmentRequirements)\s*\(/
+    expect(sources.filter(([, source]) => alias.test(source)).map(([file]) => file)).toEqual([])
+  })
+
+  it('feeds the settlement problem back to the finalization turn instead of accepting a false pass', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-final-seam-correction-'))
+    directories.push(directory)
+    const workflow = observationOnlyWorkflow
+    const files = await fixtureFiles(directory)
+    const finalizationPrompts: string[] = []
+
+    const run = await runAgentTest({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, maxFinalizationTurns: 2,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => {
+        let finalizations = 0
+        return {
+          id: 'thread-final-seam',
+          runStreamed: async (input, options) => {
+            if (!options?.outputSchema) return eventStream('execution complete', 'thread-final-seam')
+            finalizationPrompts.push(promptText(input))
+            finalizations += 1
+            // A passed case carrying a failure classification is a claim the
+            // settlement seam rejects, so the Runner must not accept it.
+            return finalizations === 1
+              ? eventStream(JSON.stringify(falsePass(workflow)), 'thread-final-seam')
+              : eventStream(JSON.stringify(blockedDelivery(workflow)), 'thread-final-seam')
+          },
+        }
+      },
+    })
+
+    expect(finalizationPrompts).toHaveLength(2)
+    expect(finalizationPrompts[1]).toContain('passed case case-one contains a failure classification')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases[0]).toMatchObject({
+      caseId: 'case-one', outcome: 'blocked', failureSource: 'agent_execution', failureKind: 'execution',
+    })
+  }, 60_000)
+
+  it('stays blocked when the on-disk delivery the settlement seam rejects is all the run has', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-final-seam-blocked-'))
+    directories.push(directory)
+    const workflow = observationOnlyWorkflow
+    const files = await fixtureFiles(directory)
+    const outputDirectory = resolve(directory, 'run')
+
+    const run = await runAgentTest({
+      outputDirectory, manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-final-seam-blocked',
+        runStreamed: async (_input, options) => {
+          if (!options?.outputSchema) {
+            // The AgentHost also left a delivery artifact repeating the false pass.
+            const workspace = resolve(outputDirectory, 'agent-workspace')
+            await mkdir(resolve(workspace, 'evidence'), { recursive: true })
+            await writeFile(resolve(workspace, 'evidence', 'observed.png'), 'png')
+            await writeFile(resolve(workspace, 'case-results.epoch-0001.json'), JSON.stringify({
+              version: '1.0', kind: 'case-results', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+              generatedAt: '2026-08-20T00:00:00.000Z',
+              cases: [{
+                caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证',
+                failureSource: 'product', failureKind: 'assertion', evidencePaths: ['evidence/observed.png'],
+              }],
+              mutationLedger: { state: 'terminal', pendingCount: 0, entries: [] },
+            }))
+            return eventStream('execution complete', 'thread-final-seam-blocked')
+          }
+          return eventStream(JSON.stringify(falsePass(workflow)), 'thread-final-seam-blocked')
+        },
+      }),
+    })
+
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases.map((item) => item.outcome)).toEqual(['blocked'])
+    // The Runner surfaces the seam's own problem for the claim it refused, so a
+    // false pass can never be reported as a pass.
+    expect(run.result?.blockers.join('\n')).toContain('passed case case-one contains a failure classification')
+  }, 60_000)
+
+  it('stays blocked when a delivery claims a pass with no execution evidence', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'auto-test-final-seam-evidence-'))
+    directories.push(directory)
+    const workflow = observationOnlyWorkflow
+    const files = await fixtureFiles(directory)
+
+    const run = await runAgentTest({
+      outputDirectory: resolve(directory, 'run'), manifest: workflow,
+      profile: { id: 'fixture', origins: ['https://tasks.example.test'], auth: [], policy: { allowWrite: false, allowDestructive: false } },
+      secrets: {}, environmentContext: '', imagePaths: [], headed: false,
+      agentSourceHome: files.sourceHome, agentExecutable: files.codexExecutable,
+      modelProfile: profile(), environment: { FIXTURE_KEY: 'fixture-key' }, maxFinalizationTurns: 1,
+    }, {
+      browserExecutablePath: files.browserPath,
+      startThread: () => ({
+        id: 'thread-final-seam-evidence',
+        runStreamed: async (_input, options) => options?.outputSchema
+          // Malformed evidence: no recorded proof at all, on every attempt.
+          ? eventStream(JSON.stringify({
+              version: '1.0', workflowId: workflow.workflowId, sourceSha256: workflow.source.sha256,
+              outcome: 'passed', summary: '完成', startedAt: '2026-08-05T00:00:00.000Z', finishedAt: '2026-08-05T00:01:00.000Z',
+              cases: [{ caseId: 'case-one', title: '第一条', outcome: 'passed', summary: '已验证', evidence: [] }],
+              mutations: [], environmentRequirements: [], blockers: [], productDefects: [], nextActions: [],
+            }), 'thread-final-seam-evidence')
+          : eventStream('execution complete', 'thread-final-seam-evidence'),
+      }),
+    })
+
+    expect(run.state.status).toBe('completed')
+    expect(run.result?.outcome).toBe('blocked')
+    expect(run.result?.cases.map((item) => item.outcome)).toEqual(['blocked'])
+    expect(run.result?.blockers.length).toBeGreaterThan(0)
+  }, 60_000)
 })

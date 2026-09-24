@@ -1,0 +1,570 @@
+import { failureModeFor } from './failure-mode.js'
+import type {
+  CodexTestAgentResult,
+  CodexTestCaseResult,
+  CodexTestEnvironmentRequirement,
+  CodexTestExecutionReceipt,
+  CodexTestEvidence,
+  CodexTestFailureKind,
+  CodexTestFailureSource,
+  CodexTestMutationLedgerEntry,
+  CodexTestMutationResult,
+  CodexTestOutcome,
+} from './types.js'
+import type { WorkflowIntakeManifest } from '../workflow/types.js'
+
+/**
+ * The Result settlement module: the one place the Result contract is decided.
+ *
+ * Entry points that produce or consume a Result — the per-Epoch delivery
+ * Adapter, the Runner's final settlement, the cross-host comparison tool, and
+ * acceptance reporting — all submit to this seam. Each Adapter keeps owning IO
+ * (reading artifacts, resolving evidence paths, aggregating Epochs) and reports
+ * its own path-specific problems; every shared invariant lives here so one rule
+ * change reaches every path and two paths can never disagree about the same
+ * Case claim. The Adapters are all on this seam now, so it is also where the
+ * Runner-owned authority rows are applied to a Result: there is no second
+ * implementation of the ledger, requirement, or classification rules anywhere
+ * else, and deleting this module forces every one of them to reappear in the
+ * Runner, in delivery recovery, and in the comparator.
+ */
+
+/**
+ * The single internal Case-claim representation settlement reasons about.
+ *
+ * Every entry point — a per-epoch delivery artifact, an AgentHost structured
+ * delivery, an aggregated Epoch result, or a settled artifact re-read by the
+ * comparison and reporting tools — normalizes into this shape first, so one
+ * invariant is evaluated once against one vocabulary instead of being
+ * re-derived per transport. It deliberately stays independent of the Result
+ * transport schema: `title` is optional because the immutable manifest is the
+ * authority for it, and the reference arrays are readonly because a submission
+ * is never mutated while it is being assessed.
+ */
+export interface SettlementCaseClaim {
+  caseId: string
+  title?: string
+  outcome: CodexTestOutcome
+  summary: string
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  environmentRequirementIds?: readonly string[]
+  executionReceiptIds?: readonly string[]
+  /** Field-composition gate references; carried through so settlement stays lossless. */
+  fieldGateIds?: readonly string[]
+  evidence: readonly CodexTestEvidence[]
+}
+
+/**
+ * One per-case row of a delivery artifact. Only the case-level facts a claim
+ * needs live here; the artifact envelope (version, kind, timestamps, ledger
+ * summary) is transport shape and stays in the Adapter that reads it.
+ */
+export interface DeliveryCaseClaimRow {
+  caseId: string
+  title?: string
+  outcome: CodexTestOutcome
+  summary: string
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  environmentRequirementIds?: readonly string[]
+  executionReceiptIds?: readonly string[]
+  evidencePaths?: readonly string[]
+}
+
+/** Everything a caller submits for settlement. */
+export interface ResultSettlementInput {
+  /** The immutable test contract every claim is measured against. */
+  manifest: WorkflowIntakeManifest
+  /** Normalized Case claims; the only case representation settlement reasons about. */
+  claims: readonly SettlementCaseClaim[]
+  /** Submitted transport identity, checked against the immutable manifest. */
+  workflowId: string
+  sourceSha256: string
+  startedAt: string
+  finishedAt: string
+  /** Submitted top-level outcome, checked against the outcome derived from the claims. */
+  outcome: CodexTestOutcome
+  /** Submitted narrative, checked against the derived outcome. */
+  summary: string
+  blockers: readonly string[]
+  productDefects: readonly string[]
+  nextActions: readonly string[]
+  /** Environment requirement projection the submission reports, reconciled against the recorded rows. */
+  reportedEnvironmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+  /** Recorded environment requirements; the authority for requirement reconciliation. */
+  environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+  /** Recorded execution receipts; the authority for receipt references. */
+  executionReceipts?: readonly CodexTestExecutionReceipt[]
+  /** Problems already raised by the replay projection; appended unchanged. */
+  replayProblems?: readonly string[]
+}
+
+/**
+ * Fail-closed by construction: a settlement carries either the canonical Result
+ * or a non-empty problem list. A caller can never receive a result that failed
+ * an invariant, and never has to reason about "a result with warnings".
+ */
+export interface ResultSettlement {
+  result?: CodexTestAgentResult
+  problems: string[]
+}
+
+/**
+ * The one settlement seam of the Result contract.
+ *
+ * Pure, synchronous, and free of file, AgentHost, and browser dependencies:
+ * callers hand over immutable inputs, and settlement either composes the
+ * canonical Result or returns every problem it found. Adapters keep owning IO
+ * (reading artifacts, resolving evidence paths, aggregating Epochs) and report
+ * their own path-specific problems separately.
+ */
+export function settleResult(input: ResultSettlementInput): ResultSettlement {
+  const problems = settlementProblems(input)
+  if (problems.length > 0) return { problems }
+  return { result: canonicalResult(input), problems: [] }
+}
+
+/**
+ * Every shared invariant of the Result contract, in composition order: identity,
+ * Case membership, Case-level contract requirements, environment requirement
+ * reconciliation, top-level outcome derivation, then the run's replay problems.
+ * Exported separately because consumers such as the cross-host comparison tool
+ * need the authority verdict without recomposing a Result.
+ */
+export function settlementProblems(input: ResultSettlementInput): string[] {
+  const problems: string[] = []
+  const manifest = input.manifest
+  const claims = input.claims
+  const environmentRequirements = input.environmentRequirements ?? []
+  const executionReceipts = input.executionReceipts ?? []
+
+  if (input.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
+  if (input.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
+  const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
+  const returnedCases = claims.map((claim) => claim.caseId)
+  if (new Set(returnedCases).size !== returnedCases.length) problems.push('duplicate case results are not allowed')
+  for (const caseId of requiredCases) if (!returnedCases.includes(caseId)) problems.push(`missing final case result for ${caseId}`)
+  for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case result for ${caseId}`)
+
+  for (const claim of claims) {
+    const phase = manifest.phases.find((candidate) => candidate.id === claim.caseId)
+    if (claim.evidence.length === 0) problems.push(`case ${claim.caseId} has no execution evidence`)
+    if (claim.outcome === 'passed' && (claim.failureSource || claim.failureKind)) problems.push(`passed case ${claim.caseId} contains a failure classification`)
+    if (claim.outcome !== 'passed' && (!claim.failureSource || !claim.failureKind)) problems.push(`non-passed case ${claim.caseId} has no failure classification`)
+    if (claim.outcome === 'product_failed' && claim.failureSource !== 'product') problems.push(`product-failed case ${claim.caseId} is not classified as product-sourced`)
+    if (claim.outcome === 'blocked' && claim.failureSource === 'product') problems.push(`blocked case ${claim.caseId} is incorrectly classified as product-sourced`)
+
+    // Receipts are passively captured audit evidence. They are validated when
+    // the agent cites them, but missing optional case bookkeeping must not
+    // prevent the primary AgentHost thread from exploring or delivering facts.
+    const caseReceipts = claim.executionReceiptIds
+      ?.map((id) => executionReceipts.find((receipt) => receipt.id === id))
+      .filter((receipt): receipt is CodexTestExecutionReceipt => Boolean(receipt)) ?? []
+    if (claim.executionReceiptIds?.some((id) => !executionReceipts.some((receipt) => receipt.id === id))) {
+      problems.push(`case ${claim.caseId} references unknown execution receipts`)
+    }
+    if (caseReceipts.some((receipt) => receipt.caseId !== claim.caseId)) {
+      problems.push(`case ${claim.caseId} references an execution receipt belonging to another case`)
+    }
+
+    if (claim.outcome !== 'blocked' && phase?.outcome) {
+      if (phase.outcome.evidence.includes('observation') && !claim.evidence.some((evidence) => evidence.kind === 'observation')) {
+        problems.push(`case ${claim.caseId} does not satisfy its outcome observation evidence requirement`)
+      }
+      if (phase.outcome.evidence.includes('interaction') && !caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
+        problems.push(`case ${claim.caseId} does not satisfy its outcome interaction receipt requirement`)
+      }
+    }
+    if (claim.outcome !== 'passed' && phase?.outcome) {
+      const allowedModes = phase.outcome.failureModes ?? []
+      if (allowedModes.length > 0) {
+        const mode = failureModeFor(claim.failureSource, claim.failureKind)
+        if (!allowedModes.includes(mode)) problems.push(`case ${claim.caseId} failure mode ${mode} is not allowed by its outcome contract`)
+      }
+    }
+
+    if (claim.failureSource === 'environment') {
+      if (!claim.environmentRequirementIds?.length) {
+        problems.push(`environment-blocked case ${claim.caseId} has no recorded environment requirement reference`)
+        continue
+      }
+      for (const requirementId of claim.environmentRequirementIds) {
+        const requirement = environmentRequirements.find((candidate) => candidate.id === requirementId)
+        if (!requirement) {
+          problems.push(`environment-blocked case ${claim.caseId} references unknown environment requirement ${requirementId}`)
+          continue
+        }
+        if (!requirement.caseIds.includes(claim.caseId)) problems.push(`environment-blocked case ${claim.caseId} is not linked to environment requirement ${requirementId}`)
+        if (requirement.status !== 'pending') problems.push(`environment-blocked case ${claim.caseId} references non-pending environment requirement ${requirementId}`)
+        if (requirement.evidence.length === 0) problems.push(`environment requirement ${requirementId} has no saved evidence`)
+      }
+    } else if (claim.environmentRequirementIds?.length) {
+      problems.push(`non-environment case ${claim.caseId} contains environment requirement references`)
+    }
+  }
+
+  const recordedById = new Map(environmentRequirements.map((item) => [item.id, item]))
+  for (const requirement of input.reportedEnvironmentRequirements ?? []) {
+    const recorded = recordedById.get(requirement.id)
+    if (!recorded) {
+      problems.push(`final result includes unrecorded environment requirement ${requirement.id}`)
+      continue
+    }
+    if (!sameEnvironmentRequirement(requirement, recorded)) {
+      problems.push(`final result environment requirement ${requirement.id} does not match the recorded requirement`)
+    }
+  }
+  for (const requirement of environmentRequirements.filter((item) => item.status === 'pending')) {
+    for (const caseId of requirement.caseIds) {
+      const claim = claims.find((item) => item.caseId === caseId)
+      if (!claim || claim.failureSource !== 'environment' || !claim.environmentRequirementIds?.includes(requirement.id)) {
+        problems.push(`pending environment requirement ${requirement.id} is not represented by environment-blocked case ${caseId}`)
+      }
+    }
+  }
+
+  const expectedOutcome = outcomeForClaims(claims)
+  if (input.outcome !== expectedOutcome) problems.push(`top-level outcome must be ${expectedOutcome}`)
+  if (input.outcome === 'passed' && (input.blockers.length > 0 || input.productDefects.length > 0)) problems.push('passed result contains blockers or product defects')
+  if (input.outcome === 'blocked' && input.blockers.length === 0) problems.push('blocked result has no blocker')
+  if (input.outcome === 'product_failed' && input.productDefects.length === 0) problems.push('product-failed result has no product defect')
+  problems.push(...input.replayProblems ?? [])
+  return problems
+}
+
+/**
+ * Normalize a canonical Result into the submission settlement measures.
+ *
+ * Every entry point that already holds a written Result — the Runner's final
+ * settlement, the cross-host comparison tool, acceptance reporting — submits
+ * through this one Adapter instead of re-listing which Result field feeds which
+ * submission field, so the transport mapping is written once and cannot drift
+ * between two readers of the same artifact.
+ */
+export function settlementInputFromResult(
+  result: CodexTestAgentResult,
+  authority: {
+    /** The immutable test contract this Result is measured against. */
+    manifest: WorkflowIntakeManifest
+    /** Recorded environment requirement rows; the authority for reconciliation. */
+    environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+    /** Recorded execution receipts; the authority for receipt references. */
+    executionReceipts?: readonly CodexTestExecutionReceipt[]
+    /** Problems already raised by the replay projection; appended unchanged. */
+    replayProblems?: readonly string[]
+  },
+): ResultSettlementInput {
+  return {
+    manifest: authority.manifest,
+    claims: settlementClaimsFromResult(result.cases),
+    workflowId: result.workflowId,
+    sourceSha256: result.sourceSha256,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    outcome: result.outcome,
+    summary: result.summary,
+    blockers: result.blockers,
+    productDefects: result.productDefects,
+    nextActions: result.nextActions,
+    reportedEnvironmentRequirements: result.environmentRequirements,
+    ...(authority.environmentRequirements ? { environmentRequirements: authority.environmentRequirements } : {}),
+    ...(authority.executionReceipts ? { executionReceipts: authority.executionReceipts } : {}),
+    ...(authority.replayProblems ? { replayProblems: authority.replayProblems } : {}),
+  }
+}
+
+/** The Runner-owned authority rows applied to a Result an Adapter composed. */
+export interface ResultAuthorityRows {
+  /** Recorded environment requirement rows; a pending row blocks the cases it links. */
+  environmentRequirements?: readonly CodexTestEnvironmentRequirement[]
+  /** Runner-owned Mutation Ledger rows; a pending row blocks the case it belongs to. */
+  mutationLedger?: readonly CodexTestMutationLedgerEntry[]
+}
+
+/**
+ * Apply the Runner-owned authority rows to a Result an Adapter composed itself.
+ *
+ * A pending environment prerequisite and a pending business write are facts
+ * about the Run, not about the transport that reported it, so the rules that
+ * turn them into a blocked outcome, a blocked Case with its own evidence, a
+ * blocker, and a recovery action live here — and the canonical Result
+ * `settleResult` composes applies them through the same helpers. An Adapter that
+ * must write a Result the seam has not judged — the fail-closed blocked Result a
+ * Run falls back to when nothing of it can be settled — asks for the same
+ * composition, so a fallback can never disagree with a settled Run about what a
+ * pending row means. A row collection the caller leaves out is left exactly as
+ * the Adapter wrote it.
+ */
+export function settlementApplyAuthority(
+  result: CodexTestAgentResult,
+  authority: ResultAuthorityRows,
+): CodexTestAgentResult {
+  const pendingRequirements = (authority.environmentRequirements ?? []).filter((item) => item.status === 'pending')
+  const pendingMutations = (authority.mutationLedger ?? []).filter((item) => item.status === 'pending')
+  const narrative = authorityNarrative(result, pendingRequirements, pendingMutations)
+  return {
+    ...result,
+    summary: narrative.summary,
+    blockers: narrative.blockers,
+    nextActions: narrative.nextActions,
+    cases: blockCasesForPendingMutations(result.cases, pendingMutations),
+    ...(authority.environmentRequirements ? { environmentRequirements: [...authority.environmentRequirements] } : {}),
+    ...(authority.mutationLedger ? { mutations: mutationProjection(authority.mutationLedger) } : {}),
+    // A Run with an unmet prerequisite or an unrecovered write is never a
+    // success, whatever its cases claim.
+    ...(pendingRequirements.length > 0 || pendingMutations.length > 0 ? { outcome: 'blocked' as const } : {}),
+  }
+}
+
+/**
+ * The top-level outcome a claim set settles to. An Adapter that has no
+ * submitted outcome of its own — a per-epoch delivery artifact records only
+ * per-case facts — reports this value, so the derivation stays in the seam
+ * instead of being re-written per transport.
+ */
+export function settlementOutcomeForClaims(claims: readonly SettlementCaseClaim[]): CodexTestOutcome {
+  return outcomeForClaims(claims)
+}
+
+/** Normalize the cases of a canonical Result into the one Case-claim representation. */
+export function settlementClaimsFromResult(cases: readonly CodexTestCaseResult[]): SettlementCaseClaim[] {
+  return cases.map((item) => ({
+    caseId: item.caseId,
+    title: item.title,
+    outcome: item.outcome,
+    summary: item.summary,
+    ...(item.failureSource ? { failureSource: item.failureSource } : {}),
+    ...(item.failureKind ? { failureKind: item.failureKind } : {}),
+    ...(item.environmentRequirementIds?.length ? { environmentRequirementIds: item.environmentRequirementIds } : {}),
+    ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
+    ...(item.fieldGateIds?.length ? { fieldGateIds: item.fieldGateIds } : {}),
+    evidence: item.evidence,
+  }))
+}
+
+/**
+ * Normalize delivery-artifact case rows into the same Case-claim
+ * representation. An artifact row records evidence as workspace-relative paths
+ * instead of Evidence entries, so each path becomes an observation and a row
+ * with no path at all becomes an observation of the artifact itself. The
+ * `artifactReference` is the file name the Adapter read, kept here because it is
+ * part of what the claim asserts, not of how the artifact was found.
+ */
+export function settlementClaimsFromDelivery(
+  cases: readonly DeliveryCaseClaimRow[],
+  artifactReference: string,
+): SettlementCaseClaim[] {
+  return cases.map((item) => ({
+    caseId: item.caseId,
+    ...(item.title ? { title: item.title } : {}),
+    outcome: item.outcome,
+    summary: item.summary,
+    ...(item.failureSource ? { failureSource: item.failureSource } : {}),
+    ...(item.failureKind ? { failureKind: item.failureKind } : {}),
+    ...(item.environmentRequirementIds?.length ? { environmentRequirementIds: item.environmentRequirementIds } : {}),
+    ...(item.executionReceiptIds?.length ? { executionReceiptIds: item.executionReceiptIds } : {}),
+    evidence: (item.evidencePaths?.length ?? 0) > 0
+      ? item.evidencePaths!.map((path) => ({
+        kind: 'observation' as const,
+        path,
+        description: `AgentHost recorded evidence for ${item.caseId}: ${path}`,
+      }))
+      : [{
+        kind: 'observation' as const,
+        path: artifactReference,
+        description: `AgentHost recorded ${item.caseId} as ${item.outcome} in ${artifactReference}.`,
+      }],
+  }))
+}
+
+/**
+ * Compose the canonical Result of a submission that passed every invariant.
+ *
+ * The Runner-owned authority rows are applied by the one composition an
+ * Adapter-composed Result also goes through, so a submission that carries
+ * recorded environment requirements is worded by the same rules as a fail-closed
+ * fallback Result. The Mutation Ledger is never part of a submission: it belongs
+ * to the Runner, which applies it through `settlementApplyAuthority` once the
+ * verdict has already weighed the claims.
+ */
+function canonicalResult(input: ResultSettlementInput): CodexTestAgentResult {
+  const composed: CodexTestAgentResult = {
+    version: '1.0',
+    workflowId: input.workflowId,
+    sourceSha256: input.sourceSha256,
+    outcome: outcomeForClaims(input.claims),
+    summary: input.summary,
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    cases: input.claims.map((claim) => caseResultFromClaim(claim, input.manifest)),
+    mutations: [],
+    environmentRequirements: [],
+    blockers: [...input.blockers],
+    productDefects: [...input.productDefects],
+    nextActions: [...input.nextActions],
+  }
+  return input.environmentRequirements
+    ? settlementApplyAuthority(composed, { environmentRequirements: input.environmentRequirements })
+    : composed
+}
+
+/**
+ * The narrative half of the authority rows: what a pending prerequisite and a
+ * pending business write add to the summary, the blockers, and the recovery
+ * actions. Applied in that fixed order by both the canonical Result and a Result
+ * an Adapter composed itself, so the two can never word the same pending row
+ * differently.
+ */
+function authorityNarrative(
+  narrative: { summary: string; blockers: readonly string[]; nextActions: readonly string[] },
+  pendingRequirements: readonly CodexTestEnvironmentRequirement[],
+  pendingMutations: readonly CodexTestMutationLedgerEntry[],
+): { summary: string; blockers: string[]; nextActions: string[] } {
+  let summary = narrative.summary
+  if (pendingRequirements.length > 0) summary = `${summary} Required environment prerequisites remain unavailable.`
+  if (pendingMutations.length > 0) summary = `${summary} Unrecovered business mutations remain.`
+  let blockers = pendingRequirements.length > 0
+    ? [...new Set([...narrative.blockers, ...pendingRequirements.map((item) => item.condition)])]
+    : [...narrative.blockers]
+  if (pendingMutations.length > 0) blockers = [...blockers, `Unrecovered mutations: ${pendingMutations.map((entry) => entry.id).join(', ')}`]
+  const nextActions = pendingRequirements.length > 0
+    ? [...new Set([
+      ...narrative.nextActions,
+      ...pendingRequirements.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
+    ])]
+    : [...narrative.nextActions]
+  return { summary, blockers, nextActions }
+}
+
+/**
+ * An unrecovered business write can never be reported as a success: the case it
+ * belongs to becomes blocked with an agent-execution classification and carries
+ * the pending mutation as its own evidence. An explicit blocked classification
+ * is preserved so an environment block is not rewritten into an execution
+ * failure. Written once over the case fields both the Case claim and a settled
+ * Result case carry, so the canonical Result and an Adapter-composed Result
+ * cannot force a pending mutation into a case differently.
+ */
+function blockCasesForPendingMutations<T extends PendingMutationCaseFields>(
+  cases: readonly T[],
+  pendingMutations: readonly CodexTestMutationLedgerEntry[],
+): T[] {
+  if (pendingMutations.length === 0) return [...cases]
+  const pendingByCase = new Map<string, CodexTestMutationLedgerEntry[]>()
+  for (const entry of pendingMutations) pendingByCase.set(entry.caseId, [...(pendingByCase.get(entry.caseId) ?? []), entry])
+  return cases.map((item) => {
+    const entries = pendingByCase.get(item.caseId)
+    if (!entries) return item
+    const preserveBlockedClassification = item.outcome === 'blocked'
+    return {
+      ...item,
+      outcome: 'blocked' as const,
+      summary: `${item.summary} Unrecovered business mutations remain for this case.`,
+      failureSource: preserveBlockedClassification ? (item.failureSource ?? 'agent_execution') : 'agent_execution',
+      failureKind: preserveBlockedClassification ? (item.failureKind ?? 'execution') : 'execution',
+      evidence: [...item.evidence, ...entries.map((entry) => ({
+        kind: 'mutation' as const,
+        description: `Pending mutation ${entry.id}: ${entry.description}`,
+      }))],
+    } as T
+  })
+}
+
+/** The case fields a pending business write rewrites; every case shape carries them. */
+interface PendingMutationCaseFields {
+  caseId: string
+  outcome: CodexTestOutcome
+  summary: string
+  failureSource?: CodexTestFailureSource
+  failureKind?: CodexTestFailureKind
+  evidence: readonly CodexTestEvidence[]
+}
+
+/** The Mutation Ledger projection of the Result transport. */
+function mutationProjection(ledger: readonly CodexTestMutationLedgerEntry[]): CodexTestMutationResult[] {
+  return ledger.map((entry) => ({
+    id: entry.id,
+    caseId: entry.caseId,
+    description: entry.description,
+    risk: entry.risk,
+    status: entry.status,
+    evidence: entry.evidence,
+  }))
+}
+
+function caseResultFromClaim(claim: SettlementCaseClaim, manifest: WorkflowIntakeManifest): CodexTestCaseResult {
+  return {
+    caseId: claim.caseId,
+    title: claim.title ?? manifest.phases.find((phase) => phase.id === claim.caseId)?.title ?? claim.caseId,
+    outcome: claim.outcome,
+    summary: claim.summary,
+    ...(claim.failureSource ? { failureSource: claim.failureSource } : {}),
+    ...(claim.failureKind ? { failureKind: claim.failureKind } : {}),
+    ...(claim.environmentRequirementIds?.length ? { environmentRequirementIds: [...claim.environmentRequirementIds] } : {}),
+    ...(claim.executionReceiptIds?.length ? { executionReceiptIds: [...claim.executionReceiptIds] } : {}),
+    ...(claim.fieldGateIds?.length ? { fieldGateIds: [...claim.fieldGateIds] } : {}),
+    evidence: claim.evidence.map((evidence) => (
+      evidence.path == null
+        ? { kind: evidence.kind, description: evidence.description }
+        : { kind: evidence.kind, description: evidence.description, path: evidence.path }
+    )),
+  }
+}
+
+function outcomeForClaims(claims: readonly SettlementCaseClaim[]): CodexTestOutcome {
+  if (claims.some((item) => item.outcome === 'blocked')) return 'blocked'
+  if (claims.some((item) => item.outcome === 'product_failed')) return 'product_failed'
+  return 'passed'
+}
+
+function sameStringSet(reported: readonly string[], recorded: readonly string[]): boolean {
+  return reported.length === recorded.length && reported.every((value) => recorded.some((candidate) => sameRecordedValue(candidate, value)))
+}
+
+/**
+ * Reconcile what a settled Result reports against the authority rows recorded
+ * for the same run.
+ *
+ * Every entry point that re-reads a Result reads the Run's *redacted* artifact,
+ * while the recorded rows stay unredacted — a condition or an evidence path that
+ * carried a run secret therefore arrives here as a placeholder. Comparing such a
+ * value verbatim would make the cross-host comparison and the acceptance report
+ * reject a settlement the Runner itself accepted, so a redacted span is
+ * reconciled up to the placeholder: the literal text around it must still match
+ * the recorded row, and the span it hides must be non-empty. A value carrying no
+ * placeholder is compared exactly, which is what the Runner's own in-memory
+ * settlement always sees.
+ */
+function sameEnvironmentRequirement(
+  reported: CodexTestEnvironmentRequirement,
+  recorded: CodexTestEnvironmentRequirement,
+): boolean {
+  return reported.id === recorded.id &&
+    reported.kind === recorded.kind &&
+    reported.origin === recorded.origin &&
+    sameRecordedValue(recorded.condition, reported.condition) &&
+    reported.status === recorded.status &&
+    reported.requestedAt === recorded.requestedAt &&
+    sameStringSet(reported.caseIds, recorded.caseIds) &&
+    sameStringSet(reported.evidence, recorded.evidence)
+}
+
+/**
+ * Compare a recorded authority value against what the settled Result reports.
+ *
+ * The artifact a reader submits is redacted, so a value that carried a run secret
+ * arrives as the placeholder redaction wrote: `evidence/round-<redacted-secret>.png`
+ * for `evidence/round-13800000000.png`. Such a value is reconciled up to the
+ * placeholder — the literal text around it must still match, and the span it
+ * hides must be non-empty. Anything carrying no placeholder is compared exactly,
+ * which is what the Runner's own in-memory settlement always sees.
+ */
+function sameRecordedValue(recorded: string, reported: string): boolean {
+  if (recorded === reported) return true
+  const segments = reported.split(/<redacted[^>]*>/g)
+  // A value with no placeholder at all is either identical or a real drift.
+  if (segments.length === 1) return false
+  const pattern = segments.map((segment) => segment.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]+')
+  return new RegExp(`^${pattern}$`).test(recorded)
+}

@@ -11,7 +11,7 @@ import { createLegacyCodexAgentHost } from './codex-host.js'
 import { buildAgentExecutionEpochs, capacityForAgentProfile, manifestForAgentExecutionEpoch, splitAgentExecutionEpoch, type AgentExecutionEpoch } from './execution-epochs.js'
 import { caseResultDirectory, readCaseResultRecords, writeCaseResultRecords } from './case-result-store.js'
 import type { CodexTestControlConfig } from './control-types.js'
-import { reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
+import { environmentRequirementsForCases, reconcileEnvironmentRequirementCaseLinks, reconcileEnvironmentRequirements } from './environment-requirements.js'
 import { recoverAgentDeliveryResult, recoverAgentEpochDeliveryResult } from './delivery-recovery.js'
 import { ExecutionReceiptRecorder, readExecutionReceipts } from './execution-receipts.js'
 import { AgentHostError, agentHostErrorKindForMessage, agentHostErrorMessageForMatching, normalizeAgentEvent, normalizeAgentHostError } from './host.js'
@@ -20,8 +20,14 @@ import { createAgentHost } from './host-registry.js'
 import { agentTestCheckpointPrompt, agentTestFinalPrompt, agentTestPrompt, agentTestResumePrompt, type AgentResumeWorkspacePaths } from './prompt.js'
 import { AgentTestProgressReporter, type AgentTestProgressSink } from './progress.js'
 import { redactAgentArtifactValue, redactAgentJsonValue, redactAgentValue, secretValues, transientAgentEventValues } from './redact.js'
-import { enforceMutationLedger, parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
-import { failureModeFor } from './failure-mode.js'
+import { parseAgentTestCandidate, agentTestStructuredOutputSchema } from './result.js'
+import {
+  settlementApplyAuthority,
+  settlementClaimsFromResult,
+  settlementInputFromResult,
+  settlementOutcomeForClaims,
+  settlementProblems,
+} from './result-settlement.js'
 import { initialAgentTestState, updateAgentTestState, writePrivateJson } from './state.js'
 import type {
   CodexTestAgentResult,
@@ -169,107 +175,6 @@ async function runTurn(
   }
 }
 
-export function finalResultProblems(
-  result: CodexTestAgentResult,
-  manifest: WorkflowIntakeManifest,
-  recordedEnvironmentRequirements: CodexTestEnvironmentRequirement[] = [],
-  executionReceipts: CodexTestExecutionReceipt[] = [],
-  replayProblems: string[] = [],
-): string[] {
-  const problems: string[] = []
-  if (result.workflowId !== manifest.workflowId) problems.push('workflowId does not match the immutable test contract')
-  if (result.sourceSha256 !== manifest.source.sha256) problems.push('sourceSha256 does not match the original test material')
-  const requiredCases = new Set(manifest.phases.map((phase) => phase.id))
-  const returnedCases = result.cases.map((item) => item.caseId)
-  if (new Set(returnedCases).size !== returnedCases.length) problems.push('duplicate case results are not allowed')
-  for (const caseId of requiredCases) if (!returnedCases.includes(caseId)) problems.push(`missing final case result for ${caseId}`)
-  for (const caseId of returnedCases) if (!requiredCases.has(caseId)) problems.push(`unexpected case result for ${caseId}`)
-  for (const item of result.cases) {
-    const phase = manifest.phases.find((candidate) => candidate.id === item.caseId)
-    if (item.evidence.length === 0) problems.push(`case ${item.caseId} has no execution evidence`)
-    if (item.outcome === 'passed' && (item.failureSource || item.failureKind)) problems.push(`passed case ${item.caseId} contains a failure classification`)
-    if (item.outcome !== 'passed' && (!item.failureSource || !item.failureKind)) problems.push(`non-passed case ${item.caseId} has no failure classification`)
-    if (item.outcome === 'product_failed' && item.failureSource !== 'product') problems.push(`product-failed case ${item.caseId} is not classified as product-sourced`)
-    if (item.outcome === 'blocked' && item.failureSource === 'product') problems.push(`blocked case ${item.caseId} is incorrectly classified as product-sourced`)
-    const caseReceipts = item.executionReceiptIds?.map((id) => executionReceipts.find((receipt) => receipt.id === id)).filter((receipt): receipt is CodexTestExecutionReceipt => Boolean(receipt)) ?? []
-    if (item.executionReceiptIds?.some((id) => !executionReceipts.some((receipt) => receipt.id === id))) {
-      problems.push(`case ${item.caseId} references unknown execution receipts`)
-    }
-    if (caseReceipts.some((receipt) => receipt.caseId !== item.caseId)) {
-      problems.push(`case ${item.caseId} references an execution receipt belonging to another case`)
-    }
-    if (item.outcome !== 'blocked' && phase?.outcome) {
-      if (phase.outcome.evidence.includes('observation') && !item.evidence.some((evidence) => evidence.kind === 'observation')) {
-        problems.push(`case ${item.caseId} does not satisfy its outcome observation evidence requirement`)
-      }
-      if (phase.outcome.evidence.includes('interaction') && !caseReceipts.some((receipt) => receipt.kind === 'interaction')) {
-        problems.push(`case ${item.caseId} does not satisfy its outcome interaction receipt requirement`)
-      }
-    }
-    if (item.outcome !== 'passed' && phase?.outcome && (phase.outcome.failureModes?.length ?? 0) > 0) {
-      const mode = failureModeFor(item.failureSource, item.failureKind)
-      if (!phase.outcome.failureModes!.includes(mode)) {
-        problems.push(`case ${item.caseId} failure mode ${mode} is not allowed by its outcome contract`)
-      }
-    }
-    // Receipts are passively captured audit evidence. They are validated when
-    // the agent cites them, but missing optional case bookkeeping must not
-    // prevent the primary AgentHost thread from exploring or delivering facts.
-    if (item.failureSource === 'environment') {
-      if (!item.environmentRequirementIds?.length) {
-        problems.push(`environment-blocked case ${item.caseId} has no recorded environment requirement reference`)
-        continue
-      }
-      for (const requirementId of item.environmentRequirementIds) {
-        const requirement = recordedEnvironmentRequirements.find((candidate) => candidate.id === requirementId)
-        if (!requirement) {
-          problems.push(`environment-blocked case ${item.caseId} references unknown environment requirement ${requirementId}`)
-          continue
-        }
-        if (!requirement.caseIds.includes(item.caseId)) {
-          problems.push(`environment-blocked case ${item.caseId} is not linked to environment requirement ${requirementId}`)
-        }
-        if (requirement.status !== 'pending') {
-          problems.push(`environment-blocked case ${item.caseId} references non-pending environment requirement ${requirementId}`)
-        }
-        if (requirement.evidence.length === 0) {
-          problems.push(`environment requirement ${requirementId} has no saved evidence`)
-        }
-      }
-    } else if (item.environmentRequirementIds?.length) {
-      problems.push(`non-environment case ${item.caseId} contains environment requirement references`)
-    }
-  }
-  const recordedById = new Map(recordedEnvironmentRequirements.map((item) => [item.id, item]))
-  for (const requirement of result.environmentRequirements) {
-    const recorded = recordedById.get(requirement.id)
-    if (!recorded) {
-      problems.push(`final result includes unrecorded environment requirement ${requirement.id}`)
-      continue
-    }
-    if (!sameEnvironmentRequirement(requirement, recorded)) {
-      problems.push(`final result environment requirement ${requirement.id} does not match the recorded requirement`)
-    }
-  }
-  for (const requirement of recordedEnvironmentRequirements.filter((item) => item.status === 'pending')) {
-    for (const caseId of requirement.caseIds) {
-      const caseResult = result.cases.find((item) => item.caseId === caseId)
-      if (!caseResult || caseResult.failureSource !== 'environment' || !caseResult.environmentRequirementIds?.includes(requirement.id)) {
-        problems.push(`pending environment requirement ${requirement.id} is not represented by environment-blocked case ${caseId}`)
-      }
-    }
-  }
-  const expectedOutcome = result.cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : result.cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
-  if (result.outcome !== expectedOutcome) problems.push(`top-level outcome must be ${expectedOutcome}`)
-  if (result.outcome === 'passed' && (result.blockers.length > 0 || result.productDefects.length > 0)) problems.push('passed result contains blockers or product defects')
-  if (result.outcome === 'blocked' && result.blockers.length === 0) problems.push('blocked result has no blocker')
-  if (result.outcome === 'product_failed' && result.productDefects.length === 0) problems.push('product-failed result has no product defect')
-  problems.push(...replayProblems)
-  return problems
-}
-
 async function replayProblemsForResult(eventsPath: string, result: CodexTestAgentResult): Promise<string[]> {
   const passedCaseIds = new Set(result.cases.filter((item) => item.outcome === 'passed').map((item) => item.caseId))
   if (passedCaseIds.size === 0) return []
@@ -324,44 +229,6 @@ async function replayVerificationProblems(options: {
 
 function redactAgentJsonArtifact<T>(value: T, secrets: string[]): T {
   return redactAgentJsonValue(value, secrets) as T
-}
-
-function sameStringSet(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value) => right.includes(value))
-}
-
-function sameEnvironmentRequirement(
-  left: CodexTestEnvironmentRequirement,
-  right: CodexTestEnvironmentRequirement,
-): boolean {
-  return left.id === right.id &&
-    left.kind === right.kind &&
-    left.origin === right.origin &&
-    left.condition === right.condition &&
-    left.status === right.status &&
-    left.requestedAt === right.requestedAt &&
-    sameStringSet(left.caseIds, right.caseIds) &&
-    sameStringSet(left.evidence, right.evidence)
-}
-
-function enforceEnvironmentRequirements(
-  result: CodexTestAgentResult,
-  requirements: CodexTestEnvironmentRequirement[],
-): CodexTestAgentResult {
-  const environmentRequirements = requirements
-  const pending = environmentRequirements.filter((item) => item.status === 'pending')
-  if (pending.length === 0) return { ...result, environmentRequirements }
-  return {
-    ...result,
-    outcome: 'blocked',
-    summary: `${result.summary} Required environment prerequisites remain unavailable.`,
-    environmentRequirements,
-    blockers: [...new Set([...result.blockers, ...pending.map((item) => item.condition)])],
-    nextActions: [...new Set([
-      ...result.nextActions,
-      ...pending.map((item) => `Provide the required ${item.kind} prerequisite: ${item.condition}, then resume the same run.`),
-    ])],
-  }
 }
 
 function isOperationalBlock(message: string, error?: unknown): boolean {
@@ -636,7 +503,7 @@ function blockedResult(
       ? environmentRecoveryActions(environmentBlockers)
       : [details.nextAction],
   }
-  return enforceMutationLedger(result, ledger)
+  return settlementApplyAuthority(result, { mutationLedger: ledger })
 }
 
 function deliveryBlockedResult(
@@ -653,7 +520,7 @@ function deliveryBlockedResult(
     failureKind: 'execution',
     evidenceDescription: 'Structured delivery validation did not complete.',
   }, environmentRequirements, recordedCases)
-  return enforceMutationLedger({
+  return settlementApplyAuthority({
     version: '1.0',
     workflowId: manifest.workflowId,
     sourceSha256: manifest.source.sha256,
@@ -669,7 +536,7 @@ function deliveryBlockedResult(
     nextActions: environmentBlockers.length > 0
       ? environmentRecoveryActions(environmentBlockers)
       : ['Resume the same AgentHost session and complete the structured evidence-based result without repeating verified writes.'],
-  }, ledger)
+  }, { mutationLedger: ledger })
 }
 
 async function readMutationLedger(path: string): Promise<CodexTestMutationLedgerEntry[]> {
@@ -747,14 +614,43 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-function environmentRequirementsForCases(
-  requirements: CodexTestEnvironmentRequirement[],
-  caseIds: string[],
-): CodexTestEnvironmentRequirement[] {
-  const active = new Set(caseIds)
-  return requirements
-    .map((requirement) => ({ ...requirement, caseIds: requirement.caseIds.filter((caseId) => active.has(caseId)) }))
-    .filter((requirement) => requirement.caseIds.length > 0)
+/**
+ * The recorded rows the delivery Adapter judges a recovered artifact against,
+ * read once per recovery attempt.
+ *
+ * A row file this run cannot read is a recorded delivery problem, not a crash:
+ * recovery has to stay able to reach a fail-closed Result the observation plane
+ * can report on, and a claim that cites a row nobody can read already fails
+ * closed on it. The unreadable collection is therefore reported and treated as
+ * empty — never silently dropped, and never allowed to abort the run before it
+ * can settle.
+ */
+async function readRecordedDeliveryRows(workspace: AgentWorkspace, secrets: string[], caseIds?: string[]): Promise<{
+  environmentRequirements: CodexTestEnvironmentRequirement[]
+  executionReceipts: CodexTestExecutionReceipt[]
+  problems: string[]
+}> {
+  const problems: string[] = []
+  const readRows = async <T>(read: () => Promise<T[]>, label: string): Promise<T[]> => {
+    try {
+      return await read()
+    } catch (error) {
+      problems.push(`Recorded ${label} could not be read: ${redactAgentValue(error instanceof Error ? error.message : String(error), secrets)}`)
+      return []
+    }
+  }
+  const recorded = await readRows(
+    () => readJsonOr<CodexTestEnvironmentRequirement[]>(workspace.environmentRequirementsPath, []),
+    'environment requirements',
+  )
+  return {
+    environmentRequirements: caseIds ? environmentRequirementsForCases(recorded, caseIds) : recorded,
+    executionReceipts: await readRows(
+      () => readExecutionReceipts(workspace.executionReceiptsPath),
+      'execution receipts',
+    ),
+    problems,
+  }
 }
 
 function aggregateCaseResults(options: {
@@ -769,9 +665,10 @@ function aggregateCaseResults(options: {
     if (!result) throw new Error(`Adaptive execution is missing ${phase.id}`)
     return result
   })
-  const outcome = cases.some((item) => item.outcome === 'blocked')
-    ? 'blocked'
-    : cases.some((item) => item.outcome === 'product_failed') ? 'product_failed' : 'passed'
+  // Deriving the top-level outcome is a settlement rule, so it is asked of the
+  // seam rather than re-implemented here; the seam settles this same aggregate
+  // immediately afterwards through the settlement seam.
+  const outcome = settlementOutcomeForClaims(settlementClaimsFromResult(cases))
   const counts = {
     passed: cases.filter((item) => item.outcome === 'passed').length,
     productFailed: cases.filter((item) => item.outcome === 'product_failed').length,
@@ -1041,16 +938,25 @@ export async function runAgentTest(
     if (options.resume) {
       const ledger = await readMutationLedger(workspace.mutationLedgerPath)
       if (!ledger.some((entry) => entry.status === 'pending')) {
+        // The recorded rows are read before recovery so the delivery Adapter can
+        // settle the claims it reads against the same authority the final
+        // settlement uses, instead of guessing whether a reference is real.
+        const recordedRows = await readRecordedDeliveryRows(workspace, redactionSecrets)
+        const recordedRowProblems = recordedRows.problems
         const recoveryStrategies = [
           () => recoverAgentEpochDeliveryResult({
             workspaceDirectory: workspace.workspaceDirectory,
             manifest: options.manifest,
             startedAt: state.startedAt,
+            environmentRequirements: recordedRows.environmentRequirements,
+            executionReceipts: recordedRows.executionReceipts,
           }),
           () => recoverAgentDeliveryResult({
             artifactPath: workspace.caseResultsPath,
             manifest: options.manifest,
             startedAt: state.startedAt,
+            environmentRequirements: recordedRows.environmentRequirements,
+            executionReceipts: recordedRows.executionReceipts,
           }),
         ]
         for (const recover of recoveryStrategies) {
@@ -1060,22 +966,20 @@ export async function runAgentTest(
             workspace.environmentRequirementsPath,
             recovered.result.cases,
           )
-          const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
           const replayProblems = await replayProblemsForResult(eventsPath, recovered.result)
-          const recoveryProblems = finalResultProblems(
-            recovered.result,
-            options.manifest,
+          const recoveryProblems = [...recordedRowProblems, ...settlementProblems(settlementInputFromResult(recovered.result, {
+            manifest: options.manifest,
             environmentRequirements,
-            executionReceipts,
+            executionReceipts: recordedRows.executionReceipts,
             replayProblems,
-          )
+          }))]
           const replayVerification = recoveryProblems.length === 0
             ? await replayVerificationProblems({ outputDirectory, eventsPath, result: recovered.result, manifest: options.manifest, workspace, profile: options.profile })
             : []
           if (recoveryProblems.length === 0 && replayVerification.length === 0) {
-            const result = redactAgentJsonArtifact(enforceMutationLedger(
-              enforceEnvironmentRequirements(recovered.result, environmentRequirements),
-              ledger,
+            const result = redactAgentJsonArtifact(settlementApplyAuthority(
+              recovered.result,
+              { environmentRequirements, mutationLedger: ledger },
             ), redactionSecrets)
             await writeCaseResultRecords(resultDirectory, options.manifest, 'recovered-delivery', result.cases)
             await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
@@ -1511,9 +1415,17 @@ export async function runAgentTest(
       let deliveryProblems: string[] = []
       let lastRecoveredEpochCases: CodexTestCaseResult[] = []
       const recoverExistingEpochDelivery = async (): Promise<CodexTestAgentResult | undefined> => {
-        const recovered = await recoverAgentDeliveryResult({ artifactPath: deliveryPath, manifest: scopedManifest, startedAt: state.startedAt })
+        const recordedRows = await readRecordedDeliveryRows(workspace, redactionSecrets, epoch.caseIds)
+        const recordedRowProblems = recordedRows.problems
+        const recovered = await recoverAgentDeliveryResult({
+          artifactPath: deliveryPath,
+          manifest: scopedManifest,
+          startedAt: state.startedAt,
+          environmentRequirements: recordedRows.environmentRequirements,
+          executionReceipts: recordedRows.executionReceipts,
+        })
         if (!recovered.result) {
-          deliveryProblems = recovered.problems
+          deliveryProblems = [...recordedRowProblems, ...recovered.problems]
           return undefined
         }
         lastRecoveredEpochCases = recovered.result.cases
@@ -1522,16 +1434,23 @@ export async function runAgentTest(
           recovered.result.cases,
         )
         const scopedRequirements = environmentRequirementsForCases(requirements, epoch.caseIds)
-        const executionReceipts = await readExecutionReceipts(workspace.executionReceiptsPath)
         const normalized = { ...recovered.result, environmentRequirements: scopedRequirements }
         const replayProblems = await replayProblemsForResult(eventsPath, normalized)
-        const problems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+        const problems = settlementProblems(settlementInputFromResult(normalized, {
+          manifest: scopedManifest,
+          environmentRequirements: scopedRequirements,
+          executionReceipts: recordedRows.executionReceipts,
+          replayProblems,
+        }))
         const replayVerification = problems.length === 0
           ? await replayVerificationProblems({ outputDirectory, eventsPath, result: normalized, manifest: scopedManifest, workspace, profile: options.profile })
           : []
-        deliveryProblems = [...problems, ...replayVerification]
+        deliveryProblems = [...recordedRowProblems, ...problems, ...replayVerification]
         if (deliveryProblems.length > 0) return undefined
-        return enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+        return settlementApplyAuthority(normalized, {
+          environmentRequirements: scopedRequirements,
+          mutationLedger: await readMutationLedger(workspace.mutationLedgerPath),
+        })
       }
       // A complete epoch artifact is already an auditable delivery contract;
       // do not spend another model turn merely to re-serialize those facts.
@@ -1561,7 +1480,12 @@ export async function runAgentTest(
             environmentRequirements: scopedRequirements,
           }
           const replayProblems = await replayProblemsForResult(eventsPath, normalized)
-          deliveryProblems = finalResultProblems(normalized, scopedManifest, scopedRequirements, executionReceipts, replayProblems)
+          deliveryProblems = settlementProblems(settlementInputFromResult(normalized, {
+            manifest: scopedManifest,
+            environmentRequirements: scopedRequirements,
+            executionReceipts,
+            replayProblems,
+          }))
           if (deliveryProblems.length > 0) continue
           deliveryProblems = await replayVerificationProblems({
             outputDirectory,
@@ -1572,7 +1496,10 @@ export async function runAgentTest(
             profile: options.profile,
           })
           if (deliveryProblems.length > 0) continue
-          epochResult = enforceMutationLedger(enforceEnvironmentRequirements(normalized, scopedRequirements), await readMutationLedger(workspace.mutationLedgerPath))
+          epochResult = settlementApplyAuthority(normalized, {
+            environmentRequirements: scopedRequirements,
+            mutationLedger: await readMutationLedger(workspace.mutationLedgerPath),
+          })
           break
         } catch (error) {
           const message = redactAgentValue(error instanceof Error ? error.message : String(error), redactionSecrets)
@@ -1622,7 +1549,10 @@ export async function runAgentTest(
             [],
           ).cases)
         }
-        const result = redactAgentJsonArtifact(enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }), requirements), ledger), redactionSecrets)
+        const result = redactAgentJsonArtifact(settlementApplyAuthority(
+          aggregateCaseResults({ manifest: options.manifest, caseResults: cases, requirements, startedAt: state.startedAt }),
+          { environmentRequirements: requirements, mutationLedger: ledger },
+        ), redactionSecrets)
         await writePrivateJson(resultPath, result)
         await writePrivateJson(workspace.caseResultsPath, deliveryArtifactFromResult(result))
         state = updateAgentTestState(state, {
@@ -1691,14 +1621,16 @@ export async function runAgentTest(
     const records = await readCaseResultRecords(resultDirectory, options.manifest)
     let result: CodexTestAgentResult
     try {
-      result = enforceMutationLedger(enforceEnvironmentRequirements(aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }), requirements), ledger)
-      const problems = finalResultProblems(
-        result,
-        options.manifest,
-        requirements,
-        await readExecutionReceipts(workspace.executionReceiptsPath),
-        await replayProblemsForResult(eventsPath, result),
+      result = settlementApplyAuthority(
+        aggregateCaseResults({ manifest: options.manifest, caseResults: records.map((record) => record.result), requirements, startedAt: state.startedAt }),
+        { environmentRequirements: requirements, mutationLedger: ledger },
       )
+      const problems = settlementProblems(settlementInputFromResult(result, {
+        manifest: options.manifest,
+        environmentRequirements: requirements,
+        executionReceipts: await readExecutionReceipts(workspace.executionReceiptsPath),
+        replayProblems: await replayProblemsForResult(eventsPath, result),
+      }))
       if (problems.length > 0) throw new Error(`Adaptive epoch aggregation failed deterministic validation: ${problems.join('; ')}`)
     } catch (error) {
       result = deliveryBlockedResult(
