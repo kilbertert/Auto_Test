@@ -8,7 +8,7 @@ improve the code for confirmed findings, then explain what changed.
 
 # CONTEXT
 
-Read `CONTEXT.md`, `docs/agents/domain.md`, relevant `docs/adr/` records, and
+Read `GLOSSARY.md`, `docs/agents/domain.md`, relevant `docs/adr/` records, and
 `.sandcastle/CODING_STANDARDS.md` before starting.
 
 <linked-issue>

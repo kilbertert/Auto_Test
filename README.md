@@ -400,7 +400,7 @@ Excel 凭据以 `secretRef` 替换，别名与真实值的映射只存在于运�
 因此跨不可信网络必须置于 HTTPS 代理或 SSH 端口转发之后。
 
 **控制面（写操作）是显式的后续工作**，刻意与观测面分离：
-把两者混在一起，等于让一个本地无鉴权视图获得控制授权。见 [CONTEXT.md](CONTEXT.md)。
+把两者混在一起，等于让一个本地无鉴权视图获得控制授权。见 [GLOSSARY.md](GLOSSARY.md)。
 
 ---
 
@@ -458,7 +458,7 @@ docs/              架构、契约、ADR、运行手册（见第十节路由表�
 .sandcastle/       AFK 执行层（TypeScript 编排、静态策略、投递状态机）
 architecture.yml   分层契约 —— 改 src/ 目录结构必须同步改它
 AGENTS.md          仓库级开发共识（文档同步、验收声明纪律）
-CONTEXT.md         领域词汇表（术语 + 应避免的同义词）
+GLOSSARY.md         领域词汇表（术语 + 应避免的同义词）
 acceptance.feature 可执行验收约束（AFK 可信交付）
 qa-plan.md         仓库级 QA 用例与结果记录
 ```
@@ -477,7 +477,7 @@ qa-plan.md         仓库级 QA 用例与结果记录
 | 改输入包约定（brief / images） | `src/workflow/input-bundle.ts` | sidecar 发现逻辑 | Excel 与 sidecar 是同一个不可分割输入包，打包/复制/改名必须一起走 |
 | 改环境注册或权限策略 | `src/workflow/environment-profile.ts`、`src/usability/environment-registration.ts` | Profile schema + 加载期不变量 | 写权限只由 Profile 决定；`allowDestructive` 不能在没有 `allowWrite` 时开启 |
 | 改结果合同 / Schema | `src/agent/result.ts`、`finalResultProblems` | Schema + 校验器**一起**改 | 合同变更必须同步所有读取方与回归测试（ADR-0001）；旧状态不兼容恢复 |
-| 改观测面板行为 | `src/observe/server.ts`、[CONTEXT.md](CONTEXT.md) | 路由 / 脱敏 / 路径隔离 | 只读是硬边界；新增路由必须同时补路径穿越与脱敏测试 |
+| 改观测面板行为 | `src/observe/server.ts`、[GLOSSARY.md](GLOSSARY.md) | 路由 / 脱敏 / 路径隔离 | 只读是硬边界；新增路由必须同时补路径穿越与脱敏测试 |
 | 新增失败来源分类 | `src/agent/failure-mode.ts` | 分类表 | 五类必须保持互斥：product / agent_execution / input / environment / infrastructure |
 | 加能力 | `tests/fixtures/agent-site/` | 合成站点 + 测试 | **先在合成 fixture 验证，再进真实 canary**；不得把业务名称、固定列号、特定 DOM 写进通用代码 |
 | 改 AFK 交付流程 | `.sandcastle/policy-check.mjs`（先读它的断言） | workflow + policy check 同步改 | policy check 是静态断言，改 workflow 不改它会让 CI 红 |
@@ -559,7 +559,7 @@ npx vitest run -t "test name"             # 单个用例
 | 主路径长什么样（一张图）？ | [架构快照图](docs/auto-test-architecture.html)（静态 HTML）· 源规格 [docs/auto-test-architecture.json](docs/auto-test-architecture.json)。三个视图：Codex-native 主路径、控制与重放、合同；**不含** `eval`、`observe` 等 support 层模块，非穷举 |
 | 宿主契约与 Codex/OMP 比较？ | [AgentHost 宿主契约](docs/agent-hosts.md) |
 | 为什么这么决定？ | [docs/adr/](docs/adr/)：结果合同与 fail-closed 结算、执行与 Provider 边界、可信 PR 控制面 |
-| 某个术语到底指什么？ | [CONTEXT.md](CONTEXT.md)（词汇表，含应避免的同义词） |
+| 某个术语到底指什么？ | [GLOSSARY.md](GLOSSARY.md)（词汇表，含应避免的同义词） |
 | 怎么打包 Windows 私发包？ | [私有包快速打包](docs/windows-package-quick-start.md) · [Windows 从零验收清单](docs/windows-acceptance-runbook.md) |
 | 验收做到哪一步？ | [充电闭环端到端验收](docs/e2e-charge-acceptance.md) · [自适应 Epoch 验证记录](docs/adaptive-epoch-validation.md) |
 | 输入模板长什么样？ | [templates/test-cases.xlsx](templates/test-cases.xlsx) · [templates/README.md](templates/README.md) |

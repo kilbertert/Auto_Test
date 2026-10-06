@@ -8,7 +8,7 @@ read-only pass. Do not edit files, commit, push, or reply to GitHub comments.
 
 # CONTEXT
 
-Read `CONTEXT.md`, `docs/agents/domain.md`, relevant `docs/adr/` records, and
+Read `GLOSSARY.md`, `docs/agents/domain.md`, relevant `docs/adr/` records, and
 `.sandcastle/CODING_STANDARDS.md` before reviewing.
 For the Standards axis, run the Economy audit defined there and report only
 concrete cases where the change skipped an adequate earlier ladder option.

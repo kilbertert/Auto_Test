@@ -8,7 +8,7 @@ and maintainability while preserving exact functionality.
 
 # CONTEXT
 
-Read `CONTEXT.md` (domain language) and apply `.sandcastle/CODING_STANDARDS.md`.
+Read `GLOSSARY.md` (domain language) and apply `.sandcastle/CODING_STANDARDS.md`.
 Run an Economy audit: verify the change fixed the root cause and did not skip
 an adequate existing-code, standard-library, platform, or dependency option.
 
