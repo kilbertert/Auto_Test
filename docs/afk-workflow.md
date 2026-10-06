@@ -39,7 +39,7 @@ is blocked.
 
 ## Truth sources
 
-- `CONTEXT.md` is the glossary only.
+- `GLOSSARY.md` is the glossary only.
 - `docs/adr/` records durable implementation decisions and trade-offs.
 - The spec/PRD issue records requirements.
 - Native sub-issues and dependency edges record execution slices.

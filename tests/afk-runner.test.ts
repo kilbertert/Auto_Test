@@ -21,7 +21,7 @@ describe("AFK runner", () => {
     const workflow = await readFile("docs/afk-workflow.md", "utf8");
 
     expect(tracker).toContain("GitHub");
-    expect(domain).toContain("CONTEXT.md");
+    expect(domain).toContain("GLOSSARY.md");
     expect(workflow).toContain("/to-spec");
     expect(workflow).toContain("/to-tickets");
     await expect(access(".sandcastle/to-issues-prd/to-issues-prd.ts")).rejects.toThrow();

@@ -4,7 +4,7 @@ PR #{{PR_NUMBER}} (branch `{{BRANCH}}`) has merge conflicts against its base `{{
 
 # CONTEXT
 
-Read `CONTEXT.md` and `docs/` and any relevant ADRs under `docs/adr/` before resolving anything substantive.
+Read `GLOSSARY.md` and `docs/` and any relevant ADRs under `docs/adr/` before resolving anything substantive.
 
 <pr-view>
 
