@@ -25,3 +25,9 @@ jobs:
           node-version: 22
       - name: Verify AFK workflow boundaries
         run: node .sandcastle/policy-check.mjs workflows
+      # The profile-network check decides whether the agent sandbox keeps Docker
+      # bridge isolation. Without it in CI, a typo in the loopback-profile set
+      # silently widens the sandbox's reach — or silently breaks the relay
+      # profile — and nothing fails. It was a runnable check with no runner.
+      - name: Verify sandbox network isolation
+        run: npx --yes tsx .sandcastle/profile-network.check.ts

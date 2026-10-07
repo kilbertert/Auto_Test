@@ -82,7 +82,7 @@ jobs:
 
       - name: Run architecture-review.ts
         env:
-          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'claude-stepfun' }}
+          AFK_PROFILE: ${{ vars.AFK_PROFILE || 'claude-deepseek' }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/architecture-review/architecture-review.ts
 
