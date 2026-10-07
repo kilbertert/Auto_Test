@@ -31,9 +31,9 @@ canary branch and worktree were removed, and `AFK_PROFILE` was restored to
 `aliyun-deepseek`. Re-run AFK-B12 after a healthy provider is configured.
 
 That provider is now retired: the 1.2.0 template replaced the four
-quota-exhausted profiles with `claude-deepseek`, whose endpoint is a host
+quota-exhausted profiles with `claude-stepfun`, whose endpoint is a host
 settings file mounted into the sandbox. The AFK-B12 retry should therefore run
-against `claude-deepseek` once the image is rebuilt from the upgraded
+against `claude-stepfun` once the image is rebuilt from the upgraded
 Dockerfile and `AFK_PROFILE` is switched — in that order, since an image
 without the new dispatch arm makes the wrapper exit 2.
 
