@@ -6,8 +6,8 @@ Select the model supply explicitly. The profile is resolved on the server and
 credentials never belong in the repository:
 
 ```bash
-# StepFun — the AFK default
-AFK_PROFILE=claude-stepfun pnpm afk -- <issue-number>
+# Local relay — the AFK default
+AFK_PROFILE=claude-deepseek pnpm afk -- <issue-number>
 
 # Direct Claude profile from .sandcastle/.env
 AFK_PROFILE=claude pnpm afk -- <issue-number>
@@ -19,7 +19,7 @@ rather than baked into the image:
 | profile | endpoint | host file |
 |---|---|---|
 | `claude` | the Anthropic API | whatever credential the host shell exports |
-| `claude-stepfun` | StepFun's native Anthropic Messages API | `~/cliproxyapi/settings.stepfun.json` |
+| `claude-deepseek` | the host-local cli-proxy-api relay's Anthropic Messages API | `~/cliproxyapi/settings.deepseek.json` |
 
 The model comes from the `ANTHROPIC_DEFAULT_*_MODEL` entries in that file. To
 change it, edit those entries — the sandbox wrapper strips `--model` for this
@@ -27,13 +27,13 @@ profile, because the settings file owns the model, so `AFK_MODEL` has no effect
 here. (Under the `claude` profile it does: that wrapper passes arguments
 through, and there is no settings file for it.)
 
-Set `AFK_STEPFUN_SETTINGS` when the settings file lives elsewhere.
+Set `AFK_DEEPSEEK_SETTINGS` when the settings file lives elsewhere.
 
 Rotating the token is an edit to that host file — there is no image rebuild and
 no `--no-cache` to remember. Nothing about the endpoint enters an image layer.
 
 GitHub Actions reads the repository variable `AFK_PROFILE`; the workflow files
-fall back to `claude-stepfun` when it is unset, so they do not need editing to
+fall back to `claude-deepseek` when it is unset, so they do not need editing to
 switch.
 
 ### Retired profiles
@@ -60,7 +60,7 @@ Merge.
 
 ```bash
 # Planner loop over `ready-for-agent` open issues (max 4 in parallel)
-AFK_PROFILE=claude-stepfun pnpm ralph
+AFK_PROFILE=claude-deepseek pnpm ralph
 ```
 
 Each iteration:

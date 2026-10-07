@@ -12,7 +12,7 @@ describe("AFK runner", () => {
     expect(runner).toContain('maxIterations: Number(process.env.AFK_ITERATIONS ?? 3)');
     // The 1.2.0 template retired the other providers; main.ts advertises the
     // two profiles the scaffold still ships.
-    expect(runner).toContain('claude|claude-stepfun');
+    expect(runner).toContain('claude|claude-deepseek');
   });
 
   it("keeps official planning skills as the only planning entry", async () => {

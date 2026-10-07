@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { claudeCode, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { sandboxNetworkOptions } from "./profile-network.js";
 
 // Endpoints are supplied as host settings files mounted read-only into the
 // sandbox, never baked into the image. A baked key lands in an image layer
@@ -11,7 +12,11 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 // A mount leaves the key on the host, where rotating it is an edit.
 const profiles = {
   claude: undefined,
-  "claude-stepfun": process.env.AFK_STEPFUN_SETTINGS ?? join(homedir(), "cliproxyapi/settings.stepfun.json"),
+  // Local relay (cli-proxy-api on 127.0.0.1:8317), reached with a host-network
+  // sandbox. The settings file points ANTHROPIC_BASE_URL at the relay loopback
+  // address, so the container MUST share the host network namespace —
+  // a default-bridge container cannot reach the host 127.0.0.1 (measured).
+  "claude-deepseek": process.env.AFK_DEEPSEEK_SETTINGS ?? join(homedir(), "cliproxyapi/settings.deepseek.json"),
 } as const;
 
 export function claudeProfile(
@@ -49,6 +54,7 @@ export function claudeProfile(
       // Every remaining profile reaches a public HTTPS origin over the default
       // bridge. Host networking existed for a relay bound to the host loopback,
       // which a sandbox cannot reach; no current profile has that dependency.
+      ...sandboxNetworkOptions(profile),
       ...(settingsPath
         ? { mounts: [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }] }
         : {}),

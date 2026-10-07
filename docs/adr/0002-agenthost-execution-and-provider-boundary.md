@@ -13,7 +13,7 @@ the execution host stays replaceable.
 Use AgentHost-only execution; the legacy runtime entry point and the old
 planner/recovery/controller chain are removed. Model supply is selected through
 server-local profiles (`claude`, which uses the host shell's own credential, and
-`claude-stepfun`, whose host settings file is mounted read-only into the
+`claude-deepseek`, whose host settings file is mounted read-only into the
 sandbox), with credentials kept outside the repository.
 
 ## Consequences
