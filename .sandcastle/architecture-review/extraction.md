@@ -4,13 +4,15 @@ You have finished the architecture-review pass. **Do not explore further or make
 
 End your response with a single `<output>` block, exactly as specified in the project skill `improve-codebase-architecture-project`. It has one of two shapes.
 
+The `title` and `body` you emit are what the workflow will publish as the issue — you do not create it yourself. Report the PRD you drafted, not one you opened.
+
 ## Proposed a PRD this run
 
 <output>
 {
   "status": "proposed",
-  "title": "PRD title (matches the issue you created)",
-  "body": "The PRD body you published.",
+  "title": "PRD title — this becomes the issue title",
+  "body": "The full PRD body — this becomes the issue body.",
   "oneLineSummary": "One-line description of the deepening opportunity.",
   "candidatesConsidered": ["candidate 1", "candidate 2"]
 }
