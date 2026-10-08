@@ -9,14 +9,28 @@
 Read this before exploring by hand. It answers where things are; it does not
 answer how they work.
 
+It is generated from the filesystem as it stands in this checkout, not from
+the set of tracked files — so an untracked directory outside the generator's
+skip list changes the map, and `repo-map.check.mjs` will ask for a
+regeneration. That is deliberate: an agent works in a checkout, and a mount
+point or a stray `output/` is part of what it sees.
+
 ## Entry points
 
+- script "easy": tsx src/cli/easy.ts (package.json)
+- script "agent:test": tsx src/cli/agent-test.ts (package.json)
+- script "agent:compare": tsx src/cli/compare-agent-runs.ts (package.json)
+- script "eval:suite": tsx src/cli/run-eval-suite.ts (package.json)
+- script "intake:workflow": tsx src/cli/intake-workflow.ts (package.json)
 - script "afk": tsx .sandcastle/main.ts (package.json)
+- script "compile:replay": tsx src/cli/compile-mcp-replay.ts (package.json)
+- script "report:workflow": tsx src/cli/workflow-acceptance-report.ts (package.json)
 - script "ralph": tsx .sandcastle/planner.ts (package.json)
+- script "afk:policy": node .sandcastle/policy-check.mjs all (package.json)
 
 ## Tests
 
-- tests/ — 61 test file(s)
+- tests/ — 61 test file(s, recursive)
 - script "typecheck": tsc -p tsconfig.json --noEmit
 - script "test": vitest run
 - script "test:watch": vitest

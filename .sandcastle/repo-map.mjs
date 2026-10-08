@@ -118,8 +118,19 @@ function entryPoints(root = REPO) {
     for (const candidate of ["main", "module", "exports"]) {
       if (typeof pkg[candidate] === "string") found.push(`${candidate}: ${pkg[candidate]} (package.json)`);
     }
+    // Every script whose command runs a file is an entry point the agent may
+    // need. The allowlist this replaced named five (dev/start/serve/afk/ralph)
+    // and silently dropped the rest — on one project that meant `easy`, its main
+    // user CLI, was absent from a map whose whole job is to say where things are.
+    // A map that lists only the harness's own entry points is worse than a short
+    // one: the reader concludes the others do not exist.
     for (const [name, cmd] of Object.entries(pkg.scripts ?? {})) {
-      if (/^(dev|start|serve|afk|ralph)$/.test(name)) found.push(`script "${name}": ${cmd} (package.json)`);
+      // Scripts that only delegate (`npm run x && npm run y`) or only invoke a
+      // tool (`vitest run`, `tsc -p .`) are not files a reader can open.
+      if (/(?:^|\s)(?:npm|pnpm|yarn|npx|tsc|vitest|jest|eslint|ruff|pytest|make)\b/.test(cmd)) continue;
+      if (/^(?:node|tsx|ts-node|bun|deno)\s/.test(cmd) || /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rb|sh)\b/.test(cmd)) {
+        found.push(`script "${name}": ${cmd} (package.json)`);
+      }
     }
   }
   found.push(...readPyprojectScripts(root));
@@ -134,16 +145,27 @@ function entryPoints(root = REPO) {
   return found;
 }
 
-function testLayout() {
+function testLayout(root = REPO) {
   const found = [];
   for (const d of ["tests", "test", "frontend/e2e", "e2e", "spec", "__tests__"]) {
-    const p = path.join(REPO, d);
+    const p = path.join(root, d);
     if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) continue;
+    // Recursive, because a count that only sees the top level is wrong in the
+    // direction that matters: `tests/unit/` would read as zero and the map would
+    // tell the agent there is nothing to run. The count is of test-named files,
+    // not of every file under the directory — conftest.py is neither.
     let n = 0;
-    for (const e of fs.readdirSync(p)) if (/\.(py|ts|tsx|js|jsx|mjs)$/.test(e)) n += 1;
-    found.push(`${d}/ — ${n} test file(s)`);
+    (function count(dir) {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (SKIP.has(e.name)) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) count(full);
+        else if (/(^test[_-]|_test\.|\.test\.|\.spec\.)/.test(e.name)) n += 1;
+      }
+    })(p);
+    found.push(`${d}/ — ${n} test file(s, recursive)`);
   }
-  const pkg = readJson(path.join(REPO, "package.json"));
+  const pkg = readJson(path.join(root, "package.json"));
   for (const [name, cmd] of Object.entries(pkg?.scripts ?? {})) {
     if (/test|check|lint|typecheck/.test(name)) found.push(`script "${name}": ${cmd}`);
   }
@@ -151,7 +173,7 @@ function testLayout() {
   // always failed and the second half of this test never fired. The file
   // existing is the whole signal — a project carrying a pyproject.toml runs
   // pytest through it or through a pytest.ini beside it.
-  if (fs.existsSync(path.join(REPO, "pytest.ini")) || fs.existsSync(path.join(REPO, "pyproject.toml"))) {
+  if (fs.existsSync(path.join(root, "pytest.ini")) || fs.existsSync(path.join(root, "pyproject.toml"))) {
     found.push("pytest (pyproject.toml / pytest.ini present)");
   }
   return found;
@@ -216,6 +238,12 @@ function render() {
     "",
     "Read this before exploring by hand. It answers where things are; it does not",
     "answer how they work.",
+    "",
+    "It is generated from the filesystem as it stands in this checkout, not from",
+    "the set of tracked files — so an untracked directory outside the generator's",
+    "skip list changes the map, and `repo-map.check.mjs` will ask for a",
+    "regeneration. That is deliberate: an agent works in a checkout, and a mount",
+    "point or a stray `output/` is part of what it sees.",
     "",
     "## Entry points",
     "",
@@ -291,12 +319,62 @@ if (args.includes("--self-check")) {
     console.error("  a directory without pyproject.toml must yield no entry points");
     failures += 1;
   }
+  // package.json scripts, and the reason this self-check is not parser-only: the
+  // filter decides what the agent is told exists, and a filter that is too narrow
+  // fails *quietly*. The allowlist this replaced named five script names, so on a
+  // project whose main CLI was called something else the map simply did not
+  // mention it — the agent then concludes it does not exist.
+  fs.rmSync(path.join(dir, "pyproject.toml"), { force: true });
+  const scripts = {
+    "user-cli": "tsx src/cli/easy.ts",
+    "agent:thing": "node src/cli/agent-test.js",
+    dev: "vite",
+    start: "node dist/index.js",
+    check: "npm run typecheck && npm run test",
+    test: "vitest run",
+    build: "tsc -p tsconfig.json",
+  };
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts }));
+  const entries = entryPoints(dir);
+  const has = (name) => entries.some((e) => e.startsWith(`script "${name}":`));
+  for (const [name, expected, why] of [
+    ["user-cli", true, "a script running a .ts file is an entry point"],
+    ["agent:thing", true, "so is one running a .js file"],
+    ["start", true, "so is one running a built file"],
+    ["dev", false, "a bare tool invocation is not a file a reader can open"],
+    ["test", false, "neither is a test runner"],
+    ["build", false, "nor a compiler"],
+    ["check", false, "nor a delegating script"],
+  ]) {
+    if (has(name) !== expected) {
+      console.error(`  package.json script "${name}": expected ${expected ? "in" : "out"} of the map`);
+      failures += 1;
+      void why;
+    }
+  }
+
+  // The test count is recursive, because a map that reports `tests/ — 0 test
+  // files` for a project whose tests all live one level down is worse than no
+  // count at all: it tells the agent there is nothing to run.
+  const testDir = path.join(dir, "tests", "unit");
+  fs.mkdirSync(testDir, { recursive: true });
+  fs.writeFileSync(path.join(testDir, "test_alpha.py"), "");
+  fs.writeFileSync(path.join(testDir, "helper_test.py"), "");
+  fs.writeFileSync(path.join(testDir, "definitely.py"), "");
+  fs.writeFileSync(path.join(dir, "tests", "conftest.py"), "");
+  const line = testLayout(dir).find((l) => l.startsWith("tests/")) ?? "";
+  if (!/2 test file\(s/.test(line)) {
+    console.error(`  the test count must see files one level down and count only test-named ones, got: ${line || "(none)"}`);
+    failures += 1;
+  }
+  fs.rmSync(testDir, { recursive: true, force: true });
+
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures > 0) {
     console.error(`repo-map self-check failed (${failures})`);
     process.exit(1);
   }
-  console.log("repo-map self-check ok (5 pyproject cases)");
+  console.log("repo-map self-check ok (pyproject parser, entry-point filter, test count)");
   process.exit(0);
 }
 
