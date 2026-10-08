@@ -227,6 +227,11 @@ jobs:
           SUB_ISSUE_TITLE: ${{ steps.shape.outputs.next_open_title }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npm exec tsx .sandcastle/implement-prd/implement-prd.ts
+      # The map reports the filesystem, and the agent just changed it. Without
+      # this the branch is born failing the policy job's freshness check.
+      - name: Regenerate the repository map
+        if: steps.shape.outputs.mode == 'run' && success()
+        run: node .sandcastle/repo-map.mjs
 
       - name: Verify AFK policy before push
         if: steps.shape.outputs.mode == 'run' && success()

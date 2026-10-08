@@ -24,7 +24,7 @@ Do not touch work that belongs to a different sub-issue.
 
 # CONTEXT
 
-Read `GLOSSARY.md` and the relevant files under `docs/`, apply `.sandcastle/CODING_STANDARDS.md`, and any ADRs under `docs/adr/` before starting.
+Read `.sandcastle/REPO-MAP.md` first (where things live), then `GLOSSARY.md` and the relevant files under `docs/`, apply `.sandcastle/CODING_STANDARDS.md`, and any ADRs under `docs/adr/` before starting.
 Explore the repo and fill your context with the parts relevant to this
 sub-issue — especially test files that touch the area you'll change.
 Run the Economy ladder before choosing an implementation; stop at the first

@@ -31,3 +31,18 @@ jobs:
       # profile — and nothing fails. It was a runnable check with no runner.
       - name: Verify sandbox network isolation
         run: npx --yes tsx .sandcastle/profile-network.check.ts
+      - name: Verify sandbox MCP config
+        run: npx --yes tsx .sandcastle/mcp-config.check.ts
+      # A stale map is read with the same confidence as the code, so it is
+      # checked rather than trusted. --check regenerates to stdout and compares —
+      # it never writes the file it is judging.
+      - name: Verify the repository map is current
+        run: node .sandcastle/repo-map.check.mjs
+      # The generator's own parser, not the map it produced: a regex that matches
+      # nothing yields a map that looks complete and omits the answer, and a fresh
+      # scaffold cannot catch that because a fresh scaffold has no console scripts
+      # to omit. Deliberately NOT wired into repo-map.check.mjs — the map check
+      # must use the shipping code path or it would validate one thing and ship
+      # another.
+      - name: Repository-map generator self-check
+        run: node .sandcastle/repo-map.mjs --self-check
