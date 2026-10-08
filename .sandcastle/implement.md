@@ -2,7 +2,7 @@
 
 Implement exactly GitHub issue {{ISSUE_NUMBER}}: {{ISSUE_TITLE}}.
 
-Read `GLOSSARY.md`, `AGENTS.md`, the issue, `docs/`, `.sandcastle/CODING_STANDARDS.md`, and the smallest set of relevant source
+Read `.sandcastle/REPO-MAP.md` first (where things live), then `GLOSSARY.md`, `AGENTS.md`, the issue, `docs/`, `.sandcastle/CODING_STANDARDS.md`, and the smallest set of relevant source
 and tests before editing. Work on one issue only.
 Run the Economy ladder defined in the coding standards before choosing an
 implementation; stop at the first option that fully satisfies the issue.

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { claudeCode, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { sandboxNetworkOptions } from "./profile-network.js";
+import { mcpConfigMounts, writeMcpConfig } from "./mcp-config.js";
 
 // Endpoints are supplied as host settings files mounted read-only into the
 // sandbox, never baked into the image. A baked key lands in an image layer
@@ -23,6 +24,10 @@ export function claudeProfile(
   profile = process.env.AFK_PROFILE,
   env?: Record<string, string>,
 ): { agent: AgentProvider; sandbox: SandboxProvider } {
+  // Materialise the MCP config before the sandbox is created — the mount below
+  // needs a file to point at, and writing it per run is what keeps it true to
+  // what this host actually has.
+  writeMcpConfig();
   if (profile && !(profile in profiles)) {
     throw new Error(`Unsupported profile; use ${Object.keys(profiles).join(", ")}.`);
   }
@@ -58,9 +63,24 @@ export function claudeProfile(
       // `profile-network.check.ts` asserts the exact object this call splats —
       // the helper's return value alone would leave a broken wiring green.
       ...sandboxNetworkOptions(profile),
-      ...(settingsPath
-        ? { mounts: [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }] }
-        : {}),
+      // The mounts are unconditional. The MCP pair is independent of the
+      // endpoint: the graph is mounted from the host and serena is in the image,
+      // both regardless of how the agent authenticates. Gating them on
+      // settingsPath (as this started out) made the setting a proxy for
+      // "is this a non-default profile" — and the claude profile is the one
+      // that resolves no settings file, so the default profile was exactly the
+      // one that got no mounts, no config file, and therefore no servers. The
+      // wrapper arm also passes no --mcp-config, so nothing else
+      // supplied them: not a wrong path, just absent.
+      mounts: [
+        // Present only when the profile resolves an endpoint, because without
+        // one there is no file to mount — the wrapper claude arm uses the
+        // Anthropic default and reads no settings.
+        ...(settingsPath
+          ? [{ hostPath: settingsPath, sandboxPath: "/home/agent/.afk-profile-settings.json", readonly: true }]
+          : []),
+        ...mcpConfigMounts(),
+      ],
     }),
   };
 }

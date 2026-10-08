@@ -10,17 +10,18 @@ write. Your job is:
    closed) so you don't re-propose them.
 2. Explore the codebase.
 3. Pick **one** top candidate.
-4. Write it up **in your `<output>` block** — title, full body, one-line
-   summary, and the candidates you considered.
+4. Write it up **in prose** — the proposed title, the full PRD body in
+   Markdown, and the candidates you considered. Keep it in your final
+   response; a follow-up pass lifts it into structured output.
 
 **Do NOT create the issue yourself.** The workflow's own *Publish PRD issue*
 step creates the issue from the `title` and `body` you emit. If you also run
 `gh issue create`, the run publishes **twice**.
 
 The full process — including the methodology (deletion test, deepening,
-glossary), the loose-duplicate rule, the PRD shape, and the exact `<output>`
-schema — is documented in the project skill
-`improve-codebase-architecture-project`. Follow it.
+glossary), the loose-duplicate rule, and the PRD shape — is documented in the
+project skill `improve-codebase-architecture-project`. Follow it. The extraction
+pass carries the schema; this one just leaves the PRD in prose it can lift.
 
 # CONTEXT
 
@@ -37,6 +38,6 @@ recorded decision.
   self-published issue also ends up **unlabelled** — the same failure that
   duplicated #178/#177 and #202/#201.
 - One PRD per run. If every reasonable candidate is already covered by a
-  prior `source:architecture-review` proposal, emit a `skipped` output and
-  stop.
+  prior `source:architecture-review` proposal, say so plainly and stop — the
+  next pass reports it as `skipped`, so it needs no structured output here.
 - No questions to a user — there is none. Make the call.

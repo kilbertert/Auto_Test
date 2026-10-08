@@ -31,3 +31,10 @@ jobs:
       # profile — and nothing fails. It was a runnable check with no runner.
       - name: Verify sandbox network isolation
         run: npx --yes tsx .sandcastle/profile-network.check.ts
+      - name: Verify sandbox MCP config
+        run: npx --yes tsx .sandcastle/mcp-config.check.ts
+      # A stale map is read with the same confidence as the code, so it is
+      # checked rather than trusted. --check regenerates to stdout and compares —
+      # it never writes the file it is judging.
+      - name: Verify the repository map is current
+        run: node .sandcastle/repo-map.check.mjs

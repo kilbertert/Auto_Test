@@ -9,7 +9,7 @@ follows `.sandcastle/CODING_STANDARDS.md`.
 
 # CONTEXT
 
-Read `GLOSSARY.md`, `.sandcastle/CODING_STANDARDS.md`, `docs/`, and relevant ADRs
+Read `.sandcastle/REPO-MAP.md` first (where things live), then `GLOSSARY.md`, `.sandcastle/CODING_STANDARDS.md`, `docs/`, and relevant ADRs
 under `docs/adr/` if you need domain context for a comment. Do not go deeper
 than the comments demand.
 

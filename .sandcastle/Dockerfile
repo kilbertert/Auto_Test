@@ -29,15 +29,27 @@ RUN groupmod -o -g ${AGENT_GID} node \
   && usermod -o -u ${AGENT_UID} -g ${AGENT_GID} -d /home/agent -m -l agent node \
   && mkdir -p /home/agent/.codex && chown -R ${AGENT_UID}:${AGENT_GID} /home/agent/.codex
 
-RUN npm install --global @anthropic-ai/claude-code \
+# uv — serena is installed with uv tool install below.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+  && rm -rf /root/.cache
+
+# Serena MCP server — symbol-level code navigation, baked in so every run
+# does not pay 30-60 s to install it. Paths come from env vars: this RUN sits
+# above the USER line, and a bare uv tool install would land in the root home.
+RUN UV_TOOL_BIN_DIR=/usr/local/bin UV_TOOL_DIR=/home/agent/.local/share/uv/tools \
+      uv tool install serena-agent==1.7.0 \
+  && chown -R ${AGENT_UID}:${AGENT_GID} /home/agent/.local \
+  && serena --version
+
+RUN npm install --global --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code \
   && npm install --global @openai/codex@0.146.1 \
   && mv /usr/local/bin/claude /usr/local/bin/claude-real \
   && printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -eu' \
     'case "${AFK_PROFILE:-claude}" in' \
-    '  claude) exec /usr/local/bin/claude-real "$@" ;;' \
-    '  claude-deepseek) args=(); while [ "$#" -gt 0 ]; do if [ "$1" = "--model" ]; then shift 2; else args+=("$1"); shift; fi; done; exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 /usr/local/bin/claude-real --settings /home/agent/.afk-profile-settings.json "${args[@]}" ;;' \
+    '  claude) exec /usr/local/bin/claude-real --mcp-config /home/agent/.afk-mcp.json "$@" ;;' \
+    '  claude-deepseek) args=(); while [ "$#" -gt 0 ]; do if [ "$1" = "--model" ]; then shift 2; else args+=("$1"); shift; fi; done; exec env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_REASONING_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 /usr/local/bin/claude-real --settings /home/agent/.afk-profile-settings.json --mcp-config /home/agent/.afk-mcp.json "${args[@]}" ;;' \
     '  *) echo "unsupported AFK_PROFILE" >&2; exit 2 ;;' \
     'esac' > /usr/local/bin/claude \
   && chmod 755 /usr/local/bin/claude \
