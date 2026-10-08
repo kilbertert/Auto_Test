@@ -31,9 +31,9 @@
  * louder, but it does keep the config honest about what is actually provided —
  * and `mcp-config.check.ts` is what makes the omission visible.
  */
-import { accessSync, constants, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** Host path of the codebase-memory binary. Overridable for a different host. */
 export function codebaseMemoryBinary(): string {
@@ -46,13 +46,33 @@ export const SANDBOX_MCP_CONFIG = "/home/agent/.afk-mcp.json";
 /** In-sandbox path of the mounted codebase-memory binary. */
 export const SANDBOX_CBM_BINARY = "/home/agent/.local/bin/codebase-memory-mcp";
 
-function exists(path: string): boolean {
+// `isFile()` and `X_OK`, not `R_OK`: this decides whether claude is handed a
+// *command*, and a readable file is not one. A path that exists but cannot be
+// executed — a 0644 copy, a directory, a dangling symlink — would be declared to
+// claude, mounted, and then fail to start. Claude skips a server whose command it
+// cannot launch without reporting anything, so the result is a silent loss of
+// half the agent's tools rather than an error. (Verified: an empty `mcpServers`
+// and a session with an unreachable command both exit 0.)
+function isExecutable(path: string): boolean {
   try {
-    accessSync(path, constants.R_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+function canExecute(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Exported for the check: one predicate decides both the server and its mount. */
+export function codebaseMemoryAvailable(): boolean {
+  const bin = codebaseMemoryBinary();
+  return isExecutable(bin) && canExecute(bin);
 }
 
 /**
@@ -70,7 +90,7 @@ export function mcpServers(): Record<string, { command: string; args: string[] }
       args: ["start-mcp-server", "--context", "ide-assistant"],
     },
   };
-  if (exists(codebaseMemoryBinary())) {
+  if (codebaseMemoryAvailable()) {
     servers["codebase-memory-mcp"] = {
       command: SANDBOX_CBM_BINARY,
       args: [],
@@ -94,7 +114,7 @@ export function mcpConfigMounts(): { hostPath: string; sandboxPath: string; read
       readonly: true,
     },
   ];
-  if (exists(codebaseMemoryBinary())) {
+  if (codebaseMemoryAvailable()) {
     mounts.push({
       hostPath: codebaseMemoryBinary(),
       sandboxPath: SANDBOX_CBM_BINARY,
@@ -118,13 +138,31 @@ export function mcpConfigHostPath(): string {
 /**
  * Write the config to `mcpConfigHostPath()` so the mount has something to mount.
  *
- * Called by `claudeProfile` before the sandbox is created. Idempotent: the file
- * is rewritten each run, which is what keeps it true to what this host has.
- * Written 0600 — it names local paths, not secrets, but it is per-run scratch,
- * not a shared artifact.
+ * Called by `claudeProfile` before the sandbox is created. The file is rewritten
+ * each run, which is what keeps it true to what this host has.
+ *
+ * Written by rename, never in place. The path is a single shared file while the
+ * planner starts several implementations at once, and it is bind-mounted into
+ * each of them: a truncate-then-write leaves a window in which a sandbox that is
+ * already starting reads a partial file and comes up with fewer servers, or none.
+ * `rename(2)` is atomic within a filesystem, so a reader sees either the old
+ * complete file or the new one. The temp lives in the same directory for the
+ * same reason — across devices the rename is a copy, and the window returns.
+ *
+ * Mode 0600 and a 0700 parent: it names local paths, not secrets, but a process
+ * other than this user has no business reading which tools the agent runs.
+ *
+ * The uid caveat, recorded because it is real: the bind mount carries ownership,
+ * so a sandbox whose agent uid differs from this process's uid cannot read a 0600
+ * file. That holds on this host only by construction — the runner builds each
+ * image with `--build-arg AGENT_UID="$(id -u)"`, so the agent uid is the runner's
+ * — and a project that builds its image elsewhere has to match them.
  */
 export function writeMcpConfig(): string {
   const path = mcpConfigHostPath();
-  writeFileSync(path, JSON.stringify({ mcpServers: mcpServers() }, null, 2) + "\n", { mode: 0o600 });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ mcpServers: mcpServers() }, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, path);
   return path;
 }

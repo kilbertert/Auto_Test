@@ -15,10 +15,14 @@
  * Without this, removing the codebase-memory binary would quietly halve the
  * agent's tools and nothing would fail.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import {
   SANDBOX_CBM_BINARY,
   SANDBOX_MCP_CONFIG,
+  codebaseMemoryAvailable,
   mcpConfigHostPath,
   mcpConfigMounts,
   mcpServers,
@@ -131,4 +135,91 @@ assert(
   "the file on disk must match mcpServers()",
 );
 
-console.log(`mcp-config check ok (${Object.keys(servers).length} servers, ${mounts.length} mounts)`);
+// --- the binary predicate is the executable one ------------------------------
+//
+// This is the assertion that would have caught the silent half: `R_OK` accepts a
+// readable non-executable file, so claude was handed a command it could not
+// launch and dropped the server without saying so. Exercised through the same
+// exported predicate both the config and the mounts use, so a predicate that
+// drifts from that wiring fails here.
+const probeDir = mkdtempSync(join(tmpdir(), "afk-mcp-check-"));
+try {
+  const readable = join(probeDir, "not-executable");
+  writeFileSync(readable, "#!/bin/sh\n", { mode: 0o644 });
+  const runnable = join(probeDir, "executable");
+  writeFileSync(runnable, "#!/bin/sh\n", { mode: 0o755 });
+
+  const previous = process.env.AFK_CODEBASE_MEMORY_BIN;
+  process.env.AFK_CODEBASE_MEMORY_BIN = readable;
+  assert(
+    !codebaseMemoryAvailable(),
+    "a readable but non-executable binary must not be advertised — claude cannot launch it",
+  );
+  assert(
+    !("codebase-memory-mcp" in mcpServers()),
+    "a non-executable binary must not appear in the server list",
+  );
+  assert(
+    mcpConfigMounts().every((m) => m.sandboxPath !== SANDBOX_CBM_BINARY),
+    "a non-executable binary must not be mounted",
+  );
+
+  process.env.AFK_CODEBASE_MEMORY_BIN = probeDir;
+  assert(!codebaseMemoryAvailable(), "a directory is not an executable binary");
+
+  process.env.AFK_CODEBASE_MEMORY_BIN = runnable;
+  assert(codebaseMemoryAvailable(), "an executable regular file must be advertised");
+
+  if (previous === undefined) delete process.env.AFK_CODEBASE_MEMORY_BIN;
+  else process.env.AFK_CODEBASE_MEMORY_BIN = previous;
+} finally {
+  rmSync(probeDir, { recursive: true, force: true });
+}
+
+// --- a rewrite never leaves a partial file for a reader ----------------------
+//
+// The file is one shared path while several sandboxes start, and each mounts it.
+// Writing in place would expose a truncated file to whichever of them reads
+// first, and claude reads a config that does not parse as "no servers" rather
+// than as an error — so the loss is silent.
+//
+// The reader has to be genuinely concurrent to mean anything: a timer on this
+// thread never fires, because the writer loop below is synchronous and the event
+// loop is blocked for its whole duration. So the reader is a worker, started
+// before the writes and reporting after them.
+//
+// Measured both ways on this host: an in-place truncate-then-write produced
+// ~16000 partial reads in 400 ms; the rename below produced 0. Two negative runs
+// were done to confirm the assertion actually fires — reverting `writeMcpConfig`
+// to an in-place write fails this line, and dropping `X_OK` from the availability
+// predicate fails the one above.
+async function atomicityCheck(): Promise<void> {
+const configured = mcpConfigHostPath();
+const reader = `
+  import { readFileSync } from "node:fs";
+  import { parentPort, workerData } from "node:worker_threads";
+  let partial = 0;
+  const end = Date.now() + workerData.ms;
+  while (Date.now() < end) {
+    try { JSON.parse(readFileSync(workerData.path, "utf8")); } catch { partial += 1; }
+  }
+  parentPort.postMessage(partial);
+`;
+const watcher = new Worker(reader, { eval: true, workerData: { path: configured, ms: 250 } });
+const observed = new Promise((resolve) => watcher.on("message", resolve));
+for (let i = 0; i < 400; i += 1) writeMcpConfig();
+const partial = await observed;
+assert(
+  partial === 0,
+  `a concurrent reader observed ${partial} unparseable config(s) — the write is not atomic`,
+);
+}
+
+atomicityCheck()
+  .then(() => {
+    console.log(`mcp-config check ok (${Object.keys(servers).length} servers, ${mounts.length} mounts)`);
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });

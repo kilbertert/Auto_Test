@@ -18,6 +18,7 @@
  *   node .sandcastle/repo-map.mjs --check    # exit 1 if the file is stale
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 const REPO = process.cwd();
@@ -73,11 +74,46 @@ function rel(p) {
   return path.relative(REPO, p) || ".";
 }
 
+// `[project.scripts]` out of a pyproject.toml, without a TOML parser.
+//
+// A table of `name = "module:function"` is the Python equivalent of package.json
+// scripts, and for a project that ships console commands it *is* the entry-point
+// answer — genesis-evidence exposes four, and a map that listed only the `afk`
+// script sent the agent looking for a service it had just been told did not
+// exist. Comments and inline tables are dropped; anything unparseable is
+// skipped rather than guessed at, because a map that speculates is read with the
+// same confidence as the code.
+function readPyprojectScripts(root = REPO) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(root, "pyproject.toml"), "utf8");
+  } catch {
+    return [];
+  }
+  const found = [];
+  let inScripts = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("#") || line === "") continue;
+    if (line.startsWith("[")) {
+      // The section ends at the next table header, at any level. Comparing the
+      // trimmed string rather than parsing the header keeps `[[…]]` array tables
+      // from reading as a continuation of this one.
+      inScripts = line === "[project.scripts]";
+      continue;
+    }
+    if (!inScripts) continue;
+    const m = /^([A-Za-z0-9._-]+)\s*=\s*"([^"]*)"$/.exec(line);
+    if (m) found.push(`console script "${m[1]}": ${m[2]} (pyproject.toml)`);
+  }
+  return found;
+}
+
 // ── the four questions the measured run asked, answered from the filesystem ──
 
-function entryPoints() {
+function entryPoints(root = REPO) {
   const found = [];
-  const pkg = readJson(path.join(REPO, "package.json"));
+  const pkg = readJson(path.join(root, "package.json"));
   if (pkg) {
     for (const candidate of ["main", "module", "exports"]) {
       if (typeof pkg[candidate] === "string") found.push(`${candidate}: ${pkg[candidate]} (package.json)`);
@@ -86,13 +122,14 @@ function entryPoints() {
       if (/^(dev|start|serve|afk|ralph)$/.test(name)) found.push(`script "${name}": ${cmd} (package.json)`);
     }
   }
+  found.push(...readPyprojectScripts(root));
   // Conventional entry points, checked rather than assumed.
   for (const c of [
     "app/main.py", "main.py", "src/main.py", "manage.py",
     "frontend/src/main.jsx", "frontend/src/main.tsx", "src/main.tsx", "src/main.ts", "src/index.js",
     "cmd/main.go", "main.go",
   ]) {
-    if (fs.existsSync(path.join(REPO, c))) found.push(c);
+    if (fs.existsSync(path.join(root, c))) found.push(c);
   }
   return found;
 }
@@ -110,7 +147,11 @@ function testLayout() {
   for (const [name, cmd] of Object.entries(pkg?.scripts ?? {})) {
     if (/test|check|lint|typecheck/.test(name)) found.push(`script "${name}": ${cmd}`);
   }
-  if (fs.existsSync(path.join(REPO, "pytest.ini")) || readJson(path.join(REPO, "pyproject.toml"))) {
+  // Presence, not `readJson`: `pyproject.toml` is TOML, so parsing it as JSON
+  // always failed and the second half of this test never fired. The file
+  // existing is the whole signal — a project carrying a pyproject.toml runs
+  // pytest through it or through a pytest.ini beside it.
+  if (fs.existsSync(path.join(REPO, "pytest.ini")) || fs.existsSync(path.join(REPO, "pyproject.toml"))) {
     found.push("pytest (pyproject.toml / pytest.ini present)");
   }
   return found;
@@ -205,6 +246,60 @@ function render() {
   return lines.join("\n");
 }
 
+// Self-check: the parser is the part that can be silently wrong. A regex that
+// matches nothing produces a map that looks complete and omits the answer — the
+// failure mode this whole file exists to avoid, and the one a fresh scaffold
+// cannot catch because a fresh scaffold has no console scripts.
+//
+// Run: `node .sandcastle/repo-map.mjs --self-check`
+if (args.includes("--self-check")) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-map-selfcheck-"));
+  const cases = [
+    ['[project.scripts]\nserve = "pkg.serve:main"\n', 1, "a plain table"],
+    [
+      '[project]\nname = "x"\n\n[project.scripts]\nserve = "pkg.serve:main"\n# comment\nworker="pkg.w:go"\n\n[tool.ruff]\nline-length = 100\n',
+      2,
+      "two entries, a comment, and a following table",
+    ],
+    ['[project]\nname = "x"\n', 0, "no scripts table"],
+    ['[project.scripts]\n"quoted" = "pkg.x:main"\n', 0, "a quoted key is not a console script"],
+    ['[[tool.x]]\nserve = "pkg.serve:main"\n', 0, "an array table is not the scripts table"],
+  ];
+  let failures = 0;
+  for (const [body, expected, label] of cases) {
+    fs.writeFileSync(path.join(dir, "pyproject.toml"), body);
+    const got = readPyprojectScripts(dir);
+    if (got.length !== expected) {
+      console.error(`  ${label}: expected ${expected}, got ${got.length}`);
+      failures += 1;
+    }
+  }
+  fs.writeFileSync(path.join(dir, "pyproject.toml"), '[project.scripts]\nserve = "pkg.serve:main"\n');
+  // Through entryPoints, not the parser: a parser that is right while the call
+  // that uses it is commented out passes a parser-only check and ships a map
+  // with no entry points in it. That is the failure this file exists to prevent.
+  const text = entryPoints(dir).find((l) => l.includes("serve")) ?? "";
+  if (!text.includes('"serve"') || !text.includes("pkg.serve:main")) {
+    console.error(`  the entry must name both the command and its target, got: ${text}`);
+    failures += 1;
+  }
+  // A missing file is not an error: most projects here have no pyproject.toml,
+  // and a generator that threw on one would fail every Node-only project.
+  const emptyDir = path.join(dir, "no-manifest-here");
+  fs.mkdirSync(emptyDir);
+  if (readPyprojectScripts(emptyDir).length !== 0) {
+    console.error("  a directory without pyproject.toml must yield no entry points");
+    failures += 1;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (failures > 0) {
+    console.error(`repo-map self-check failed (${failures})`);
+    process.exit(1);
+  }
+  console.log("repo-map self-check ok (5 pyproject cases)");
+  process.exit(0);
+}
+
 const rendered = render();
 
 if (args.includes("--stdout")) {
@@ -221,3 +316,4 @@ if (args.includes("--stdout")) {
   fs.writeFileSync(OUT, rendered);
   console.log(`wrote ${rel(OUT)} (${rendered.split("\n").length} lines)`);
 }
+

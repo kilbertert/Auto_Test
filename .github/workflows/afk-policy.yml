@@ -38,3 +38,11 @@ jobs:
       # it never writes the file it is judging.
       - name: Verify the repository map is current
         run: node .sandcastle/repo-map.check.mjs
+      # The generator's own parser, not the map it produced: a regex that matches
+      # nothing yields a map that looks complete and omits the answer, and a fresh
+      # scaffold cannot catch that because a fresh scaffold has no console scripts
+      # to omit. Deliberately NOT wired into repo-map.check.mjs — the map check
+      # must use the shipping code path or it would validate one thing and ship
+      # another.
+      - name: Repository-map generator self-check
+        run: node .sandcastle/repo-map.mjs --self-check
