@@ -17,6 +17,7 @@
  *   node .sandcastle/repo-map.mjs --stdout   # print, write nothing
  *   node .sandcastle/repo-map.mjs --check    # exit 1 if the file is stale
  */
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,8 +26,32 @@ const REPO = process.cwd();
 const OUT = path.join(REPO, ".sandcastle", "REPO-MAP.md");
 const args = process.argv.slice(2);
 
-// Directories that are never part of the repository's shape: dependencies, build
-// output, VCS metadata, tool caches. Matched by name at any depth.
+// ── what counts as "the repository" ──────────────────────────────────────────
+//
+// The file set comes from git, not from a filesystem walk. That is a correction,
+// not a preference: a walk answers "what is on this disk right now", which is a
+// different question in every checkout. Measured across the four projects on this
+// host, the same commit produced a different map locally and on CI, because the
+// working copies carry build residue (`artifacts/`, `dist/`, `mutants/`,
+// `.venv/` scopes, local databases) that a CI checkout does not have. The
+// freshness check then reported `stale` locally and `ok` on CI for one commit —
+// the check disagreed with itself depending on where it ran, which makes it
+// noise rather than a signal.
+//
+// The git view is defined by the repository rather than by the disk:
+//
+//   - tracked files, plus untracked-and-not-ignored ones, so a file bootstrap or
+//     the agent has just written but not yet committed is inside the map (those
+//     call sites generate it before the commit exists);
+//   - everything `.gitignore` names is outside it. That is what the ignore file
+//     is *for*, and both environments read the same one, so they agree.
+//
+// The residual disagreement is a stray unignored file, which genuinely belongs to
+// the repository and should be committed — failing the check there is correct.
+//
+// The SKIP set stays, now doing one job instead of two: it bounds which *directories*
+// of that set are worth descending into. `node_modules` and friends are on it by
+// name, so an unignored copy in a fresh clone would not drag thousands of lines in.
 const SKIP = new Set([
   ".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build",
   ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next", ".turbo", "target",
@@ -36,12 +61,31 @@ const SKIP = new Set([
   "logs", "worktrees", "test-results", "playwright-report",
 ]);
 
+/** Paths git considers part of this repository, relative to the root, POSIX-separated. */
+function trackedPaths(root) {
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      // stderr is dropped: "not a git repository" is the expected answer for a
+      // project that is not one, not something to print on every generation.
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 },
+    );
+    return new Set(out.split("\0").filter((p) => p !== ""));
+  } catch {
+    // No git, no repository, or git unavailable. `null` means "unknown", and the
+    // callers fall back to the filesystem — the same behaviour as before, and a
+    // map that is right about the tracked files plus whatever else is on disk.
+    return null;
+  }
+}
+
 // Bounded on purpose: a map that lists 4000 files is a directory listing, and
 // the agent reads it as noise. These caps are the point of the tool.
 const MAX_DEPTH = 2;
 const MAX_ENTRIES_PER_DIR = 10;
 
-function walk(dir, depth = 0) {
+function walk(dir, root = REPO, tracked = null, depth = 0) {
   if (depth > MAX_DEPTH) return [];
   let entries;
   try {
@@ -54,12 +98,28 @@ function walk(dir, depth = 0) {
   for (const e of entries) {
     if (SKIP.has(e.name) || e.name.startsWith(".") && e.name !== ".sandcastle") continue;
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) dirs.push({ name: e.name, path: full, children: walk(full, depth + 1) });
+    const relPath = path.relative(root, full).split(path.sep).join("/");
+    if (tracked) {
+      // A directory is worth descending into only if git knows about something
+      // inside it; a file is part of the map only if it is. Both are the same
+      // question — "does this path prefix any tracked entry" — asked of different
+      // depths, so one predicate answers it either way.
+      const known = e.isDirectory() ? hasChild(tracked, relPath) : tracked.has(relPath);
+      if (!known) continue;
+    }
+    if (e.isDirectory()) dirs.push({ name: e.name, path: full, children: walk(full, root, tracked, depth + 1) });
     else if (e.isFile()) files.push({ name: e.name, path: full });
   }
   dirs.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
   return [...dirs, ...files];
+}
+
+/** Does any tracked path live under `prefix/`? */
+function hasChild(tracked, prefix) {
+  const needle = `${prefix}/`;
+  for (const p of tracked) if (p.startsWith(needle)) return true;
+  return false;
 }
 
 function readJson(p) {
@@ -111,8 +171,9 @@ function readPyprojectScripts(root = REPO) {
 
 // ── the four questions the measured run asked, answered from the filesystem ──
 
-function entryPoints(root = REPO) {
+function entryPoints(root = REPO, tracked = null) {
   const found = [];
+  const present = (rel) => (tracked ? tracked.has(rel) : fs.existsSync(path.join(root, rel)));
   const pkg = readJson(path.join(root, "package.json"));
   if (pkg) {
     for (const candidate of ["main", "module", "exports"]) {
@@ -140,16 +201,18 @@ function entryPoints(root = REPO) {
     "frontend/src/main.jsx", "frontend/src/main.tsx", "src/main.tsx", "src/main.ts", "src/index.js",
     "cmd/main.go", "main.go",
   ]) {
-    if (fs.existsSync(path.join(root, c))) found.push(c);
+    if (present(c)) found.push(c);
   }
   return found;
 }
 
-function testLayout(root = REPO) {
+function testLayout(root = REPO, tracked = null) {
   const found = [];
+  const present = (rel) => (tracked ? tracked.has(rel) : fs.existsSync(path.join(root, rel)));
+  const isDir = (rel) => (tracked ? hasChild(tracked, rel) : fs.existsSync(path.join(root, rel)));
   for (const d of ["tests", "test", "frontend/e2e", "e2e", "spec", "__tests__"]) {
     const p = path.join(root, d);
-    if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) continue;
+    if (!isDir(d) || (!tracked && !fs.statSync(p).isDirectory())) continue;
     // Recursive, because a count that only sees the top level is wrong in the
     // direction that matters: `tests/unit/` would read as zero and the map would
     // tell the agent there is nothing to run. The count is of test-named files,
@@ -159,6 +222,8 @@ function testLayout(root = REPO) {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (SKIP.has(e.name)) continue;
         const full = path.join(dir, e.name);
+        const relPath = path.relative(root, full).split(path.sep).join("/");
+        if (tracked && !(e.isDirectory() ? hasChild(tracked, relPath) : tracked.has(relPath))) continue;
         if (e.isDirectory()) count(full);
         else if (/(^test[_-]|_test\.|\.test\.|\.spec\.)/.test(e.name)) n += 1;
       }
@@ -173,21 +238,26 @@ function testLayout(root = REPO) {
   // always failed and the second half of this test never fired. The file
   // existing is the whole signal — a project carrying a pyproject.toml runs
   // pytest through it or through a pytest.ini beside it.
-  if (fs.existsSync(path.join(root, "pytest.ini")) || fs.existsSync(path.join(root, "pyproject.toml"))) {
+  if (present("pytest.ini") || present("pyproject.toml")) {
     found.push("pytest (pyproject.toml / pytest.ini present)");
   }
   return found;
 }
 
-function docs() {
+function docs(tracked = null) {
   const found = [];
+  const present = (rel) => (tracked ? tracked.has(rel) : fs.existsSync(path.join(REPO, rel)));
   for (const f of ["GLOSSARY.md", "AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md"]) {
-    if (fs.existsSync(path.join(REPO, f))) found.push(f);
+    if (present(f)) found.push(f);
   }
   for (const d of ["docs", "docs/adr", "docs/agents"]) {
     const p = path.join(REPO, d);
-    if (!fs.existsSync(p)) continue;
-    const n = fs.readdirSync(p).filter((e) => e.endsWith(".md")).length;
+    if (!present(p) && !(tracked && hasChild(tracked, d))) continue;
+    // Counted from the same set the tree is built from, so a residue directory
+    // cannot inflate the number the reader is given.
+    const n = tracked
+      ? [...tracked].filter((x) => x.startsWith(`${d}/`) && x.endsWith(".md")).length
+      : fs.readdirSync(p).filter((e) => e.endsWith(".md")).length;
     found.push(`${d}/ — ${n} markdown file(s)`);
   }
   return found;
@@ -227,36 +297,51 @@ function treeLines(nodes, depth = 0) {
 }
 
 function render() {
+  const tracked = trackedPaths(REPO);
   const lines = [
     "# Repository map",
     "",
     "<!-- Generated by .sandcastle/repo-map.mjs — do not edit by hand.",
     "     Regenerate: node .sandcastle/repo-map.mjs",
-    "     This file is mechanical: it reports what the filesystem and the manifest",
-    "     say. It does not describe architecture or intent — for those, read the",
+    "     This file is mechanical: it reports what git tracks and what the manifest",
+    "     says. It does not describe architecture or intent — for those, read the",
     "     code and GLOSSARY.md. -->",
     "",
     "Read this before exploring by hand. It answers where things are; it does not",
     "answer how they work.",
     "",
-    "It is generated from the filesystem as it stands in this checkout, not from",
-    "the set of tracked files — so an untracked directory outside the generator's",
-    "skip list changes the map, and `repo-map.check.mjs` will ask for a",
-    "regeneration. That is deliberate: an agent works in a checkout, and a mount",
-    "point or a stray `output/` is part of what it sees.",
+    // The provenance line is derived, not asserted: a static "generated from git"
+    // would be false in the one case where git is unavailable and the generator
+    // fell back to the filesystem. A map that misstates its own inputs is read
+    // with the same confidence as one that misstates its contents.
+    ...(tracked
+      ? [
+          "It is generated from **git's view of the repository** — tracked files, plus",
+          "untracked ones that `.gitignore` does not exclude. Build residue, local",
+          "databases and caches are outside it by definition, which is what makes the",
+          "map the same in a working copy and in CI: the same `.gitignore` decides both.",
+          "A file you have written but not committed is still inside it, so the map is",
+          "accurate at the moment it is generated and at the moment the commit lands.",
+        ]
+      : [
+          "It is generated from the **filesystem**, because git is unavailable here or",
+          "this is not a repository. Build residue and local caches are inside it, so",
+          "the map can differ between two checkouts of the same commit — `.gitignore`",
+          "is the fix, when git is available.",
+        ]),
     "",
     "## Entry points",
     "",
   ];
-  const ep = entryPoints();
+  const ep = entryPoints(REPO, tracked);
   lines.push(...(ep.length ? ep.map((e) => `- ${e}`) : ["- (none detected — check the manifest and README)"]));
 
   lines.push("", "## Tests", "");
-  const tl = testLayout();
+  const tl = testLayout(REPO, tracked);
   lines.push(...(tl.length ? tl.map((t) => `- ${t}`) : ["- (none detected)"]));
 
   lines.push("", "## Docs", "");
-  const dc = docs();
+  const dc = docs(tracked);
   lines.push(...(dc.length ? dc.map((d) => `- ${d}`) : ["- (none detected)"]));
 
   lines.push(
@@ -266,7 +351,7 @@ function render() {
     "",
     "```",
   );
-  const tree = treeLines(walk(REPO));
+  const tree = treeLines(walk(REPO, REPO, tracked));
   lines.push(...tree);
   if (tree.length >= MAX_TREE_LINES) lines.push("... (truncated — list the rest with `ls`/`find`)");
   lines.push("```", "");
@@ -370,11 +455,74 @@ if (args.includes("--self-check")) {
   fs.rmSync(testDir, { recursive: true, force: true });
 
   fs.rmSync(dir, { recursive: true, force: true });
+
+  // The file set is the correction this version is about, so it gets its own
+  // fixture: a repository with one tracked file, one untracked-and-ignored
+  // directory, and one untracked-not-ignored file. The first two must be outside
+  // the map and the third inside it — that is the whole rule, stated as a test.
+  const repoDir = path.join(dir, "as-a-repo");
+  fs.mkdirSync(path.join(repoDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, "build-output-xyz"), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, "notes"), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, "src", "kept.ts"), "");
+  fs.writeFileSync(path.join(repoDir, "build-output-xyz", "built.bin"), "");
+  fs.writeFileSync(path.join(repoDir, "notes", "loose.md"), "");
+  fs.writeFileSync(path.join(repoDir, ".gitignore"), "build-output-xyz/\n");
+  const git = (a) => execFileSync("git", ["-C", repoDir, ...a], { stdio: "pipe" });
+  git(["init", "-q"]);
+  git(["add", "src/kept.ts", ".gitignore"]);
+  const set = trackedPaths(repoDir);
+  if (set === null) {
+    console.error("  trackedPaths returned null for a real repository");
+    failures += 1;
+  } else {
+    for (const [p, expected] of [
+      ["src/kept.ts", true, "a tracked file is in the map"],
+      ["notes/loose.md", true, "an untracked, unignored file is in the map — bootstrap writes before committing"],
+      ["build-output-xyz/built.bin", false, "an ignored file is outside the map"],
+    ]) {
+      if (set.has(p) !== expected) {
+        console.error(`  ${p}: expected ${expected ? "inside" : "outside"} the map`);
+        failures += 1;
+      }
+    }
+    // Through the *shipped pipeline*, not through `walk` directly. A file set
+    // that is right while `render` ignores it passes a unit-level check and ships
+    // a map built the old way — which is the exact defect this version fixes, so
+    // the assertion has to see the whole path. The generator is re-entered as a
+    // subprocess with the fixture as its working directory, which is also how it
+    // is used in the field.
+    const map = execFileSync(process.execPath, [process.argv[1], "--stdout"], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+    // Only the Tree section: the footer says "run residue omitted", and a
+    // substring test for that word matched the generator's own prose rather than
+    // the directory. A marker that cannot appear in the boilerplate is the fix.
+    const treeSection = map.slice(map.indexOf("## Tree"));
+    if (treeSection.includes("build-output-xyz")) {
+      console.error(`  the ignored directory appears in the generated map:\n${treeSection}`);
+      failures += 1;
+    }
+    if (!treeSection.includes("notes")) {
+      console.error(`  an unignored untracked file is missing from the generated map:\n${treeSection}`);
+      failures += 1;
+    }
+    if (!treeSection.includes("kept.ts")) {
+      console.error(`  a tracked file is missing from the generated map:\n${treeSection}`);
+      failures += 1;
+    }
+  }
+  fs.rmSync(repoDir, { recursive: true, force: true });
+
+  // One gate, at the end. An earlier version had it before the last assertion
+  // block, so failures counted there were reported as `ok` and the process
+  // exited 0 — a check that could not fail, which is worse than no check.
   if (failures > 0) {
     console.error(`repo-map self-check failed (${failures})`);
     process.exit(1);
   }
-  console.log("repo-map self-check ok (pyproject parser, entry-point filter, test count)");
+  console.log("repo-map self-check ok (pyproject parser, entry-point filter, test count, git file set)");
   process.exit(0);
 }
 
