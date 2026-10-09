@@ -11,7 +11,7 @@ const BRANCH = required("BRANCH");
 const result = await sandcastle.run({
   name: `implement-prd-#${PRD_NUMBER}-sub-#${SUB_ISSUE_NUMBER}`,
   ...claudeProfile(),
-  logging: { type: "stdout" },
+  logging: { type: "stdout", verbose: true },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {
     PRD_NUMBER,

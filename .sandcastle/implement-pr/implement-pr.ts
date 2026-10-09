@@ -160,7 +160,7 @@ const prComments = {
 const result = await runWithExtraction({
   name: `implement-pr-${PR_NUMBER}`,
   ...claudeProfile(process.env.AFK_PROFILE),
-  logging: { type: "stdout" },
+  logging: { type: "stdout", verbose: true },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {
     PR_NUMBER,

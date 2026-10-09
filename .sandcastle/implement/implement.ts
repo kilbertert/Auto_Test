@@ -12,7 +12,7 @@ const OUTPUT_DIR = process.env.OUTPUT_DIR ?? "/tmp";
 const result = await sandcastle.run({
   name: `implement-#${ISSUE_NUMBER}`,
   ...claudeProfile(process.env.AFK_PROFILE),
-  logging: { type: "stdout" },
+  logging: { type: "stdout", verbose: true },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {
     ISSUE_NUMBER,
