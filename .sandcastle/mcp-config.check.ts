@@ -22,6 +22,7 @@ import { Worker } from "node:worker_threads";
 import {
   SANDBOX_CBM_BINARY,
   SANDBOX_MCP_CONFIG,
+  SANDBOX_WORKSPACE,
   codebaseMemoryAvailable,
   mcpConfigHostPath,
   mcpConfigMounts,
@@ -76,6 +77,19 @@ assert("serena" in servers, "serena must always be present — it is in the imag
 assert(
   servers.serena.command === "serena",
   "serena must be invoked by name: the image puts it on the PATH",
+);
+// `--project` is what makes the tool usable at all: without it every symbol call
+// answers "No active project", which reads as a broken tool rather than a
+// missing argument. Asserted on the exact sandbox path, because a host path here
+// would be silently meaningless — the config is generated on the host and read
+// inside the container.
+assert(
+  servers.serena.args.includes("--project"),
+  "serena must be started with --project, or every symbol tool fails on first use",
+);
+assert(
+  servers.serena.args[servers.serena.args.indexOf("--project") + 1] === SANDBOX_WORKSPACE,
+  `serena --project must name the in-sandbox workspace (${SANDBOX_WORKSPACE}), not a host path`,
 );
 
 // The forbidden pair. These are the servers that would widen what the sandbox
