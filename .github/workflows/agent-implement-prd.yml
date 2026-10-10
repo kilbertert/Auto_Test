@@ -197,6 +197,24 @@ jobs:
             git branch --force "$BRANCH" "origin/$BRANCH"
             echo "is_first=false" >> "$GITHUB_OUTPUT"
           else
+            # A failed run leaves its worktree behind — sandcastle preserves it on
+            # purpose ("Worktree preserved at ..."), and the next run for the same
+            # issue finds the branch still checked out there. git branch --force
+            # then refuses:
+            #
+            #   fatal: cannot force update the branch '...' used by worktree at ...
+            #
+            # Reclaim it first. git worktree remove --force discards uncommitted
+            # work in that worktree, which is correct here: it belongs to a run
+            # that already failed, and this run redoes the work from the base branch.
+            stale_worktree="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH" '
+              /^worktree /{ wt=$2 }
+              $1 == "branch" && $2 == b { print wt }
+            ')"
+            if [ -n "$stale_worktree" ]; then
+              echo "reclaiming the worktree a previous run left at $stale_worktree"
+              git worktree remove --force "$stale_worktree" || true
+            fi
             git branch --force "$BRANCH" HEAD
             echo "is_first=true" >> "$GITHUB_OUTPUT"
           fi
