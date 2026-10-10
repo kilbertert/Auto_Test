@@ -74,7 +74,7 @@ export function claudeProfile(
           ...(codebaseMemoryAvailable()
             ? [
                 {
-                  command: `timeout 120 ${SANDBOX_CBM_BINARY} cli index_repository --repo-path . --mode fast || true`,
+                  command: `timeout 120 ${SANDBOX_CBM_BINARY} cli index_repository --repo-path . --mode fast --name Auto_Test || true`,
                   timeoutMs: Number(process.env.AFK_INDEX_TIMEOUT_MS ?? 5 * 60 * 1000),
                 },
               ]

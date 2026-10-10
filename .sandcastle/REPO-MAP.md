@@ -18,6 +18,20 @@ accurate at the moment it is generated and at the moment the commit lands.
 
 ## Entry points
 
+## Code intelligence
+
+A knowledge graph of this repository is available in the sandbox under the MCP server
+`codebase-memory-mcp`. The project name is **not** the directory name — pass it as
+`project`, or the server answers `project not found`:
+
+```json
+{"project": "Auto_Test", "query": "..."}
+```
+
+It maps symbols to files and line numbers (`search_graph`, `get_code_symbols`,
+`trace_path`). `serena` answers the same questions from the language server and needs
+no project argument. Both answer *where* something is; neither replaces reading it.
+
 - script "easy": tsx src/cli/easy.ts (package.json)
 - script "agent:test": tsx src/cli/agent-test.ts (package.json)
 - script "agent:compare": tsx src/cli/compare-agent-runs.ts (package.json)
