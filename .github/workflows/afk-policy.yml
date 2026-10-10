@@ -44,5 +44,9 @@ jobs:
       # to omit. Deliberately NOT wired into repo-map.check.mjs — the map check
       # must use the shipping code path or it would validate one thing and ship
       # another.
+      # The prepare hook's two halves must agree — a script nobody registered
+      # silently reverts every run to the agent installing its own dependencies.
+      - name: Verify the sandbox prepare hook
+        run: npx --yes tsx .sandcastle/sandbox-prepare.check.ts
       - name: Repository-map generator self-check
         run: node .sandcastle/repo-map.mjs --self-check
