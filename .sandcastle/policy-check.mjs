@@ -132,13 +132,34 @@ function rejectUnsafeWorkflowText(name, source) {
 }
 
 function checkBranch() {
+  const defaultBranch = process.env.AFK_DEFAULT_BRANCH || defaultBranchFromGit();
+
+  // A run names its own branch; the workflow sets it. When it does, that is the
+  // branch the rule is about — not whatever this process's checkout happens to
+  // have. Since sandcastle's `branch` strategy checks the task branch out inside
+  // a worktree (git allows each branch in one worktree only), the checkout the
+  // policy job runs in stays on the default branch **by design**, and reading
+  // HEAD here would reject every correct run:
+  //
+  //   policy check failed: protected default branch cannot be used by AFK: main
+  //
+  // Falling back to HEAD keeps the check meaningful for the other caller: a
+  // person running `pnpm afk` by hand has no BRANCH, and is exactly who this rule
+  // was written for.
+  const named = process.env.BRANCH;
+  if (named) {
+    if (named === defaultBranch) {
+      fail(`AFK is asked to work on the protected default branch: ${named}`);
+    }
+    return;
+  }
+
   let branch;
   try {
     branch = git(["symbolic-ref", "--short", "HEAD"]);
   } catch {
     fail("cannot determine the current branch");
   }
-  const defaultBranch = process.env.AFK_DEFAULT_BRANCH || defaultBranchFromGit();
   if (!branch || branch === defaultBranch) fail(`protected default branch cannot be used by AFK: ${branch || "unknown"}`);
 }
 
