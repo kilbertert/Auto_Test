@@ -43,6 +43,15 @@ export function codebaseMemoryBinary(): string {
 /** In-sandbox path of the generated MCP config. Must match the Dockerfile wrapper. */
 export const SANDBOX_MCP_CONFIG = "/home/agent/.afk-mcp.json";
 
+/**
+ * Where sandcastle mounts the repository inside the sandbox.
+ *
+ * Its own constant (`SANDBOX_REPO_DIR`), not this scaffold's invention — but it
+ * is needed here because the MCP config is generated on the host and read in the
+ * container, so a host path would be meaningless by the time it is used.
+ */
+export const SANDBOX_WORKSPACE = "/home/agent/workspace";
+
 /** In-sandbox path of the mounted codebase-memory binary. */
 export const SANDBOX_CBM_BINARY = "/home/agent/.local/bin/codebase-memory-mcp";
 
@@ -87,7 +96,20 @@ export function mcpServers(): Record<string, { command: string; args: string[] }
     // Baked into the image at /usr/local/bin by the Dockerfile.
     serena: {
       command: "serena",
-      args: ["start-mcp-server", "--context", "ide-assistant"],
+      // `--project` is not optional. Without it serena starts with no active
+      // project, and every symbol tool answers `No active project. … known
+      // projects: []` — which is what an agent sees on its FIRST call, so it
+      // concludes the tool is broken and falls back to grep. Measured in a fresh
+      // container, same image, same repository:
+      //
+      //   without --project: Error: No active project, known projects: []
+      //   with    --project: [{name_path:"AgentSettings", kind:"Class",
+      //                       relative_path:"src/aiops_diagnostics/config.py", …}]
+      //
+      // The path is the sandbox's mount point, not the host's: this config is
+      // read inside the container, where the repository always lands at the same
+      // place (sandcastle's own SANDBOX_REPO_DIR).
+      args: ["start-mcp-server", "--context", "ide-assistant", "--project", SANDBOX_WORKSPACE],
     },
   };
   if (codebaseMemoryAvailable()) {
