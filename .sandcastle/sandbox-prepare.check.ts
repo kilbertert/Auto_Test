@@ -80,6 +80,38 @@ if (scriptExists) {
   );
 }
 
+// --- `hooks` belongs to run(), not to the sandbox provider --------------------
+//
+// It lived inside `docker({ ... hooks ... })` for two releases, where the option
+// is not read: the hook never ran, no error was raised, and the symptom (a
+// workspace that is not prepared) is exactly the symptom of a hook that ran and
+// did nothing. TypeScript catches this — `DockerOptions` has no `hooks` field —
+// so this asserts the shape rather than trusting a reading, because the fix for
+// it is a move between two objects that both *look* like a place to put options.
+//
+// The check cannot run the sandbox, so it asserts the two things that were wrong:
+// the hooks block is a sibling of `agent`/`sandbox` in the returned object, and
+// it is not nested inside the `docker(...)` call.
+const dockerCall = profile.slice(profile.indexOf("sandbox: docker({"));
+const dockerCallEnd = dockerCall.indexOf("\n    }),");
+const dockerOptions = dockerCallEnd > 0 ? dockerCall.slice(0, dockerCallEnd) : dockerCall;
+assert(
+  !/\bhooks\s*:/.test(dockerOptions),
+  "hooks must NOT be inside docker(): the sandbox provider does not read it, so the hook silently never runs",
+);
+assert(
+  /^    hooks: \{$/m.test(profile),
+  "hooks must be a top-level field of the object claudeProfile returns — that object is spread into run()",
+);
+// The same mistake is available for the indexing hook, and it fails the same
+// silent way, so both commands are asserted to live under that one block.
+for (const needle of ["sandbox-prepare.sh", "index_repository"]) {
+  assert(
+    profile.includes(needle),
+    `the hooks block must mention ${needle}`,
+  );
+}
+
 console.log(
-  `sandbox-prepare check ok (script ${scriptExists ? "present, hook wired" : "absent, hook off"})`,
+  `sandbox-prepare check ok (script ${scriptExists ? "present, hook wired" : "absent, hook off"}; hooks on run(), not on the provider)`,
 );

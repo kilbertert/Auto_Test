@@ -1,13 +1,23 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { claudeCode, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
+import {
+  claudeCode,
+  type AgentProvider,
+  type SandboxHooks,
+  type SandboxProvider,
+} from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { sandboxNetworkOptions } from "./profile-network.js";
 
 /** The prepare script, relative to the repository root. */
 const PREPARE_SCRIPT = join(".sandcastle", "sandbox-prepare.sh");
-import { mcpConfigMounts, writeMcpConfig } from "./mcp-config.js";
+import {
+  SANDBOX_CBM_BINARY,
+  codebaseMemoryAvailable,
+  mcpConfigMounts,
+  writeMcpConfig,
+} from "./mcp-config.js";
 
 // Endpoints are supplied as host settings files mounted read-only into the
 // sandbox, never baked into the image. A baked key lands in an image layer
@@ -26,7 +36,7 @@ const profiles = {
 export function claudeProfile(
   profile = process.env.AFK_PROFILE,
   env?: Record<string, string>,
-): { agent: AgentProvider; sandbox: SandboxProvider } {
+): { agent: AgentProvider; sandbox: SandboxProvider; hooks: SandboxHooks } {
   // Materialise the MCP config before the sandbox is created — the mount below
   // needs a file to point at, and writing it per run is what keeps it true to
   // what this host actually has.
@@ -43,6 +53,35 @@ export function claudeProfile(
   const agentToken = process.env.AFK_AGENT_GH_TOKEN ?? explicitAgentToken;
 
   return {
+    // `hooks` is an option of `run()`, NOT of the sandbox provider. It lived
+    // inside `docker()` where the option is not read at all — no error, no
+    // warning, no hook. A hook that never runs is indistinguishable from one
+    // that ran and did nothing.
+    hooks: {
+      sandbox: {
+        onSandboxReady: [
+          ...(existsSync(join(process.cwd(), PREPARE_SCRIPT))
+            ? [
+                {
+                  command: "bash .sandcastle/sandbox-prepare.sh",
+                  timeoutMs: Number(process.env.AFK_PREPARE_TIMEOUT_MS ?? 15 * 60 * 1000),
+                },
+              ]
+            : []),
+          // The knowledge-graph server holds no data until the repository is
+          // indexed, so its tools answer an empty graph on the first call and
+          // the agent concludes they are useless.
+          ...(codebaseMemoryAvailable()
+            ? [
+                {
+                  command: `${SANDBOX_CBM_BINARY} cli index_repository --repo-path . --mode fast || true`,
+                  timeoutMs: Number(process.env.AFK_INDEX_TIMEOUT_MS ?? 5 * 60 * 1000),
+                },
+              ]
+            : []),
+        ],
+      },
+    },
     agent: claudeCode(process.env.AFK_MODEL ?? "claude-sonnet-4-6"),
     sandbox: docker({
       // Use the same image name that `npx sandcastle docker build-image`
@@ -76,25 +115,6 @@ export function claudeProfile(
       // re-derive by probing.
       //
       // Optional by construction — no file, no hook, no cost.
-      ...(existsSync(join(process.cwd(), PREPARE_SCRIPT))
-        ? {
-            hooks: {
-              sandbox: {
-                onSandboxReady: [
-                  {
-                    // Relative: sandcastle runs a sandbox hook with cwd set to
-                    // the repository root. An absolute path would hard-code a
-                    // provider constant this file does not own.
-                    command: "bash .sandcastle/sandbox-prepare.sh",
-                    // Generous: this is uv sync + npm install for a project
-                    // that needs both, and a timeout here fails the whole run.
-                    timeoutMs: Number(process.env.AFK_PREPARE_TIMEOUT_MS ?? 15 * 60 * 1000),
-                  },
-                ],
-              },
-            },
-          }
-        : {}),
       ...sandboxNetworkOptions(profile),
       // The mounts are unconditional. The MCP pair is independent of the
       // endpoint: the graph is mounted from the host and serena is in the image,
