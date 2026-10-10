@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { claudeCode, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { sandboxNetworkOptions } from "./profile-network.js";
+
+/** The prepare script, relative to the repository root. */
+const PREPARE_SCRIPT = join(".sandcastle", "sandbox-prepare.sh");
 import { mcpConfigMounts, writeMcpConfig } from "./mcp-config.js";
 
 // Endpoints are supplied as host settings files mounted read-only into the
@@ -62,6 +65,36 @@ export function claudeProfile(
       // on the default bridge. The options come from `profile-network.ts` so
       // `profile-network.check.ts` asserts the exact object this call splats —
       // the helper's return value alone would leave a broken wiring green.
+      // The project's own sandbox preparation, run once per iteration after the
+      // container is up and before the agent starts.
+      //
+      // A run's workspace starts empty, so without this the agent installs its own
+      // dependencies — and an agent that sees "not installed" cannot tell *this
+      // checkout was never set up* from *this sandbox lacks the prerequisite*, so
+      // it downloads one. Keep this in the environment, not in the agent's
+      // instructions: what a run needs before it starts is not something to
+      // re-derive by probing.
+      //
+      // Optional by construction — no file, no hook, no cost.
+      ...(existsSync(join(process.cwd(), PREPARE_SCRIPT))
+        ? {
+            hooks: {
+              sandbox: {
+                onSandboxReady: [
+                  {
+                    // Relative: sandcastle runs a sandbox hook with cwd set to
+                    // the repository root. An absolute path would hard-code a
+                    // provider constant this file does not own.
+                    command: "bash .sandcastle/sandbox-prepare.sh",
+                    // Generous: this is uv sync + npm install for a project
+                    // that needs both, and a timeout here fails the whole run.
+                    timeoutMs: Number(process.env.AFK_PREPARE_TIMEOUT_MS ?? 15 * 60 * 1000),
+                  },
+                ],
+              },
+            },
+          }
+        : {}),
       ...sandboxNetworkOptions(profile),
       // The mounts are unconditional. The MCP pair is independent of the
       // endpoint: the graph is mounted from the host and serena is in the image,
