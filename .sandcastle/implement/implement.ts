@@ -27,7 +27,7 @@ const result = await sandcastle.run({
 });
 
 const commitsAhead = Number(
-  execSync("git rev-list --count main..HEAD", { encoding: "utf8" }).trim()
+  execSync(`git rev-list --count "origin/main..${BRANCH}"`, { encoding: "utf8" }).trim()
 );
 if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
   fail("Agent finished but no commits were made on the branch.");
@@ -36,7 +36,7 @@ if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
 console.log(
   `\nImplementation produced ${commitsAhead} commit(s) on ${BRANCH}.`
 );
-console.log(`  commits this run: ${result.commits.length}`);
+console.log(`  commits this run: ${commitsAhead}`);
 
 function required(name: string): string {
   const value = process.env[name];

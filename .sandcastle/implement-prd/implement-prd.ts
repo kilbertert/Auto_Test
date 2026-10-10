@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { claudeProfile } from "../profile.js";
 import * as path from "node:path";
@@ -33,7 +34,19 @@ const result = await sandcastle.run({
 // the sub-issue, advance to the next one).
 
 console.log(`\nImplementation finished for sub-issue #${SUB_ISSUE_NUMBER}.`);
-console.log(`  commits this run: ${result.commits.length}`);
+console.log(`  commits this run: ${commitsOnBranch(BRANCH)}`);
+
+/**
+ * Commits on `branch` that are not on `origin/main`.
+ *
+ * The branch ref is shared across worktrees, so this is correct regardless of
+ * which branch this process's checkout happens to be on.
+ */
+function commitsOnBranch(branch: string): number {
+  return Number(
+    execSync(`git rev-list --count "origin/main..${branch}"`, { encoding: "utf8" }).trim(),
+  );
+}
 
 function required(name: string): string {
   const value = process.env[name];
