@@ -253,6 +253,12 @@ jobs:
 
       - name: Verify AFK policy before push
         if: steps.shape.outputs.mode == 'run' && success()
+        env:
+          # The branch this run works on. The policy check needs it because the
+          # checkout this step runs in stays on the default branch — the task
+          # branch lives in a worktree — so without it the check reads HEAD and
+          # refuses every correct run.
+          BRANCH: ${{ steps.branch.outputs.name }}
         run: node .sandcastle/policy-check.mjs delivery
 
       - name: Push branch
