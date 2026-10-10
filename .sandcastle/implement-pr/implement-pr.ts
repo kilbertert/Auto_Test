@@ -160,6 +160,11 @@ const prComments = {
 const result = await runWithExtraction({
   name: `implement-pr-${PR_NUMBER}`,
   ...claudeProfile(process.env.AFK_PROFILE),
+  // An isolated worktree, not the workflow checkout: that checkout carries the
+  // review and update-branch workflows' residue (candidate/, controller/,
+  // delivery/, each with its own .git), and everything reading the filesystem
+  // sees it as part of the repository — the agent included.
+  branchStrategy: { type: "branch", branch: BRANCH, baseBranch: "origin/main" },
   logging: { type: "stdout", verbose: true },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {
