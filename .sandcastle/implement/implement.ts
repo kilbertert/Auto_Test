@@ -12,6 +12,11 @@ const OUTPUT_DIR = process.env.OUTPUT_DIR ?? "/tmp";
 const result = await sandcastle.run({
   name: `implement-#${ISSUE_NUMBER}`,
   ...claudeProfile(process.env.AFK_PROFILE),
+  // An isolated worktree, not the workflow checkout: that checkout carries the
+  // review and update-branch workflows' residue (candidate/, controller/,
+  // delivery/, each with its own .git), and everything reading the filesystem
+  // sees it as part of the repository — the agent included.
+  branchStrategy: { type: "branch", branch: BRANCH, baseBranch: "origin/main" },
   logging: { type: "stdout", verbose: true },
   promptFile: path.join(import.meta.dirname, "prompt.md"),
   promptArgs: {
