@@ -194,10 +194,10 @@ jobs:
           git config user.email "claude-code[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
             git fetch origin "$BRANCH"
-            git checkout -B "$BRANCH" "origin/$BRANCH"
+            git branch --force "$BRANCH" "origin/$BRANCH"
             echo "is_first=false" >> "$GITHUB_OUTPUT"
           else
-            git checkout -b "$BRANCH"
+            git branch --force "$BRANCH" HEAD
             echo "is_first=true" >> "$GITHUB_OUTPUT"
           fi
 
