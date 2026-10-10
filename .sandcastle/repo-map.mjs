@@ -333,6 +333,48 @@ function render() {
     "## Entry points",
     "",
   ];
+
+  // The sandbox's code-intelligence contract, stated where the agent will
+  // already be reading.
+  //
+  // This section exists because of one measured failure. The knowledge graph is
+  // indexed under a name derived from its PATH, and inside the sandbox the
+  // repository is always at `/home/agent/workspace` — so the graph lands under
+  // `home-agent-workspace` regardless of which repository is mounted. An agent
+  // asked to use it naturally passes the repository's own name, gets
+  // `project not found or not indexed`, and goes back to grep: in the run that
+  // surfaced this, it spent 3.7 minutes grep-first and only recovered through a
+  // `list_projects` detour. The MCP config cannot fix it — the name is per CALL
+  // and the binary ignores `--project` on the server path — so what the run
+  // controls is the name it indexes AS, and what the agent needs is a place to
+  // read it that costs one line.
+  //
+  // Present only when the manifest says which repository this is: a map in a
+  // fixture, or in a directory that is not an AFK project, has no graph to
+  // describe, and inventing a name there would be worse than silence.
+  const projectName = String(readJson(path.join(REPO, ".afk-bootstrap.json"))?.repository ?? "")
+    .split("/")
+    .pop()
+    .trim();
+  if (projectName) {
+    lines.push(
+      "## Code intelligence",
+      "",
+      `A knowledge graph of this repository is available in the sandbox under the MCP server`,
+      `\`codebase-memory-mcp\`. The project name is **not** the directory name — pass it as`,
+      "`project`, or the server answers `project not found`:",
+      "",
+      "```json",
+      `{"project": "${projectName}", "query": "..."}`,
+      "```",
+      "",
+      "It maps symbols to files and line numbers (`search_graph`, `get_code_symbols`,",
+      "`trace_path`). `serena` answers the same questions from the language server and needs",
+      "no project argument. Both answer *where* something is; neither replaces reading it.",
+      "",
+    );
+  }
+
   const ep = entryPoints(REPO, tracked);
   lines.push(...(ep.length ? ep.map((e) => `- ${e}`) : ["- (none detected — check the manifest and README)"]));
 
