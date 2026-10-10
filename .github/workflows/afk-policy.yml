@@ -48,5 +48,17 @@ jobs:
       # silently reverts every run to the agent installing its own dependencies.
       - name: Verify the sandbox prepare hook
         run: npx --yes tsx .sandcastle/sandbox-prepare.check.ts
+      # Whether a decision record is owed, and whether one was written. `--base`
+      # scopes both halves to this diff: the structure rules judge only records
+      # the change touches, so adopting this cannot require editing a back
+      # catalogue. A change that owes a record and carries none fails here; a
+      # change that owes none can say so with a `No-ADR:` line in the commit
+      # body. Not pinned to a ref: the script resolves the merge base itself, and
+      # a new-branch push sends an all-zero `before` that git cannot resolve —
+      # the script reports that and does not fail on it.
+      - name: Verify decision records
+        env:
+          AFK_ADR_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node .sandcastle/adr.check.mjs --base "$AFK_ADR_BASE"
       - name: Repository-map generator self-check
         run: node .sandcastle/repo-map.mjs --self-check

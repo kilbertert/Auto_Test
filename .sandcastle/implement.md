@@ -15,6 +15,16 @@ Requirements:
    behavior you change.
 3. Run `npm run check` before committing. Do not weaken or skip checks.
 4. Run `node .sandcastle/policy-check.mjs commit` before committing.
+
+If this change settles something a later reader would otherwise have to
+re-derive — a user-visible behavior, a cross-file contract, an auth boundary, a
+format, a delivery or test-strategy decision — write or update the record in
+`docs/adr/` **in this same commit**. `docs/agents/architecture-decisions.md`
+says what counts and what does not; the short version is that most changes owe
+nothing. If nothing is owed, one line in the commit body settles it:
+
+    No-ADR: <why not>
+
 5. Inspect `git diff --check` and the changed-file list before committing.
 6. Commit the completed work with a Conventional Commit message.
 
