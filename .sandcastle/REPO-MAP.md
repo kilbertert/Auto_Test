@@ -58,8 +58,8 @@ no project argument. Both answer *where* something is; neither replaces reading 
 - AGENTS.md
 - CLAUDE.md
 - README.md
-- docs/ — 21 markdown file(s)
-- docs/adr/ — 3 markdown file(s)
+- docs/ — 22 markdown file(s)
+- docs/adr/ — 4 markdown file(s)
 - docs/agents/ — 4 markdown file(s)
 
 ## Tree (depth 2, first 80 lines; dependencies, build
@@ -70,6 +70,7 @@ output and run residue omitted)
 docs/
   adr/
     0001-agenthost-result-contract.md
+    0002-adr-check-scope-and-self-application.md
     0002-agenthost-execution-and-provider-boundary.md
     0002-trusted-pr-control-plane.md
   agents/

@@ -64,12 +64,37 @@ import { join, resolve } from "node:path";
 
 const argv = process.argv.slice(2);
 const REPO = resolve(process.env.AFK_ADR_ROOT ?? process.cwd());
-const BASE =
-  (argv.includes("--base") ? argv[argv.indexOf("--base") + 1] : undefined) ??
-  process.env.AFK_ADR_BASE ??
-  "";
+
+// Whether this run was ASKED to gate, as distinct from whether it can.
+//
+// The distinction is the whole point of the next few lines. `AFK_ADR_BASE: ${{ … }}`
+// evaluates to the empty string when neither side of the expression exists — and
+// an empty string is falsy, so a guard written as `if (!BASE) report-only` turns a
+// misconfigured workflow into a green run that looks exactly like a passing gate.
+// Measured before this was fixed: `--base ""` exited 0.
+//
+// So the request is detected from the SPECIFICATION, not from the value: `--base`
+// on the command line, or `AFK_ADR_BASE` present in the environment at all —
+// including present-and-empty. Asking for a gate and supplying nothing is a
+// configuration error, and it fails like one.
+const baseFromArgv = argv.includes("--base");
+const baseRequested = baseFromArgv || Object.prototype.hasOwnProperty.call(process.env, "AFK_ADR_BASE");
+const BASE = (baseFromArgv ? argv[argv.indexOf("--base") + 1] : undefined) ?? process.env.AFK_ADR_BASE ?? "";
 const ALL = argv.includes("--all");
 const ADR_DIR = join(REPO, "docs", "adr");
+
+if (baseRequested && BASE.trim() === "") {
+  const how = baseFromArgv ? "`--base` was passed with no ref" : "`AFK_ADR_BASE` is set but empty";
+  console.error(
+    `adr check failed: ${how}, so there is no diff to judge — refusing to report success.\n` +
+      "  A gate that silently downgrades to a report reads as passing whenever it is\n" +
+      "  misconfigured. Supply one of:\n" +
+      "    --base <ref>            e.g. `--base origin/main`, or the PR's base sha\n" +
+      "    --all                   judge the whole tree instead of a diff\n" +
+      "    (neither)               run locally for a report; exits 0 by design",
+  );
+  process.exit(1);
+}
 
 const FILENAME_RE = /^(\d{4})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 // Two status spellings are in use on this host, and both are standard: an inline
@@ -279,67 +304,115 @@ for (const name of recordsUnderReview()) {
 
 // ── coverage ────────────────────────────────────────────────────────────────
 //
-// With no base ref there is no diff to read, so this section reports nothing and
-// says so — the honest answer, and the one that keeps a bare `node adr.check.mjs`
-// usable as the migration's own evidence.
+// Whether a record is OWED. Unlike the structure rules this needs no git history
+// beyond the branch itself, which is what makes it the check that actually guards
+// the pull request.
+//
+// Depth matters here, and the earlier design got it wrong. A local `git diff
+// <ref> HEAD` is the merge-base form: it reports everything the branch carries,
+// not what this change did — 1.7.11's tooling edits and 1.7.12's would land in
+// that one diff together, and the tooling half would answer for the checker half.
+// So the unit is the **commit**, judged against its own parent (and `HEAD^` is
+// never shallow). The range also stops at the merge base, or a branch that is
+// merely behind `main` reads `main`'s commits as its own.
+//
+// Two things this check cannot decide, both deliberately left to a human reading
+// the diff:
+//
+//   - a commit that both changes source and adds a record PASSES, even if the
+//     record is about something else. Judging that means reading prose.
+//   - a commit whose body merely CONTAINS `No-ADR:` passes. The waiver is an
+//     assertion a human reads in the log, not an authenticated one, and
+//     pretending otherwise would be a worse lie than the one it prevents.
 
+/** `<mergeBase>..HEAD`, or null when this run has no diff to judge. */
+function coverageRange() {
+  if (!BASE) return null;
+  const mergeBase = tryGit(["merge-base", BASE, "HEAD"]);
+  if (mergeBase === null) {
+    // Unresolvable base → judge NOTHING, and say so. Falling back to the whole
+    // tree is the one thing that must not happen: a shallow checkout (which CI
+    // has by default) would silently turn "this diff" into "this project's
+    // entire back catalogue", and the failure would land on whoever pushed next
+    // rather than on the configuration that caused it.
+    notes.push(
+      `not judged: cannot resolve ${BASE} in this checkout — a gate that cannot see the diff is not a gate (CI needs \`fetch-depth: 0\`)`,
+    );
+    return null;
+  }
+  return `${mergeBase.trim()}..HEAD`;
+}
+
+// `--all` scopes STRUCTURE, not coverage: "judge every record's shape" and "judge
+// whether this range owes one" are independent questions, and `--all --base X` is
+// a reasonable way to ask both. So this branch is gated on BASE alone.
 if (!BASE) {
   notes.push(
     "coverage not evaluated (no --base) — pass `--base <ref>` to check that a change touched a record",
   );
 } else {
-  const mergeBase = tryGit(["merge-base", BASE, "HEAD"]);
-  if (mergeBase === null) {
-    notes.push(`coverage skipped: cannot resolve ${BASE} here`);
-  } else {
-    const diff = tryGit(["diff", "--name-only", mergeBase.trim(), "HEAD"]) ?? "";
-    const changed = diff.split("\n").filter(Boolean);
+  const range = coverageRange();
+  if (range !== null) {
+    const commits = (tryGit(["log", "--format=%H", range]) ?? "").split("\n").filter(Boolean);
+    // One `git log` for every body and subject, rather than three subprocesses
+    // per commit: this runs in CI on every push.
+    const meta = new Map();
+    for (const chunk of (tryGit(["log", "--format=%H%x00%s%x00%B%x01", range]) ?? "").split("\x01")) {
+      const [sha, subject, body] = chunk.split("\0");
+      if (sha) meta.set(sha.trim(), { subject: (subject ?? "").trim(), body: body ?? "" });
+    }
 
-    const touchedAdr = changed.some((p) => p.startsWith("docs/adr/"));
-    const decidedPaths = changed.filter(
-      (p) => !p.startsWith("docs/adr/") && STRUCTURE_SHAPED.some((re) => re.test(p)),
-    );
-    const sourcePaths = changed.filter((p) => SOURCE_SHAPED.some((re) => re.test(p)));
+    let flagged = 0;
+    let waived = 0;
+    for (const sha of commits) {
+      const { subject, body } = meta.get(sha) ?? { subject: "", body: "" };
+      // `diff-tree --root` rather than `diff <sha>^ <sha>`: the latter needs a
+      // parent, so a repository's first commit would be silently skipped — and
+      // the first commit is often exactly the one that decides the layout.
+      // `--no-commit-id -r` keeps the output to paths, one per line.
+      const changed = (
+        tryGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha]) ?? ""
+      )
+        .split("\n")
+        .filter(Boolean);
+      const touchedAdr = changed.some((p) => p.startsWith("docs/adr/"));
+      const decidedPaths = changed.filter(
+        (p) => !p.startsWith("docs/adr/") && STRUCTURE_SHAPED.some((re) => re.test(p)),
+      );
+      const sourcePaths = changed.filter((p) => SOURCE_SHAPED.some((re) => re.test(p)));
 
-    // A decision-shaped change: structure moved, or source moved and the
-    // observable surface may have. The subject line is the cheapest honest
-    // signal for the second case — a `fix:`/`feat:` prefix asserts behavior.
-    const subject = (tryGit(["log", "-1", "--format=%s", "HEAD"]) ?? "").trim();
-    const executableChange = sourcePaths.length > 0 && /^(?:feat|fix)(?:\(|!|:)/.test(subject);
+      // A decision-shaped change: structure moved, or source moved and the
+      // observable surface may have. The subject line is the cheapest honest
+      // signal for the second case — a `feat:`/`fix:` prefix asserts behavior.
+      const executableChange = sourcePaths.length > 0 && /^(?:feat|fix)(?:\(|!|:)/.test(subject);
+      if (touchedAdr || (decidedPaths.length === 0 && !executableChange)) continue;
 
-    // The escape hatch: a commit body line reading `No-ADR: <reason>`. It is an
-    // assertion a human reads in the log, not silence — and it is checked here
-    // rather than trusted to a convention, because "we decided not to" that
-    // leaves no trace is indistinguishable from "we forgot".
-    const headBody = tryGit(["log", "-1", "--format=%B", "HEAD"]) ?? "";
-    const waiver = /^\s*No-ADR:\s*\S/im.test(headBody);
+      // The waiver is matched against the body MINUS the subject line, so this
+      // check's own prose — which quotes `No-ADR: <reason>` — cannot satisfy it.
+      // A commit that says "we discussed No-ADR: …" in its title is not a waiver.
+      const bodyOnly = body.replace(subject, "");
+      const waiver = /^\s*No-ADR:\s*(\S.*)$/im.exec(bodyOnly);
+      if (waiver) {
+        waived += 1;
+        notes.push(`${sha.slice(0, 8)} — "${subject}": waived (${waiver[1].trim()})`);
+        continue;
+      }
 
-    if (!waiver && !touchedAdr && (decidedPaths.length > 0 || executableChange)) {
       const why =
         decidedPaths.length > 0
           ? `${decidedPaths.length} path(s) that decide how the system is put together (${decidedPaths.slice(0, 3).join(", ")}${decidedPaths.length > 3 ? ", …" : ""})`
           : `${sourcePaths.length} source file(s) under a \`${subject.split(":")[0]}:\` change`;
+      flagged += 1;
       failures.push(
-        `a record looks owed: this change touches ${why}, and docs/adr/ is unchanged. ` +
+        `${sha.slice(0, 8)} "${subject}" — a record looks owed: this commit touches ${why}, and \`docs/adr/\` is unchanged. ` +
           "Write or update one, or say why not with a `No-ADR: <reason>` line in the commit body " +
           "(docs/agents/architecture-decisions.md owns the exempt list).",
       );
     }
-
-    if (draftTouched(changed)) {
-      notes.push("a draft-titled record changed; drafts are not judged on structure");
-    }
+    notes.push(
+      `coverage judged ${commits.length} commit(s) in ${range}${waived ? `, ${waived} waived` : ""}${flagged ? `, ${flagged} flagged` : ""}`,
+    );
   }
-}
-
-function draftTouched(changed) {
-  return changed.some((p) => {
-    if (!p.startsWith("docs/adr/")) return false;
-    const file = join(REPO, p);
-    if (!existsSync(file)) return false;
-    const title = (proseLines(readFileSync(file, "utf8")).find((l) => /^#\s/.test(l)) ?? "").replace(/^#\s+/, "").trim();
-    return DRAFT_RE.test(title);
-  });
 }
 
 // ── report ──────────────────────────────────────────────────────────────────
