@@ -19,6 +19,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # `fetch-depth: 0` is required, not a preference: the decision-record
+          # check resolves the merge base against `base.sha`, and a shallow
+          # checkout does not have that commit — so the check would report that
+          # it cannot see the diff, and a gate that cannot see the diff is not a
+          # gate.
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -34,31 +40,41 @@ jobs:
       - name: Verify sandbox MCP config
         run: npx --yes tsx .sandcastle/mcp-config.check.ts
       # A stale map is read with the same confidence as the code, so it is
-      # checked rather than trusted. --check regenerates to stdout and compares —
-      # it never writes the file it is judging.
+      # checked rather than trusted. `--check` regenerates to stdout and
+      # compares — it never writes the file it is judging.
       - name: Verify the repository map is current
         run: node .sandcastle/repo-map.check.mjs
+      # The prepare hook's two halves must agree — a script nobody registered
+      # silently reverts every run to the agent installing its own dependencies.
+      - name: Verify the sandbox prepare hook
+        run: npx --yes tsx .sandcastle/sandbox-prepare.check.ts
+      # Whether a decision record is owed, and whether one was written.
+      #
+      # Two independent judgements, deliberately scoped differently:
+      #   * STRUCTURE covers the records this change touches — so adopting the
+      #     rule never requires backfilling a catalogue nobody edited.
+      #   * COVERAGE covers each of this branch's commits, judged against its own
+      #     parent. Per commit, not per diff: `git diff <ref> HEAD` is the
+      #     merge-base form and reports everything the branch carries, so one
+      #     tooling commit would answer for a feature commit beside it.
+      #
+      # A commit that owes a record and carries none fails here; one that owes
+      # none says so with a `No-ADR:` line in its body. Nothing is pinned to a
+      # ref — the script resolves the merge base itself.
+      #
+      # An empty `AFK_ADR_BASE` is a FAILURE, not a downgrade to a report. The
+      # expression below evaluates to "" when neither side exists, and a gate that
+      # quietly becomes a report reads as passing at exactly the moment it is
+      # misconfigured.
+      - name: Verify decision records
+        env:
+          AFK_ADR_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node .sandcastle/adr.check.mjs --base "$AFK_ADR_BASE"
       # The generator's own parser, not the map it produced: a regex that matches
       # nothing yields a map that looks complete and omits the answer, and a fresh
       # scaffold cannot catch that because a fresh scaffold has no console scripts
       # to omit. Deliberately NOT wired into repo-map.check.mjs — the map check
       # must use the shipping code path or it would validate one thing and ship
       # another.
-      # The prepare hook's two halves must agree — a script nobody registered
-      # silently reverts every run to the agent installing its own dependencies.
-      - name: Verify the sandbox prepare hook
-        run: npx --yes tsx .sandcastle/sandbox-prepare.check.ts
-      # Whether a decision record is owed, and whether one was written. `--base`
-      # scopes both halves to this diff: the structure rules judge only records
-      # the change touches, so adopting this cannot require editing a back
-      # catalogue. A change that owes a record and carries none fails here; a
-      # change that owes none can say so with a `No-ADR:` line in the commit
-      # body. Not pinned to a ref: the script resolves the merge base itself, and
-      # a new-branch push sends an all-zero `before` that git cannot resolve —
-      # the script reports that and does not fail on it.
-      - name: Verify decision records
-        env:
-          AFK_ADR_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node .sandcastle/adr.check.mjs --base "$AFK_ADR_BASE"
       - name: Repository-map generator self-check
         run: node .sandcastle/repo-map.mjs --self-check

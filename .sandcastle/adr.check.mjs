@@ -79,16 +79,42 @@ const REPO = resolve(process.env.AFK_ADR_ROOT ?? process.cwd());
 // configuration error, and it fails like one.
 const baseFromArgv = argv.includes("--base");
 const baseRequested = baseFromArgv || Object.prototype.hasOwnProperty.call(process.env, "AFK_ADR_BASE");
-const BASE = (baseFromArgv ? argv[argv.indexOf("--base") + 1] : undefined) ?? process.env.AFK_ADR_BASE ?? "";
+// Only a `--base` that is BOTH last and followed by a flag counts as a missing
+// argument. `--base main --all` is a base ref directly followed by a flag, and
+// reading `--all` as the ref would fail a run that was configured correctly.
+// Neither branch falls back to the environment: `--base` on the command line
+// means the command line answers, and falling through to `AFK_ADR_BASE` is how a
+// workflow that passes `--base "$UNSET"` silently gates against something else.
+const baseArg = baseFromArgv ? argv[argv.indexOf("--base") + 1] : undefined;
+const baseArgMissing = baseFromArgv && (baseArg === undefined || baseArg.startsWith("--"));
+const BASE = baseArgMissing ? "" : baseArg ?? process.env.AFK_ADR_BASE ?? "";
 const ALL = argv.includes("--all");
 const ADR_DIR = join(REPO, "docs", "adr");
 
-if (baseRequested && BASE.trim() === "" && !ALL) {
-  const how = baseFromArgv ? "`--base` was passed with no ref" : "`AFK_ADR_BASE` is set but empty";
+// When an empty base is a configuration error, and when it is not.
+//
+// The two sources are not equivalent, and treating them alike is how this was
+// wrong twice in a row:
+//
+//   * `--base ""` on the command line is someone asking for a diff and handing
+//     over nothing. Always an error, `--all` or not: `--all` scopes the STRUCTURE
+//     rules, it does not license skipping the coverage half that `--base` was
+//     also asked for. Measured before this was fixed: `--all --base ""` exited 0
+//     with coverage silently unevaluated.
+//   * `AFK_ADR_BASE=""` is what a workflow's `${{ a || b }}` produces when neither
+//     side exists, for every step that exports it. With `--all` there is a
+//     complete instruction and nothing is missing, so it proceeds.
+//
+// A gate that silently downgrades to a report reads as passing exactly when it is
+// misconfigured, which is the one moment it was needed.
+const emptyBaseIsFatal = baseFromArgv ? true : !ALL;
+if (baseRequested && BASE.trim() === "" && emptyBaseIsFatal) {
+  const how = baseArgMissing
+    ? "`--base` was passed with no ref"
+    : "`AFK_ADR_BASE` is set but empty";
   console.error(
     `adr check failed: ${how}, so there is no diff to judge — refusing to report success.\n` +
-      "  A gate that silently downgrades to a report reads as passing whenever it is\n" +
-      "  misconfigured. Supply one of:\n" +
+      "  Supply one of:\n" +
       "    --base <ref>            e.g. `--base origin/main`, or the PR's base sha\n" +
       "    --all                   judge the whole tree instead of a diff\n" +
       "    (neither)               run locally for a report; exits 0 by design",
@@ -362,15 +388,26 @@ function coverageRange() {
   if (!BASE) return null;
   const mergeBase = tryGit(["merge-base", BASE, "HEAD"]);
   if (mergeBase === null) {
-    // Unresolvable base → judge NOTHING, and say so. Falling back to the whole
-    // tree is the one thing that must not happen: a shallow checkout (which CI
-    // has by default) would silently turn "this diff" into "this project's
-    // entire back catalogue", and the failure would land on whoever pushed next
-    // rather than on the configuration that caused it.
-    notes.push(
-      `not judged: cannot resolve ${BASE} in this checkout — a gate that cannot see the diff is not a gate (CI needs \`fetch-depth: 0\`)`,
+    // An unresolvable base FAILS, and the earlier version of this did not.
+    //
+    // Judging nothing and saying so reads as honest, and it is the wrong trade in
+    // the one case that matters: a base ref that cannot be resolved is either a
+    // shallow checkout — CI's default — or a typo, and in both the run was asked
+    // to gate. Exiting 0 there means every commit this branch carries goes
+    // unjudged while the log says "passed", which is a gate that fails open at
+    // the exact moment it is misconfigured. Measured: `--base <unresolvable>`
+    // exited 0 with a commit that owed a record.
+    //
+    // What must NOT happen is the other repair — falling back to the whole tree.
+    // That turns "this diff" into "this project's entire back catalogue", and the
+    // failure lands on whoever pushed next rather than on the configuration.
+    const why = BASE.trim() === "" ? "no base ref was given" : `cannot resolve ${BASE} in this checkout`;
+    console.error(
+      `adr check failed: ${why}, so no commit can be judged — refusing to report success.\n` +
+        "  A shallow checkout cannot see the base: CI needs `fetch-depth: 0`.\n" +
+        "  If you meant to judge the whole tree instead of a diff, pass `--all`.",
     );
-    return null;
+    process.exit(1);
   }
   return `${mergeBase.trim()}..HEAD`;
 }
