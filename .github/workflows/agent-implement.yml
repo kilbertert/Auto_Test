@@ -357,7 +357,20 @@ jobs:
           fi
           pr_number=$(basename "$pr_url")
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
+      # The prompt tells the agent to record the ticket and NOT to name a pull
+      # request, because at commit time none exists. The host knows the URL, so the
+      # host posts it — this is what makes the prompt's "the host posts that link
+      # to the issue itself" a description rather than a promise.
+      - name: Write the delivery link back to the issue
+        if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
+        env:
+          PR_URL: ${{ steps.open_pr.outputs.pr_url }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+        run: |
+          bash .sandcastle/ticket-writeback.sh "$ISSUE_NUMBER" "$PR_URL" "$BRANCH" || true
       - name: Request automated review (add agent:review label)
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true' && success()
         env:

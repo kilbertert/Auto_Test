@@ -59,10 +59,12 @@ You do not have to reply to every thread. Reply only where a reply adds value: c
 
 You cannot resolve threads. Resolution is the reviewer's job.
 
-If this change came from an outside ticket — a requirements platform, a chat
-thread, a support queue — that ticket is where someone is waiting. When the work
-is done, write back to it: the branch, the pull request, and which acceptance
-criteria this change satisfies. You cannot post to a system this sandbox does not
-reach; record the text in the commit body under `Source ticket:` and the host
-runner or the human who owns that ticket posts it. A result that stays in this
-repository is one the next person to open that ticket has to rediscover.
+If this change came from an outside ticket — a requirements
+platform, a chat thread, a support queue — that ticket is where someone is
+waiting. Record its identifier and the acceptance criteria this change satisfies
+in the commit body under `Source ticket:`. Do not name a pull request: none
+exists until the host opens one after this commit, and the host posts that link
+to the issue itself. If you are replying without changing code, put the same
+`Source ticket:` line in a top-level PR comment instead — there is no commit
+to carry it. A result that stays in this repository is one the next person to
+open that ticket has to rediscover.
