@@ -85,10 +85,13 @@ step in which anyone is forced to say what "done" means. Translate first, then
 authorize — the translation is the work worth keeping, and it is the step a
 connector would quietly remove.
 
-When you finish work that came from an outside ticket, write the outcome back to
-it: the branch, the pull request, and which acceptance criteria are now met.
-A result that stays inside this repository is a result the next person to open
-the source ticket has to rediscover.
+When you finish work that came from an outside ticket, record the outcome — the
+ticket's identifier and which acceptance criteria are now met — in the commit
+body under `Source ticket:`, or in a top-level PR comment when you are replying
+without changing code. Do not try to name the pull request: it does not exist
+when the commit is made. The host opens it and posts the link to the issue
+itself. A result that stays inside this repository is a result the next person to
+open the source ticket has to rediscover.
 
 ## 中文
 
