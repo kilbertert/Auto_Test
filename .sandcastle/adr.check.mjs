@@ -50,9 +50,14 @@
  * on-disk/wire/config format touches a record. With `--base` this is a FAILURE;
  * without it, a nudge — because `git diff <ref> HEAD` is the merge-base form and
  * reports everything the branch carries, not what this change did.
- * `docs/agents/architecture-decisions.md` §"Scope" owns the exempt list, spelled
- * out repository-side, and the escape hatch is a `No-ADR:` line in the commit
- * body — an assertion a human reads, never silence.
+ *
+ * Note what this file does NOT do: it never READS the convention document. The
+ * exempt list it cites is prose there — `## When a record is owed` — and the
+ * decision above is made here, by `STRUCTURE_SHAPED` / `SOURCE_SHAPED` and the
+ * `feat:`/`fix:` subject test. The escape hatch is a `No-ADR:` line in the commit
+ * body — an assertion a human reads, never silence. (This paragraph used to cite
+ * a `§"Scope"` section that does not exist in that document, which is how a
+ * reference can look like a control for two releases without being one.)
  *
  * Every heading alias below is spelled by a real record on this host, so the
  * check is written to the convention that exists rather than the one a style
@@ -139,6 +144,12 @@ const FRONTMATTER_STATUS_RE = /^\s*status\s*:\s*\S/im;
 // enforcing a style, not readable records.
 const ALTERNATIVES_RE = /^##+ *(alternatives\b|备选方案|替代方案|被否)/i;
 
+// The same vocabulary, at the START of a line rather than as a heading: a list
+// item or a bolded lead-in that names the rejected set. See
+// `alternativesLocation` for why both carriers have to count.
+const INLINE_ALTERNATIVES_RE =
+  /^(?:[-*+]\s+|\*\*|__)?\s*(?:alternatives\b|rejected\b|备选方案|替代方案|被否)/i;
+
 // A section whose body is a placeholder. A nine-line record that is a title and
 // a status is a legitimate shape when the decision is copied from a baseline —
 // but an *alternatives* heading over nothing is not, because it claims a
@@ -184,6 +195,7 @@ function tryGit(args) {
 const failures = [];
 const nudges = [];
 const notes = [];
+const advisories = [];
 
 // Structure only FAILS when this run was asked to judge a specific set — the
 // diff (`--base`) or the whole tree (`--all`). With neither there is nothing to
@@ -191,6 +203,43 @@ const notes = [];
 // 0: a bare invocation is for reading, not for gating, and a project that has
 // back-catalogue records must be able to run it without going red.
 const ENFORCE = ALL || BASE !== "";
+
+// Findings that must NOT fail the run, in any mode, because acting on them
+// requires the original author's memory rather than work the reader can do.
+//
+// A record that never had an alternatives section is incomplete. A record that
+// HAS one and left it empty is dishonest — it claims a weighing that did not
+// happen. Only the second is the thing this check exists to catch, and its own
+// `EMPTY_RE` comment says so. The convention says the same about the back
+// catalogue, in `docs/agents/architecture-decisions.md` §"### The sweep":
+//
+//   those records "are worth a pass when someone next touches the decision they
+//   describe; they are not worth a mechanical rewrite, and nobody should invent
+//   alternatives a record never weighed just to turn a check green."
+//
+// Gating them would leave exactly two ways to a green run — invent the rejected
+// options, or delete the record — and the convention forbids the first. A gate
+// whose only honest exit is forbidden is the defect this channel exists to fix.
+//
+// What keeps this from weakening the gate for NEW work: the tier depends on the
+// MODE, not only on the finding. `--base` judges the records the diff touches
+// (recordsUnderReview()), and on that path a missing section is still a FAILURE —
+// the author is at the keyboard and the record is theirs to finish. It becomes an
+// advisory only on the whole-tree sweep (`--all`), where those authors are gone.
+// That is the distinction the convention draws in §"### The sweep": the back
+// catalogue is worth a pass "when someone next touches the decision they
+// describe", and `--base` is exactly "someone touched it".
+//
+// `Status:` is deliberately NOT in this category, though it was in an earlier
+// draft of this tier. Writing it invents nothing: on these repositories the fact
+// is reachable from the tree. The `trusted-pr-control-plane` record has no status
+// in four repositories, and each one's `.github/workflows/` shows the control
+// plane shipped or not — the answer is one `grep` of the code the record is
+// about, not a memory. What it is not reachable from is a naive reading of the
+// record itself, which is exactly why the line has to be there: AI-Ops 0003
+// carries `Status: Accepted` while a blockquote above it says the decision is
+// unimplemented and 0008 records the deviation. A reader who branches on "there
+// is a status line" is misled; a reader who branches on its VALUE is not.
 
 /** Prose lines only: fenced code and HTML comments are not text a reader acts on. */
 function proseLines(text) {
@@ -234,6 +283,39 @@ function sectionBody(lines, startIndex, level) {
     body.push(lines[i]);
   }
   return body;
+}
+
+/**
+ * Where the rejected options are written, if they are written at all.
+ *
+ * Returns `{ heading, lines }` — the index of the heading that starts them, or -1
+ * if they are carried inline — plus the lines that hold them.
+ *
+ * A HEADING IS NOT THE ONLY CARRIER, and requiring one produced a message that
+ * was false. Measured on AI-Ops 0006, whose line 15 reads:
+ *
+ *   - 被否掉的替代形态：(a) 由统一助手入口中介跳转——…；(b) 后端维护路由白名单——…；(c) 显式判别类型字段——见上。
+ *
+ * That is the exact phrase `ALTERNATIVES_RE` hunts for, with three rejected
+ * options and their reasons, and the check still said "no alternatives section …
+ * a record of what was chosen and not what was rejected". Three records across
+ * this host are in that shape (AI-Ops 0006 / 0007 / 0010). The vocabulary was
+ * right; the carrier was wrong.
+ *
+ * So an annotated line counts. The marker is a list item or a bolded lead-in that
+ * NAMES the rejected set — the same vocabulary, at the start of a line rather
+ * than the start of a section. Requiring it at the start keeps the false-positive
+ * rate at zero: the reason this check exists is a record that never weighed
+ * anything, and a passing mention of "alternative" mid-sentence is not a weighing.
+ */
+function alternativesLocation(lines) {
+  const heading = lines.findIndex((l) => ALTERNATIVES_RE.test(l.trim()));
+  if (heading !== -1) {
+    const level = /^(#+)/.exec(lines[heading].trim())[1].length;
+    return { heading, lines: sectionBody(lines, heading, level) };
+  }
+  const inline = lines.filter((l) => INLINE_ALTERNATIVES_RE.test(l.trim()));
+  return { heading: -1, lines: inline };
 }
 
 // ── structure ───────────────────────────────────────────────────────────────
@@ -281,6 +363,13 @@ const entries = allEntries;
 
 for (const name of recordsUnderReview()) {
   const fail = (msg) => (ENFORCE ? failures : nudges).push(`${name} — ${msg}`);
+  // Fails only when the run judges THIS CHANGE'S records — `--base` without
+  // `--all`. Then the author is at the keyboard and the record is theirs to
+  // finish. On a whole-tree sweep (`--all`) the back catalogue's authors are not,
+  // and the memory needed to finish those records is not available to anyone
+  // reading the report. See the `advisories` declaration.
+  const advisory = (msg) =>
+    (BASE !== "" && !ALL ? failures : advisories).push(`${name} — ${msg}`);
 
   const m = FILENAME_RE.exec(name);
   if (!m) {
@@ -303,21 +392,24 @@ for (const name of recordsUnderReview()) {
     );
   }
 
-  const altIndex = lines.findIndex((l) => ALTERNATIVES_RE.test(l.trim()));
-  if (altIndex === -1) {
-    fail(
-      "no alternatives section (`## Alternatives Considered` / `## 被否掉的替代形态` / …) — a record of what was chosen and not what was rejected is how a settled argument gets re-litigated",
+  const alt = alternativesLocation(lines);
+  if (alt.lines.length === 0) {
+    // `advisory`, not `fail`: see its definition. An empty HEADING is caught
+    // below instead, because a heading standing over nothing claims a weighing
+    // that did not happen — that needs no memory to see and no memory to fix.
+    const where = alt.heading === -1 ? "carried" : "under a heading";
+    advisory(
+      `no alternatives ${where} — a record of what was chosen and not what was rejected is how a settled argument gets re-litigated. Write the rejected options, or say in one line that none were considered \`(alternatives\b|备选方案|替代方案|被否)\``,
     );
     continue;
   }
 
-  const level = /^(#+)/.exec(lines[altIndex].trim())[1].length;
-  const body = sectionBody(lines, altIndex, level)
+  const body = alt.lines
     .map((l) => l.replace(/^\s*(?:[-*+]|\d+\.)\s*/, "").trim())
     .filter((l) => l !== "" && !/^```/.test(l));
 
   if (body.length === 0) {
-    fail("the alternatives section is empty");
+    fail("the alternatives section is empty — a heading over nothing claims a weighing that did not happen");
   } else if (body.every((l) => EMPTY_RE.test(l))) {
     fail(`the alternatives section is a placeholder (${JSON.stringify(body[0])}) — it claims a weighing that did not happen`);
   }
@@ -483,7 +575,7 @@ if (!BASE) {
       failures.push(
         `${sha.slice(0, 8)} "${subject}" — a record looks owed: this commit touches ${why}, and \`docs/adr/\` is unchanged. ` +
           "Write or update one, or say why not with a `No-ADR: <reason>` line in the commit body " +
-          "(docs/agents/architecture-decisions.md owns the exempt list).",
+          "(the shapes that owe nothing are listed in docs/agents/architecture-decisions.md § `## When a record is owed` — this check does not read that file).",
       );
     }
     notes.push(
@@ -496,16 +588,20 @@ if (!BASE) {
 
 for (const n of notes) console.log(`adr: note: ${n}`);
 for (const n of nudges) console.log(`adr: nudge: ${n}`);
+for (const a of advisories) console.log(`adr: advisory: ${a}`);
 
 if (failures.length) {
   for (const f of failures) console.error(`adr: ${f}`);
   console.error(
-    `\n${failures.length} problem(s) across ${entries.length} record(s)${drafts ? ` (${drafts} draft(s) exempt)` : ""}.`,
+    `\n${failures.length} problem(s) across ${entries.length} record(s)${drafts ? ` (${drafts} draft(s) exempt)` : ""}${advisories.length ? `; ${advisories.length} advisory(ies) above, not counted` : ""}.`,
   );
   process.exit(1);
 }
 
 const scope = ENFORCE ? (ALL ? "structure enforced across the tree" : "structure enforced on this diff") : "structure reported, not enforced — pass --base or --all to gate on it";
+const advisoriesNote = advisories.length
+  ? `, ${advisories.length} advisory(ies) listed above (need the original author's memory, so they do not gate)`
+  : "";
 console.log(
-  `adr check ok (${entries.length} record(s), ${drafts} draft(s) exempt; ${scope})`,
+  `adr check ok (${entries.length} record(s), ${drafts} draft(s) exempt; ${scope}${advisoriesNote})`,
 );
