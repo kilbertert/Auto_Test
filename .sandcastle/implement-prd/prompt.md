@@ -22,6 +22,14 @@ Use this to understand what work has already shipped on this branch and what
 is still ahead — but **only implement #{{SUB_ISSUE_NUMBER}}** in this session.
 Do not touch work that belongs to a different sub-issue.
 
+If this sub-issue came from an outside ticket — a requirements platform, a chat
+thread, a support queue — that ticket is where someone is waiting. When the work
+is done, write back to it: the branch, the pull request, and which acceptance
+criteria this change satisfies. You cannot post to a system this sandbox does not
+reach; record the text in the commit body under `Source ticket:` and the host
+runner or the human who owns that ticket posts it. A result that stays in this
+repository is one the next person to open that ticket has to rediscover.
+
 # CONTEXT
 
 Read `.sandcastle/REPO-MAP.md` first (where things live), then `GLOSSARY.md` and the relevant files under `docs/`, apply `.sandcastle/CODING_STANDARDS.md`, and any ADRs under `docs/adr/` before starting.
@@ -41,6 +49,11 @@ Use red-green-refactor where applicable.
 
 Before committing, run `npm run typecheck` and `npm test`, then
 `node .sandcastle/policy-check.mjs commit`.
+
+Before you settle on an approach, search what this repository has already
+decided: `rg -i "<机制名或关键词>" docs/adr/`, and read the two or three records
+whose titles touch the area. Facts the code or those records can answer, answer
+yourself — do not spend a human's time on them.
 
 Before you settle on an approach, search what this repository has already
 decided: `rg -i "<机制名或关键词>" docs/adr/`, and read the two or three records

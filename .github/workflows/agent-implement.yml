@@ -101,11 +101,89 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body "Refused to run: this issue is a sub-issue of #${PARENT_NUMBER}. Sub-issues are not labeled directly — add \`agent:implement\` to the parent PRD instead. Cleared \`agent:implement\` and added \`agent:blocked\`."
 
+      # The shape gate above judges the ticket's POSITION — is it a leaf, is it
+      # blocked, is it a PRD. This one judges the ticket ITSELF, which nothing
+      # has ever done: whether it says what to build and what "done" looks like.
+      #
+      # `--strict` is asked for explicitly because the check reports by default
+      # (reading a ticket should never fail a shell); a caller that wants a gate
+      # says so. Everything it fails on is a fact about the ticket that whoever
+      # authorised the work can fix in the issue body — nothing here needs a
+      # human decision the author did not already own.
+      #
+      # `--json <` and not `--title`: `gh issue view --json title,body` is
+      # already the shape the check reads, so the step adds no parsing and no
+      # second source of truth about what a ticket is.
+      - name: Pre-flight — refuse if the ticket is not implementable
+        if: steps.shape.outputs.proceed == 'true'
+        id: ticket
+        env:
+          # Named per issue so two runs on the runner do not share a file. The
+          # runner workspace persists between jobs, which is exactly how a stale
+          # file would otherwise be judged instead of this issue's.
+          AFK_TICKET_TMP: ${{ runner.temp }}/ticket-${{ github.event.issue.number || inputs.issue_number }}.json
+        run: |
+          set -uo pipefail
+          gh issue view "$ISSUE_NUMBER" --json title,body > "$AFK_TICKET_TMP"
+          # Clear these before node loads the checker. Other hooks in this
+          # workflow (codebase-memory, serena) write their own caches and
+          # node_modules here, and a stale one makes `node` exit non-zero before
+          # the checker's first line — which reads as "the ticket is not
+          # implementable". A non-zero exit means the ticket failed ONLY if the
+          # checker is actually there and actually ran.
+          rm -rf node_modules/.cache .serena 2>/dev/null || true
+          if [ ! -f .sandcastle/ticket-check.mjs ]; then
+            echo "::warning::ticket-check.mjs is absent, so this ticket was not screened"
+            echo "implementable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if node .sandcastle/ticket-check.mjs --json --strict < "$AFK_TICKET_TMP"; then
+            echo "implementable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "implementable=false"
+            # The check's own report, unfenced so the issue shows the list.
+            echo "report<<AFK_TICKET_REPORT"
+            node .sandcastle/ticket-check.mjs --json < "$AFK_TICKET_TMP" || true
+            echo "AFK_TICKET_REPORT"
+          } >> "$GITHUB_OUTPUT"
+
+      # No `exit 0` here. It would only end THIS step — measured: the job runs
+      # on and implements the ticket anyway. The refusal registers itself in the
+      # same `refused` output the open-PR pre-flight uses, and every step that
+      # does work already gates on that one signal.
+      - name: Refuse — the ticket is not one an agent can finish
+        if: steps.shape.outputs.proceed == 'true' && steps.ticket.outputs.implementable == 'false'
+        env:
+          REPORT: ${{ steps.ticket.outputs.report }}
+        run: |
+          set -uo pipefail
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+          gh issue comment "$ISSUE_NUMBER" --body "$(cat <<EOF
+          Refused to run: this ticket is not one an agent can finish unattended.
+
+          $REPORT
+
+          Clear \`agent:blocked\` and re-add \`agent:implement\` once the ticket says
+          what to build and what "done" looks like.
+          EOF
+          )"
+
       - name: Pre-flight — refuse if an open PR already exists for this issue
         if: steps.shape.outputs.proceed == 'true'
         id: preflight
         run: |
           set -euo pipefail
+          # The ticket refusal is carried forward into this step's own output, so
+          # `preflight.refused` is the single signal every later step already
+          # gates on. Two refusal reasons, one concept — a second output would
+          # mean touching every downstream `if:` and getting one of them wrong.
+          if [ "${{ steps.ticket.outputs.implementable }}" = "false" ]; then
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Find open PRs whose body references "Closes #N" / "Fixes #N" / "Resolves #N".
           existing=$(gh pr list \
             --state open \
