@@ -47,8 +47,21 @@ Not everything in here is necessarily actionable — reviewers may leave context
 2. For a code change, run the Economy ladder and stop at the first option that
    fully addresses the confirmed feedback.
 3. Make the code changes you decided on. Run `npm run check`, then `node .sandcastle/policy-check.mjs commit`, before committing. Use conventional-commit messages (`feat:`, `fix:`, `refactor:`, etc.). Do NOT use a `RALPH:` prefix.
+
+Before you settle on an approach, search what this repository has already
+decided: `rg -i "<机制名或关键词>" docs/adr/`, and read the two or three records
+whose titles touch the area. Facts the code or those records can answer, answer
+yourself — do not spend a human's time on them.
 4. If you made no changes that's fine — only commit when there's a real diff.
 
 You do not have to reply to every thread. Reply only where a reply adds value: confirming what you changed, explaining why you chose not to make a requested change, answering a question, or pointing out something the reviewer should look at. Silence is fine for context-only comments.
 
 You cannot resolve threads. Resolution is the reviewer's job.
+
+If this change came from an outside ticket — a requirements platform, a chat
+thread, a support queue — that ticket is where someone is waiting. When the work
+is done, write back to it: the branch, the pull request, and which acceptance
+criteria this change satisfies. You cannot post to a system this sandbox does not
+reach; record the text in the commit body under `Source ticket:` and the host
+runner or the human who owns that ticket posts it. A result that stays in this
+repository is one the next person to open that ticket has to rediscover.
