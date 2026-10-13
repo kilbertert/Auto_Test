@@ -31,6 +31,11 @@ decided: `rg -i "<机制名或关键词>" docs/adr/`, and read the two or three 
 whose titles touch the area. Facts the code or those records can answer, answer
 yourself — do not spend a human's time on them.
 
+Before you settle on an approach, search what this repository has already
+decided: `rg -i "<机制名或关键词>" docs/adr/`, and read the two or three records
+whose titles touch the area. Facts the code or those records can answer, answer
+yourself — do not spend a human's time on them.
+
 If this change settles something a later reader would otherwise have to
 re-derive — a user-visible behavior, a cross-file contract, an auth boundary, a
 format, a delivery or test-strategy decision — write or update the record in
@@ -49,3 +54,11 @@ do not guess; explain the blocker and print `<promise>BLOCKED</promise>`.
 
 Do not merge, push, close issues, or modify GitHub state from inside the
 container. The host runner owns delivery.
+
+If this work came from an outside ticket — a requirements platform, a chat
+thread, a support queue — that ticket is where someone is waiting. When the work
+is done, write back to it: the branch, the pull request, and which acceptance
+criteria this change satisfies. You cannot post to a system this sandbox does not
+reach; record the text in the commit body under `Source ticket:` and the host
+runner or the human who owns that ticket posts it. A result that stays in this
+repository is one the next person to open that ticket has to rediscover.

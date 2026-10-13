@@ -88,6 +88,38 @@ jobs:
             next_open_title=$(echo "$next_open" | jq -r '.title')
           fi
 
+          # The sub-issue about to be implemented must itself be implementable. The
+          # verdict comes from the exit code and the report is captured separately, so
+          # the two never share a stream: `--strict` prints the same lines a report run
+          # does, and reading stdout for the verdict is how a passing ticket gets read
+          # as a failing one.
+          #
+          # `--strict` is passed to say out loud that this call is a gate, so a later
+          # change to the reporting default cannot silently turn this step into one
+          # that always proceeds.
+          implementable="yes"
+          ticket_report=""
+          if [ -n "$next_open_number" ]; then
+            sub_json=$(gh issue view "$next_open_number" --json title,body)
+            rm -rf node_modules/.cache .serena 2>/dev/null || true
+            if [ ! -f .sandcastle/ticket-check.mjs ]; then
+              # No checker: its exit code would say nothing about this ticket, and letting
+              # it stand reports EVERY leaf as unimplementable — which is how a gate gets
+              # removed. Say so and run; `agent-review` still sees the pull request. A
+              # migration publishes into a project whose `.sandcastle/` is its own, so
+              # "the script is always there" is not a fact this workflow can rely on.
+              echo "::warning::ticket-check.mjs is absent, so this leaf was not screened"
+              implementable="yes"
+            else
+              rc_check=0
+              node .sandcastle/ticket-check.mjs --json --strict <<<"$sub_json" >/dev/null 2>&1 || rc_check=$?
+              if [ "$rc_check" != "0" ]; then
+                implementable="no"
+                ticket_report=$(node .sandcastle/ticket-check.mjs --json <<<"$sub_json" 2>&1 || true)
+              fi
+            fi
+          fi
+
           # Decide proceed and refuse reasons.
           if [ "$sub_count" = "0" ] && [ "$is_prd" = "true" ]; then
             mode="refuse-no-subissues"
@@ -99,6 +131,8 @@ jobs:
             mode="refuse-nested-child"
           elif [ -z "$next_open_number" ]; then
             mode="refuse-all-closed"
+          elif [ "$implementable" = "no" ]; then
+            mode="skip-unimplementable"
           else
             mode="run"
           fi
@@ -115,7 +149,35 @@ jobs:
             echo "next_open_title<<EOF"
             echo "$next_open_title"
             echo "EOF"
+            # The check's report is multi-line; the delimiter is on its own line by
+            # construction, which is what the heredoc form needs. Kept in the same group
+            # as the title so this is still one redirect to one file (SC2129).
+            echo "ticket_report<<AFK_TICKET_REPORT"
+            echo "$ticket_report"
+            echo "AFK_TICKET_REPORT"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Clear the PRD's implement label so the loop can resume
+        if: steps.shape.outputs.mode == 'skip-unimplementable'
+        run: gh issue edit "$PRD_NUMBER" --remove-label "agent:implement" || true
+
+
+      - name: Skip — the selected sub-issue is not implementable
+        if: steps.shape.outputs.mode == 'skip-unimplementable'
+        env:
+          SUB_ISSUE_NUMBER: ${{ steps.shape.outputs.next_open_number }}
+          REPORT: ${{ steps.shape.outputs.ticket_report }}
+        run: |
+          set -uo pipefail
+          gh issue comment "$SUB_ISSUE_NUMBER" --body "$(cat <<EOF
+          Skipped: this sub-issue is not one an agent can finish unattended, so the
+          PRD's loop moved past it. Fix the sub-issue, then re-add
+          \`agent:implement\` to the PRD.
+
+          $REPORT
+          EOF
+          )"
+          gh issue edit "$SUB_ISSUE_NUMBER" --add-label "agent:blocked" || true
 
       - name: Refuse — nested PRD
         if: steps.shape.outputs.mode == 'refuse-nested-prd'
@@ -408,5 +470,5 @@ jobs:
           fi
 
       - name: Always remove in-progress from PRD
-        if: always() && steps.shape.outputs.mode == 'run'
+        if: always() && (steps.shape.outputs.mode == 'run' || steps.shape.outputs.mode == 'skip-unimplementable')
         run: gh issue edit "$PRD_NUMBER" --remove-label "agent:in-progress" || true
