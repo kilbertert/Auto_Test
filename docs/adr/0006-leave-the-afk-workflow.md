@@ -85,7 +85,9 @@
 
 - `0001-agenthost-result-contract.md` — 缺「被否掉的方案」一节
 - `0002-agenthost-execution-and-provider-boundary.md` — 同上
-- `0002-trusted-pr-control-plane.md` — 缺 `Status:` 行、缺「被否掉的方案」一节
+- `0002-trusted-pr-control-plane.md` —— **已重编号为 `0007-trusted-pr-control-plane.md`**
+  并补上 `Status: Superseded by 0006`（本仓退出 AFK 后，它描述的控制面已无 workflow 可跑）。
+  它的「被否掉的方案」一节仍然缺——见下一节。
 - **编号 `0002` 被两条记录占用**
 
 这些都是**本次之前就存在的**，本记录没有改动那三条。记在这里而不是留白，是因为

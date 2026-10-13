@@ -37,11 +37,8 @@ no project argument. Both answer *where* something is; neither replaces reading 
 - script "agent:compare": tsx src/cli/compare-agent-runs.ts (package.json)
 - script "eval:suite": tsx src/cli/run-eval-suite.ts (package.json)
 - script "intake:workflow": tsx src/cli/intake-workflow.ts (package.json)
-- script "afk": tsx .sandcastle/main.ts (package.json)
 - script "compile:replay": tsx src/cli/compile-mcp-replay.ts (package.json)
 - script "report:workflow": tsx src/cli/workflow-acceptance-report.ts (package.json)
-- script "ralph": tsx .sandcastle/planner.ts (package.json)
-- script "afk:policy": node .sandcastle/policy-check.mjs all (package.json)
 
 ## Tests
 
@@ -58,8 +55,8 @@ no project argument. Both answer *where* something is; neither replaces reading 
 - AGENTS.md
 - CLAUDE.md
 - README.md
-- docs/ — 25 markdown file(s)
-- docs/adr/ — 6 markdown file(s)
+- docs/ — 26 markdown file(s)
+- docs/adr/ — 7 markdown file(s)
 - docs/agents/ — 5 markdown file(s)
 
 ## Tree (depth 2, first 80 lines; dependencies, build
@@ -71,10 +68,11 @@ docs/
   adr/
     0001-agenthost-result-contract.md
     0002-agenthost-execution-and-provider-boundary.md
-    0002-trusted-pr-control-plane.md
     0003-adr-check-scope-and-self-application.md
     0004-adr-check-scope-and-self-application.md
     0005-adr-check-scope-and-self-application.md
+    0006-leave-the-afk-workflow.md
+    0007-trusted-pr-control-plane.md
   agents/
     architecture-decisions.md
     domain.md
