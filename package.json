@@ -14,12 +14,9 @@
     "agent:compare": "tsx src/cli/compare-agent-runs.ts",
     "eval:suite": "tsx src/cli/run-eval-suite.ts",
     "intake:workflow": "tsx src/cli/intake-workflow.ts",
-    "afk": "tsx .sandcastle/main.ts",
     "compile:replay": "tsx src/cli/compile-mcp-replay.ts",
     "report:workflow": "tsx src/cli/workflow-acceptance-report.ts",
-    "check": "npm run typecheck && npm test && npm run build",
-    "ralph": "tsx .sandcastle/planner.ts",
-    "afk:policy": "node .sandcastle/policy-check.mjs all"
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=24"
