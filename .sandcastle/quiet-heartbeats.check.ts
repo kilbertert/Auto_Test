@@ -176,8 +176,16 @@ const exitRun = spawnSync(
   ],
   { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
 );
+// The summary reports BOTH numbers: how many frames were dropped and how many
+// console lines the filter actually judged. Without the second, "dropped 0"
+// cannot be told apart from a runner that logs to a file and never writes to
+// stdout — and that distinction is the whole diagnostic value of the line.
+// The count is EXACT, not `\d+`: the probe writes exactly one line, so `\d+`
+// would also accept a counter that never increments — the mutation "delete
+// `observed += 1`" was measured to survive `\d+`. A number the test knows must be
+// asserted as that number.
 assert(
-  /dropped 1 thinking-token frame/.test(exitRun.stderr),
+  /dropped 1 thinking-token frame\(s\) of 1 console line\(s\)/.test(exitRun.stderr),
   `the exit summary must reach a captured stderr (stderr: ${JSON.stringify(exitRun.stderr)})`,
 );
 // And it must NOT reach stdout — see the placement assertion below, which reads
@@ -232,8 +240,15 @@ assert(
 // a run reaches? `claudeProfile` is the function every runner spreads into
 // `run()`, so the assertion is that the call sits within a top-level *function
 // declaration* named `claudeProfile` — not in a helper, not at module scope, not
-// in a dead branch. Braces are counted from the declaration, which is enough for
-// a file this check also owns the shape of.
+// after an early return.
+//
+// THE LIMIT, stated rather than implied (raised in review of a consumer PR): a
+// nested function declared INSIDE `claudeProfile` and never called would pass
+// this. Catching that needs the call graph, i.e. actually executing the function,
+// i.e. importing `@ai-hero/sandcastle` — the thing this check exists without. So
+// the check covers the shapes that happen: module scope, another top-level
+// function, commented out, duplicated, placed after an early return. It does not
+// claim to cover exotic nesting, and a reviewer should not read it as doing so.
 const callAt = profileSource.search(/^\s*quietThinkingHeartbeats\(\);?\s*$/m);
 assert(callAt >= 0, "profile.ts must call quietThinkingHeartbeats() as a live statement");
 const before = profileSource.slice(0, callAt);
@@ -252,6 +267,25 @@ assert(
 const signature = profileSource.indexOf("function claudeProfile");
 const bodyStart = profileSource.indexOf("{", profileSource.indexOf(")", profileSource.indexOf(":", signature)));
 assert(bodyStart > signature && bodyStart < callAt, "could not locate claudeProfile's body");
+// KNOWN HOLE, asserted so it cannot drift silently into "covered": a nested
+// function declared inside claudeProfile and never invoked passes the scope
+// check. This is a documented limit, not a regression — if a future change makes
+// it fail, that is an improvement worth removing this assertion for, and if the
+// message changes, someone should know why.
+const nestedCall = profileSource
+  .slice(bodyStart)
+  .search(/^\s*function\s+\w+\s*\([^)]*\)\s*\{[^}]*quietThinkingHeartbeats\(\)/m);
+if (nestedCall >= 0) {
+  // The shape is present and this check cannot tell whether the nested function
+  // is called — that needs the call graph, which needs the provider. Report the
+  // OBSERVATION rather than a conclusion: an earlier wording said "a nested
+  // uncalled function", which labelled a helper the code may well invoke. A note
+  // that asserts something the check cannot see is worse than no note.
+  console.error(
+    "note: the install appears inside a nested function; this check cannot tell whether it is called (documented limit)",
+  );
+}
+
 const beforeCall = profileSource.slice(bodyStart, callAt);
 // A `return` at statement position, optionally behind an `if (…)`. `return {…}`
 // and `return;` both count; a `return` inside a string or comment does not matter
@@ -278,6 +312,30 @@ assert(
 assert(
   !/writeSync\(\s*stream\.fd\s*,/.test(source),
   "the exit summary must not be written to stdout — main.ts's JSON result follows it",
+);
+
+// --- "0 of 0" is a different fact from "0 of N" (review finding 7) ----------
+//
+// `claudeProfile` installs the hook before it validates the profile, and a runner
+// using `logging: { type: "file" }` writes nothing to stdout. Its summary must
+// therefore be legible as "this run produced no console output", not as "the
+// filter never matched".
+const silentProbe = `
+  quietThinkingHeartbeats();
+`;
+const silentRun = spawnSync(
+  process.execPath,
+  [
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    `import { quietThinkingHeartbeats } from "./quiet-heartbeats.ts";${silentProbe}`,
+  ],
+  { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
+);
+assert(
+  /dropped 0 thinking-token frame\(s\) of 0 console line\(s\)/.test(silentRun.stderr),
+  `a run with no console output must say "0 of 0" (stderr: ${JSON.stringify(silentRun.stderr)})`,
 );
 
 console.log("quiet-heartbeats check ok");
