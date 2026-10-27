@@ -185,7 +185,7 @@ const exitRun = spawnSync(
 // `observed += 1`" was measured to survive `\d+`. A number the test knows must be
 // asserted as that number.
 assert(
-  /dropped 1 thinking-token frame\(s\) of 1 console line\(s\)/.test(exitRun.stderr),
+  /dropped 1 thinking-token frame\(s\) of 1 stream line\(s\)/.test(exitRun.stderr),
   `the exit summary must reach a captured stderr (stderr: ${JSON.stringify(exitRun.stderr)})`,
 );
 // And it must NOT reach stdout — see the placement assertion below, which reads
@@ -317,11 +317,21 @@ assert(
 // --- "0 of 0" is a different fact from "0 of N" (review finding 7) ----------
 //
 // `claudeProfile` installs the hook before it validates the profile, and a runner
-// using `logging: { type: "file" }` writes nothing to stdout. Its summary must
-// therefore be legible as "this run produced no console output", not as "the
-// filter never matched".
+// using `logging: { type: "file" }` gets no agent stream on stdout. Its summary
+// must be legible as "this run carried no agent stream", not as "the filter never
+// matched".
+//
+// ⚠️ The FIRST version of this probe only called the filter and wrote nothing —
+// and it passed for the wrong reason. A real file-logged run still prints its
+// JSON result from `main.ts`, and the original counter counted that too, so the
+// summary read "0 of 1": indistinguishable from a quiet console run, i.e. the
+// exact confusion the number exists to remove. The probe below reproduces the
+// real shape — filter installed, then a pretty-printed result — and asserts the
+// count stays 0.
 const silentProbe = `
   quietThinkingHeartbeats();
+  // What main.ts prints after run() with logging: { type: "file" }.
+  console.log(JSON.stringify({ issue: 7, commits: 0 }, null, 2));
 `;
 const silentRun = spawnSync(
   process.execPath,
@@ -334,7 +344,7 @@ const silentRun = spawnSync(
   { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
 );
 assert(
-  /dropped 0 thinking-token frame\(s\) of 0 console line\(s\)/.test(silentRun.stderr),
+  /dropped 0 thinking-token frame\(s\) of 0 stream line\(s\)/.test(silentRun.stderr),
   `a run with no console output must say "0 of 0" (stderr: ${JSON.stringify(silentRun.stderr)})`,
 );
 

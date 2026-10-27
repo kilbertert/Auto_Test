@@ -38,10 +38,17 @@ import { writeSync } from "node:fs";
 const HEARTBEAT_TYPE = "system";
 const HEARTBEAT_SUBTYPE = "thinking_tokens";
 let suppressed = 0;
-// How many lines the filter actually judged. Without this, "dropped 0" means two
-// different things — no thinking happened, or no console output at all (a runner
-// using `logging: { type: "file" }` writes none) — and the one signal that
-// catches a renamed frame cannot be distinguished from a run with nothing to say.
+// How many AGENT STREAM lines the filter actually judged — not how many bytes
+// reached stdout.
+//
+// The distinction is the whole point and the first attempt got it wrong
+// (review-caught): counting every newline on stdout also counted `main.ts`'s
+// final `console.log(JSON.stringify(…))`, which a FILE-logged run still prints.
+// Its summary then read "0 of 1" — indistinguishable from a quiet console run,
+// which is exactly the confusion this number exists to remove.
+//
+// A stream-json line is the unit that matters: it is what the CLI emits, what the
+// heartbeat is hidden among, and what a file-logging run produces none of.
 let observed = 0;
 let installed = false;
 
@@ -95,7 +102,13 @@ export function quietThinkingHeartbeats(): void {
   const stream = process.stdout;
   const write = stream.write.bind(stream);
   stream.write = ((chunk: unknown, ...rest: unknown[]) => {
-    if (typeof chunk === "string" && chunk.endsWith("\n")) observed += 1;
+    // Count only frame-shaped lines. The cheap `{"` test runs before a parse:
+    // a runner's own output (`main.ts`'s JSON result is pretty-printed, so its
+    // fragments do not open with `{"`) and the CLI's non-JSON warnings do not
+    // inflate the number.
+    if (typeof chunk === "string" && chunk.startsWith('{"') && chunk.endsWith("\n")) {
+      observed += 1;
+    }
     if (typeof chunk === "string") {
       // Sandcastle writes one raw line per call, terminator included. Requiring
       // the terminator keeps a partial write from being judged on half a line.
@@ -132,7 +145,7 @@ export function quietThinkingHeartbeats(): void {
     try {
       writeSync(
         2,
-        `[afk] dropped ${suppressed} thinking-token frame(s) of ${observed} console line(s)\n`,
+        `[afk] dropped ${suppressed} thinking-token frame(s) of ${observed} stream line(s)\n`,
       );
     } catch {
       // A closed or redirected descriptor is not worth failing a completed run over.
