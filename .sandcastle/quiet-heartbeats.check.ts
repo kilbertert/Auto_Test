@@ -276,9 +276,14 @@ const nestedCall = profileSource
   .slice(bodyStart)
   .search(/^\s*function\s+\w+\s*\([^)]*\)\s*\{[^}]*quietThinkingHeartbeats\(\)/m);
 if (nestedCall >= 0) {
-  // The shape is present but unreachable-by-inspection; record it rather than
-  // pass silently. Not a failure — see above.
-  console.error("note: a nested uncalled function contains the install (documented limit)");
+  // The shape is present and this check cannot tell whether the nested function
+  // is called — that needs the call graph, which needs the provider. Report the
+  // OBSERVATION rather than a conclusion: an earlier wording said "a nested
+  // uncalled function", which labelled a helper the code may well invoke. A note
+  // that asserts something the check cannot see is worse than no note.
+  console.error(
+    "note: the install appears inside a nested function; this check cannot tell whether it is called (documented limit)",
+  );
 }
 
 const beforeCall = profileSource.slice(bodyStart, callAt);
