@@ -32,10 +32,11 @@
  * because the field order of a provider's serialisation is not ours to rely on.
  */
 
+import { writeSync } from "node:fs";
+
 /** How the stream names the frame this module drops. */
 const HEARTBEAT_TYPE = "system";
 const HEARTBEAT_SUBTYPE = "thinking_tokens";
-
 let suppressed = 0;
 let installed = false;
 
@@ -54,8 +55,7 @@ export function isThinkingHeartbeat(line: string): boolean {
 }
 
 /**
- * Install the filter on `process.stdout`, and report the count when the process
- * exits.
+ * Install the filter on `process.stdout`, and report the count at the end.
  *
  * Patching `stdout` rather than passing a sink is deliberate: sandcastle's verbose
  * sink is `process.stdout.write(line + "\n")` with no hook around it, and every
@@ -68,6 +68,19 @@ export function isThinkingHeartbeat(line: string): boolean {
  * Claude Code release renames `thinking_tokens`, the filter goes quietly inert and
  * the flood returns with nothing failing. A run that ends with "dropped 0" is the
  * signal that the match needs revisiting.
+ *
+ * TWO details of the writable-stream contract this has to respect, both of which
+ * a naive drop gets wrong (both found in review of the first version):
+ *
+ *   1. `write(chunk[, encoding][, callback])` calls the callback even when the
+ *      write completes synchronously. A suppressed write that returns `true`
+ *      without invoking it leaves a caller awaiting that callback pending
+ *      forever — and stdout is process-wide, so that is every writer in the
+ *      runner, not just the verbose sink.
+ *   2. A write queued from the `exit` event is not guaranteed to reach a piped
+ *      destination: `exit` cannot wait for asynchronous writes to flush, and
+ *      Actions captures stdout through a pipe. The count is the one signal this
+ *      module exists to leave behind, so it is written synchronously instead.
  */
 export function quietThinkingHeartbeats(): void {
   if (installed) return;
@@ -80,6 +93,14 @@ export function quietThinkingHeartbeats(): void {
       // the terminator keeps a partial write from being judged on half a line.
       if (chunk.endsWith("\n") && isThinkingHeartbeat(chunk.slice(0, -1))) {
         suppressed += 1;
+        // Honour the callback the caller passed. It is the last argument when it
+        // is a function: `write(chunk)`, `write(chunk, cb)`,
+        // `write(chunk, encoding, cb)`. Called on the next tick rather than
+        // inline, which is how a real write delivers it.
+        const callback = rest[rest.length - 1];
+        if (typeof callback === "function") {
+          process.nextTick(callback as () => void);
+        }
         return true;
       }
     }
@@ -87,9 +108,17 @@ export function quietThinkingHeartbeats(): void {
   }) as typeof stream.write;
 
   process.on("exit", () => {
-    write(
-      `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`,
-    );
+    // Synchronous on purpose — see (2) above. `fs.writeSync` on the same fd keeps
+    // the bytes in order behind whatever `stream.write` has already handed to the
+    // kernel, and it cannot be discarded by process termination.
+    try {
+      writeSync(
+        stream.fd,
+        `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`,
+      );
+    } catch {
+      // A closed or redirected fd is not worth failing a completed run over.
+    }
   });
 }
 
