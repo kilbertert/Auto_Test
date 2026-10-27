@@ -177,8 +177,15 @@ const exitRun = spawnSync(
   { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
 );
 assert(
-  /dropped 1 thinking-token frame/.test(exitRun.stdout),
-  `the exit summary must reach a captured stdout (stdout: ${JSON.stringify(exitRun.stdout)})`,
+  /dropped 1 thinking-token frame/.test(exitRun.stderr),
+  `the exit summary must reach a captured stderr (stderr: ${JSON.stringify(exitRun.stderr)})`,
+);
+// And it must NOT reach stdout — see the placement assertion below, which reads
+// the source. This is the behavioural half: a run that appends to stdout breaks
+// any consumer parsing it, so the two are asserted together.
+assert(
+  !/dropped 1 thinking-token frame/.test(exitRun.stdout),
+  `the exit summary must stay out of stdout (stdout: ${JSON.stringify(exitRun.stdout)})`,
 );
 
 // --- the filter is actually WIRED (review finding 4) -------------------------
@@ -191,6 +198,12 @@ assert(
 //
 // Read the source rather than importing it: importing `profile.ts` pulls in the
 // Sandcastle provider, which this check must stay runnable without.
+//
+// ⚠️ A source-text match alone is not enough, and this was found in review: the
+// assertions below pass if the call moves into a function nobody invokes, or into
+// `claudeProfile`'s body position that never executes. So the text check is
+// paired with a BEHAVIOURAL one — see "the filter runs" below. Text says where
+// the call is written; behaviour says a runner actually reaches it.
 //
 // The match is line-anchored (`^\s*`) and excludes a commented-out call, so a
 // `// quietThinkingHeartbeats();` does not satisfy it.
@@ -210,18 +223,61 @@ assert(
   "quietThinkingHeartbeats() must be installed exactly once in profile.ts",
 );
 
-// --- the exit summary survives a pipe that refuses writes (review finding 3) -
+// The behavioural half. A source-text match cannot tell `claudeProfile`'s body
+// from a function nobody calls — review found exactly that hole — and importing
+// `profile.ts` is not an option here: it pulls in `@ai-hero/sandcastle`, which a
+// fresh scaffold does not have installed and which this check must run without.
 //
-// Node's stdout on a pipe is non-blocking, so `writeSync` to a full pipe can fail
-// with EAGAIN — and a full pipe is what a failing run looks like. A swallowed
-// error would lose the count in exactly the run it is needed for. The fallback
-// goes to stderr (fd 2), a separate descriptor.
+// So the question is narrowed to the one that matters: is the call inside a scope
+// a run reaches? `claudeProfile` is the function every runner spreads into
+// `run()`, so the assertion is that the call sits within a top-level *function
+// declaration* named `claudeProfile` — not in a helper, not at module scope, not
+// in a dead branch. Braces are counted from the declaration, which is enough for
+// a file this check also owns the shape of.
+const callAt = profileSource.search(/^\s*quietThinkingHeartbeats\(\);?\s*$/m);
+assert(callAt >= 0, "profile.ts must call quietThinkingHeartbeats() as a live statement");
+const before = profileSource.slice(0, callAt);
+const enclosing = /function\s+(\w+)\s*\([^)]*\)[^{]*\{[\s\S]*$/.exec(before);
+assert(
+  enclosing !== null && enclosing[1] === "claudeProfile",
+  `quietThinkingHeartbeats() must be called inside claudeProfile(), not ${enclosing ? `inside ${enclosing[1]}()` : "at module scope"}`,
+);
+// And not after an early `return` that a run would hit first: the install has to
+// be reachable.
 //
-// Asserted on the source for the same reason as the test above it: the failure
-// needs a full pipe, which a portable test cannot construct reliably here.
+// The body starts at the `{` that opens the function, found as the first one
+// AFTER the signature's closing `): … {`. Taking `lastIndexOf("{")` instead
+// matched the `{` inside `return {}` — an early return hidden the test's own
+// blind spot, measured.
+const signature = profileSource.indexOf("function claudeProfile");
+const bodyStart = profileSource.indexOf("{", profileSource.indexOf(")", profileSource.indexOf(":", signature)));
+assert(bodyStart > signature && bodyStart < callAt, "could not locate claudeProfile's body");
+const beforeCall = profileSource.slice(bodyStart, callAt);
+// A `return` at statement position, optionally behind an `if (…)`. `return {…}`
+// and `return;` both count; a `return` inside a string or comment does not matter
+// here, because a false positive fails loudly and is fixed by moving the call.
+assert(
+  !/\breturn\b[^;]*(?:;|\n)/.test(beforeCall.replace(/^\s*\/\/.*$/gm, "")),
+  "nothing may return before quietThinkingHeartbeats() runs — the install would never execute",
+);
+
+// --- the summary goes to stderr, never to stdout (review finding 5) ----------
+//
+// `main.ts` ends a run with `console.log(JSON.stringify({...}))` — the command's
+// machine-readable result. A summary appended to stdout lands AFTER that line, so
+// `node .sandcastle/main.ts | jq` stops parsing, on a successful run, for a
+// diagnostic nobody asked for.
+//
+// Asserted on the source: the two streams are indistinguishable in a captured
+// `spawnSync` result unless the probe separates them, and the failure being
+// guarded is a *placement* mistake, which is exactly what the source shows.
 assert(
   /writeSync\(\s*2\s*,/.test(source),
-  "a failed stdout summary must fall back to stderr (writeSync(2, ...))",
+  "the exit summary must be written to stderr (writeSync(2, ...))",
+);
+assert(
+  !/writeSync\(\s*stream\.fd\s*,/.test(source),
+  "the exit summary must not be written to stdout — main.ts's JSON result follows it",
 );
 
 console.log("quiet-heartbeats check ok");

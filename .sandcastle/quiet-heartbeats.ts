@@ -108,25 +108,23 @@ export function quietThinkingHeartbeats(): void {
   }) as typeof stream.write;
 
   process.on("exit", () => {
-    // Synchronous on purpose — see (2) above. `fs.writeSync` on the same fd keeps
-    // the bytes in order behind whatever `stream.write` has already handed to the
-    // kernel, and it cannot be discarded by process termination.
+    // STDERR, deliberately — not stdout, and not as a fallback.
     //
-    // But a synchronous write to a PIPE is not infallible: Node's stdout on a pipe
-    // is non-blocking, so if the reader has not drained it the write can fail with
-    // EAGAIN. That case is exactly a failing run — the one whose diagnostic
-    // matters most — so a swallowed error must not be the end of it. Fall back to
-    // stderr, which is a separate fd with its own buffer.
-    const summary = `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`;
+    // `main.ts` ends a run with `console.log(JSON.stringify({…}))`; that line is
+    // the command's machine-readable result. Anything this module appends to
+    // stdout lands AFTER it, so `node .sandcastle/main.ts | jq` stops parsing —
+    // even on a completely successful run, and even though the filter dropped
+    // nothing the caller cares about. A diagnostic line has no business in a
+    // stream somebody parses.
+    //
+    // Synchronous on purpose. `exit` cannot wait for an asynchronous write to
+    // flush, and Actions captures both streams through pipes. A synchronous write
+    // to a pipe can still fail with EAGAIN when the reader has not drained it, so
+    // a closed stderr silently costs the line rather than failing the run.
     try {
-      writeSync(stream.fd, summary);
+      writeSync(2, `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`);
     } catch {
-      try {
-        writeSync(2, summary);
-      } catch {
-        // Both descriptors unusable: a closed pipe is not worth failing a
-        // completed run over. Nothing else is left to report through.
-      }
+      // A closed or redirected descriptor is not worth failing a completed run over.
     }
   });
 }
