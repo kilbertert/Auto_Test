@@ -51,9 +51,16 @@ their separation in the final summary under `## Standards` and `## Spec`.
    the smallest coherent fix selected by the Economy ladder. Address valid
    unresolved PR threads; explain declined requests in a reply, and do not
    invent product requirements.
-3. Run `npm run check` and `node .sandcastle/policy-check.mjs commit` before
+3. **For a confirmed finding about a test double, fix the code and keep the
+   double strict.** When an axis report says a fake upstream is more lenient than
+   the real system, the fix is never to relax the assertion — it is to make the
+   double reproduce the real behaviour and let the code adapt. Leave a comment at
+   the double recording what it reproduces and where that came from (measured
+   date, document, or captured response); a strict double with no provenance is
+   one the next reader deletes as noise.
+4. Run `npm run check` and `node .sandcastle/policy-check.mjs commit` before
    committing. If files changed, commit with a Conventional Commit message.
-4. Keep Standards and Spec findings in separate sections. Mention accepted or
+5. Keep Standards and Spec findings in separate sections. Mention accepted or
    false-positive findings briefly for human triage.
 
 Once complete, output `<promise>COMPLETE</promise>`. If a blocker needs a human
