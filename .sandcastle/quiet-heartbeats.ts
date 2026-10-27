@@ -111,13 +111,22 @@ export function quietThinkingHeartbeats(): void {
     // Synchronous on purpose — see (2) above. `fs.writeSync` on the same fd keeps
     // the bytes in order behind whatever `stream.write` has already handed to the
     // kernel, and it cannot be discarded by process termination.
+    //
+    // But a synchronous write to a PIPE is not infallible: Node's stdout on a pipe
+    // is non-blocking, so if the reader has not drained it the write can fail with
+    // EAGAIN. That case is exactly a failing run — the one whose diagnostic
+    // matters most — so a swallowed error must not be the end of it. Fall back to
+    // stderr, which is a separate fd with its own buffer.
+    const summary = `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`;
     try {
-      writeSync(
-        stream.fd,
-        `[afk] dropped ${suppressed} thinking-token frame(s) from the console stream\n`,
-      );
+      writeSync(stream.fd, summary);
     } catch {
-      // A closed or redirected fd is not worth failing a completed run over.
+      try {
+        writeSync(2, summary);
+      } catch {
+        // Both descriptors unusable: a closed pipe is not worth failing a
+        // completed run over. Nothing else is left to report through.
+      }
     }
   });
 }

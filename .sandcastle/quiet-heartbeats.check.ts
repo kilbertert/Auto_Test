@@ -181,4 +181,47 @@ assert(
   `the exit summary must reach a captured stdout (stdout: ${JSON.stringify(exitRun.stdout)})`,
 );
 
+// --- the filter is actually WIRED (review finding 4) -------------------------
+//
+// Everything above proves the module is correct. None of it proves a run uses it.
+// Deleting the `quietThinkingHeartbeats()` call from `claudeProfile()` leaves
+// every assertion above green while runners print heartbeats again — the same
+// "helper correct, wiring gone" gap that `profile-network.check.ts` closes for
+// the network spread, and it was found in review of a real consumer PR.
+//
+// Read the source rather than importing it: importing `profile.ts` pulls in the
+// Sandcastle provider, which this check must stay runnable without.
+//
+// The match is line-anchored (`^\s*`) and excludes a commented-out call, so a
+// `// quietThinkingHeartbeats();` does not satisfy it.
+const profileSource = readFileSync(new URL("./profile.ts", import.meta.url), "utf8");
+assert(
+  /^\s*quietThinkingHeartbeats\(\);?\s*$/m.test(profileSource),
+  "profile.ts must call quietThinkingHeartbeats() as a live statement",
+);
+assert(
+  /^\s*import \{ quietThinkingHeartbeats \} from "\.\/quiet-heartbeats\.js";\s*$/m.test(profileSource),
+  "profile.ts must import quietThinkingHeartbeats from ./quiet-heartbeats.js",
+);
+// One install, not one per call site: a second call is harmless (the guard
+// returns early) but it means someone thought the first one did not work.
+assert(
+  (profileSource.match(/^\s*quietThinkingHeartbeats\(\)/gm) ?? []).length === 1,
+  "quietThinkingHeartbeats() must be installed exactly once in profile.ts",
+);
+
+// --- the exit summary survives a pipe that refuses writes (review finding 3) -
+//
+// Node's stdout on a pipe is non-blocking, so `writeSync` to a full pipe can fail
+// with EAGAIN — and a full pipe is what a failing run looks like. A swallowed
+// error would lose the count in exactly the run it is needed for. The fallback
+// goes to stderr (fd 2), a separate descriptor.
+//
+// Asserted on the source for the same reason as the test above it: the failure
+// needs a full pipe, which a portable test cannot construct reliably here.
+assert(
+  /writeSync\(\s*2\s*,/.test(source),
+  "a failed stdout summary must fall back to stderr (writeSync(2, ...))",
+);
+
 console.log("quiet-heartbeats check ok");
