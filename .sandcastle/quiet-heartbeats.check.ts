@@ -15,6 +15,8 @@
  * the count printed at exit is asserted too: it is the one signal that tells a
  * future release's rename from a run that simply had no thinking.
  */
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   isThinkingHeartbeat,
   quietThinkingHeartbeats,
@@ -90,6 +92,93 @@ assert(
 assert(
   (process.stdout.write(Buffer.from("buffered\n")) as unknown) === true,
   "a buffer chunk must still be written",
+);
+
+// --- the writable-stream contract (review finding 1) -------------------------
+//
+// `write(chunk[, encoding][, callback])` invokes the callback even for a write
+// that completes synchronously. A drop that returns `true` without it strands
+// every caller awaiting that callback — and stdout is process-wide, so that is
+// the whole runner, not just the verbose sink.
+//
+// Asserted in a CHILD process: the wrapper's callback goes through
+// `process.nextTick`, and inside this one an un-fired callback would be
+// indistinguishable from a tick that has not run yet.
+const callbackProbe = `
+  const frame = ${JSON.stringify(heartbeat)};
+  quietThinkingHeartbeats();
+  process.stdout.write(frame + "\\n", () => {
+    // Delivered asynchronously, or not at all. This is the only way either shows.
+    setTimeout(() => {
+      process.stderr.write("callback-fired\\n");
+      process.exit(0);
+    }, 20);
+  });
+  setTimeout(() => {
+    process.stderr.write("callback-lost\\n");
+    process.exit(1);
+  }, 2000);
+`;
+const probeRun = spawnSync(
+  process.execPath,
+  [
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    `import { quietThinkingHeartbeats } from "./quiet-heartbeats.ts";${callbackProbe}`,
+  ],
+  { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
+);
+assert(
+  probeRun.stderr.includes("callback-fired"),
+  `a suppressed write must still call its callback (stderr: ${probeRun.stderr.trim()})`,
+);
+
+// --- the exit summary survives a piped stdout (review finding 2) -------------
+//
+// `exit` cannot wait for an asynchronous write to flush, and Actions captures
+// stdout through a pipe. The count is the only signal that tells a renamed frame
+// from a run that simply had no thinking, so losing it removes the safety net.
+//
+// ⚠️ A behavioural assertion CANNOT see this on this host: `spawnSync` with a
+// pipe was measured to deliver the summary either way, because the write is
+// small enough to drain before termination. A test that passes for both the
+// fixed and the broken code is worse than no test — it certifies the defect.
+// So this asserts the property that makes it safe, read from the source: the
+// summary is written with a synchronous call, not through `stream.write`.
+const source = readFileSync(new URL("./quiet-heartbeats.ts", import.meta.url), "utf8");
+const exitHandler = source.slice(source.indexOf('process.on("exit"'));
+assert(
+  /writeSync\(/.test(exitHandler),
+  "the exit summary must use a synchronous write; a queued async write can be discarded",
+);
+// The captured `write` closure from the wrapper, called from `exit`. Matched on
+// the call shape rather than a line number, so reformatting does not matter.
+assert(
+  !/^\s*write\(/m.test(exitHandler),
+  "the exit summary must not go through the captured stream.write — it cannot be flushed from `exit`",
+);
+
+// The count still has to reach a captured stdout in the ordinary case. This is
+// the weaker half, kept because it is the observable a reader relies on.
+const exitProbe = `
+  const frame = ${JSON.stringify(heartbeat)};
+  quietThinkingHeartbeats();
+  process.stdout.write(frame + "\\n");
+`;
+const exitRun = spawnSync(
+  process.execPath,
+  [
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    `import { quietThinkingHeartbeats } from "./quiet-heartbeats.ts";${exitProbe}`,
+  ],
+  { cwd: import.meta.dirname, encoding: "utf8", timeout: 10_000 },
+);
+assert(
+  /dropped 1 thinking-token frame/.test(exitRun.stdout),
+  `the exit summary must reach a captured stdout (stdout: ${JSON.stringify(exitRun.stdout)})`,
 );
 
 console.log("quiet-heartbeats check ok");
