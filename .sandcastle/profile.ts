@@ -9,6 +9,7 @@ import {
 } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { sandboxNetworkOptions } from "./profile-network.js";
+import { quietThinkingHeartbeats } from "./quiet-heartbeats.js";
 
 /** The prepare script, relative to the repository root. */
 const PREPARE_SCRIPT = join(".sandcastle", "sandbox-prepare.sh");
@@ -41,6 +42,10 @@ export function claudeProfile(
   // needs a file to point at, and writing it per run is what keeps it true to
   // what this host actually has.
   writeMcpConfig();
+  // Scan the console stream for the CLI's thinking-token heartbeats. Placed here,
+  // in the one function every runner spreads into `run()`, so a runner added
+  // later is covered without anyone remembering to call this.
+  quietThinkingHeartbeats();
   if (profile && !(profile in profiles)) {
     throw new Error(`Unsupported profile; use ${Object.keys(profiles).join(", ")}.`);
   }

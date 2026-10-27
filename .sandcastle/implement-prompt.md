@@ -21,12 +21,21 @@ allow you to complete the task.
 
 # EXECUTION
 
-Use red-green-refactor where applicable:
+Let a test lead where a test is the cheapest way to pin the behavior: write it
+first, watch it fail, then implement to pass it. That is one technique, not a
+ritual. Reach for it where the behavior is non-trivial or a regression would
+otherwise be silent — branching logic, parsers, persistence, money, auth,
+data transforms.
 
-1. RED: write one failing test
-2. GREEN: implement to pass it
-3. REPEAT until the issue is done
-4. REFACTOR the code
+Do not manufacture a test to satisfy a quota. Prose, formatting, a rename, or
+a one-line wiring change owes none. Name the input that would break your
+change and pin that input; if you cannot name one, say so in the commit body
+rather than writing a test that asserts the implementation back to itself.
+
+While you iterate, run only the narrowest check that can falsify what you just
+did — the test files touching your change, the typecheck, the linter. The full
+gate below runs everything; run it once, when the change is complete, not after
+every edit.
 
 # FEEDBACK LOOPS
 
